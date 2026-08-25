@@ -1,3 +1,4 @@
+using Harpo;
 using Harpo.Components;
 using Harpo.Data;
 using Harpo.Offline;
@@ -16,6 +17,10 @@ using Microsoft.EntityFrameworkCore;
 SQLitePCL.Batteries_V2.Init();
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Any config value may be supplied via a file (Docker/K8s secrets):
+// <Key>__File=/run/secrets/... — see FileConfigurationSecrets.
+FileConfigurationSecrets.ApplyFileIndirection(builder.Configuration);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();

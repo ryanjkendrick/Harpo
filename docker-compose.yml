@@ -19,6 +19,10 @@ services:
       Harpo__SiteId: "main"
       # REQUIRED — same value on every replicated site. Generate: openssl rand -base64 32
       Harpo__MasterKey: "${HARPO_MASTER_KEY:?Set HARPO_MASTER_KEY in .env}"
+      # Prefer Docker secrets over env vars? Any key accepts a __File variant:
+      #   Harpo__MasterKey__File: /run/secrets/harpo_master_key
+      # with a top-level `secrets:` block mounting the file. Works for
+      # Harpo__DatabaseKey, Replication__Key, etc. as well.
 
       # Optional: encrypt the SQLite database FILE itself with SQLCipher, so
       # copied volumes/backups expose nothing (entry names, URLs and usernames

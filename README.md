@@ -104,6 +104,29 @@ docker exec harpo-samba-ad samba-tool user create casey 'Passw0rd!' --given-name
 > **Back up two things:** the `/data` volume (database + cookie keys) and the
 > master key. Ciphertext without the master key is gone forever.
 
+### Keys from Docker secrets
+
+Every configuration value also accepts a `__File` variant pointing at a file,
+so keys can come from Docker/Kubernetes secrets instead of environment
+variables (which leak via `docker inspect` and process listings):
+
+```yaml
+services:
+  harpo:
+    environment:
+      Harpo__MasterKey__File: /run/secrets/harpo_master_key
+    secrets:
+      - harpo_master_key
+secrets:
+  harpo_master_key:
+    file: ./secrets/master_key.txt
+```
+
+The file's content (trimmed) becomes the value; this works for
+`Harpo__DatabaseKey`, `Replication__Key`, and any other key. A configured
+secret file that doesn't exist fails startup loudly rather than silently
+running with an empty key.
+
 ### Active Directory settings
 
 | Setting | Meaning | Example |
@@ -282,6 +305,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `ConnectionStrings__Harpo` | `Data Source=harpo.db` (image: `/data/harpo.db`) | SQLite database location |
 | `Harpo__SiteId` | `default` | Unique, stable id of this site |
 | `Harpo__MasterKey` | *(required)* | Base64 32-byte key or passphrase; encrypts passwords at rest; identical on all sites |
+| `<AnyKey>__File` | — | Read the value of `<AnyKey>` from this file (Docker/K8s secrets) |
 | `Harpo__DatabaseKey` | *(empty = off)* | Optional SQLCipher key encrypting the whole database file; per-site |
 | `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
 | `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
