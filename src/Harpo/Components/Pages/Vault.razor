@@ -235,8 +235,34 @@
                 <span class="password-row">
                     <input class="mono" @bind="_editor.Password" @bind:event="oninput" />
                     <button type="button" class="btn btn-ghost btn-sm" @onclick="GeneratePassword">🎲 Generate</button>
+                    <button type="button" class="btn btn-ghost btn-sm" title="Generator options"
+                            @onclick="() => _showGenOptions = !_showGenOptions">⚙️</button>
                 </span>
+                @if (_editor.Password.Length > 0)
+                {
+                    <span>
+                        <span class="badge @StrengthBadgeClass(PasswordStrength.Score(_editor.Password))">
+                            @PasswordStrength.Label(PasswordStrength.Score(_editor.Password))
+                        </span>
+                    </span>
+                }
             </label>
+            @if (_showGenOptions)
+            {
+                <div class="gen-options">
+                    <label class="gen-length">
+                        Length
+                        <input type="range" min="8" max="64" value="@_gen.Length"
+                               @oninput='e => SetGenLength(e.Value?.ToString() ?? "20")' />
+                        <span class="mono">@_gen.Length</span>
+                    </label>
+                    <label><input type="checkbox" checked="@_gen.Uppercase" @onchange="e => SetGenClass(0, e)" /> A–Z</label>
+                    <label><input type="checkbox" checked="@_gen.Lowercase" @onchange="e => SetGenClass(1, e)" /> a–z</label>
+                    <label><input type="checkbox" checked="@_gen.Digits" @onchange="e => SetGenClass(2, e)" /> 0–9</label>
+                    <label><input type="checkbox" checked="@_gen.Symbols" @onchange="e => SetGenClass(3, e)" /> !@@#</label>
+                    <label><input type="checkbox" checked="@_gen.ExcludeAmbiguous" @onchange="e => SetGenClass(4, e)" /> avoid 0/O, 1/l</label>
+                </div>
+            }
             <label class="field">
                 <span class="field-label">2FA secret (TOTP) — optional</span>
                 <input class="mono" @bind="_editor.Totp"
@@ -557,9 +583,83 @@
     {
         if (_editor is not null)
         {
-            _editor.Password = PasswordGenerator.Generate();
+            _editor.Password = PasswordGenerator.Generate(_gen);
         }
     }
+
+    // ---- generator preferences (persisted per browser in localStorage) ----
+
+    private const string GenPrefsKey = "harpo.generator";
+    private PasswordGeneratorOptions _gen = new();
+    private bool _showGenOptions;
+    private bool _genPrefsLoaded;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_genPrefsLoaded)
+        {
+            _genPrefsLoaded = true;
+            try
+            {
+                var json = await JS.InvokeAsync<string?>("harpoPrefsGet", GenPrefsKey);
+                if (!string.IsNullOrEmpty(json))
+                {
+                    _gen = System.Text.Json.JsonSerializer.Deserialize<PasswordGeneratorOptions>(json) ?? _gen;
+                }
+            }
+            catch
+            {
+                // Corrupt or unavailable preferences never break the editor.
+            }
+        }
+    }
+
+    private void SetGenLength(string raw)
+    {
+        if (int.TryParse(raw, out var length))
+        {
+            _gen = _gen with { Length = Math.Clamp(length, 8, 64) };
+            _ = SaveGenPrefsAsync();
+        }
+    }
+
+    private void SetGenClass(int which, ChangeEventArgs e)
+    {
+        var value = e.Value is bool b && b;
+        var updated = which switch
+        {
+            0 => _gen with { Uppercase = value },
+            1 => _gen with { Lowercase = value },
+            2 => _gen with { Digits = value },
+            3 => _gen with { Symbols = value },
+            _ => _gen with { ExcludeAmbiguous = value },
+        };
+        // Keep at least one character class enabled.
+        if (updated is { Uppercase: false, Lowercase: false, Digits: false, Symbols: false })
+        {
+            return;
+        }
+        _gen = updated;
+        _ = SaveGenPrefsAsync();
+    }
+
+    private async Task SaveGenPrefsAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("harpoPrefsSet", GenPrefsKey, System.Text.Json.JsonSerializer.Serialize(_gen));
+        }
+        catch
+        {
+        }
+    }
+
+    private static string StrengthBadgeClass(int score) => score switch
+    {
+        <= 1 => "badge-error",
+        2 => "",
+        _ => "badge-ok",
+    };
 
     private async Task SaveEntryAsync()
     {

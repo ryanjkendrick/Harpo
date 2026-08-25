@@ -473,6 +473,20 @@ tbody tr:hover { background: var(--bg); }
 .history-caption { margin-top: 0; }
 
 .panel > .search { width: 100%; margin-bottom: .7rem; }
+.gen-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem 1rem;
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: .55rem .8rem;
+    font-size: .88rem;
+}
+.gen-options label { display: inline-flex; align-items: center; gap: .35rem; }
+.gen-length input[type=range] { width: 130px; vertical-align: middle; }
+
 .totp-code { white-space: nowrap; }
 .totp-remaining { font-size: .78rem; margin-left: .25rem; }
 

@@ -3,6 +3,14 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => { });
 }
 
+// Small per-browser preference store (e.g. password generator settings).
+window.harpoPrefsGet = (key) => {
+    try { return localStorage.getItem(key); } catch { return null; }
+};
+window.harpoPrefsSet = (key, value) => {
+    try { localStorage.setItem(key, value); } catch { }
+};
+
 // Copies text to the clipboard; returns true on success.
 // navigator.clipboard needs a secure context (HTTPS or localhost), so fall back
 // to the legacy execCommand path for plain-HTTP deployments behind a proxy.

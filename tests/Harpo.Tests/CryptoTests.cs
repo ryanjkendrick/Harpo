@@ -84,6 +84,65 @@ public class CryptoTests
     }
 
     [Fact]
+    public void Generator_options_control_length_and_character_classes()
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            var digitsOnly = PasswordGenerator.Generate(new PasswordGeneratorOptions
+            {
+                Length = 32,
+                Uppercase = false,
+                Lowercase = false,
+                Digits = true,
+                Symbols = false,
+            });
+            Assert.Equal(32, digitsOnly.Length);
+            Assert.All(digitsOnly, c => Assert.True(char.IsDigit(c)));
+
+            var noSymbols = PasswordGenerator.Generate(new PasswordGeneratorOptions { Symbols = false, Length = 16 });
+            Assert.All(noSymbols, c => Assert.True(char.IsLetterOrDigit(c)));
+            Assert.Contains(noSymbols, char.IsUpper);
+            Assert.Contains(noSymbols, char.IsLower);
+            Assert.Contains(noSymbols, char.IsDigit);
+        }
+    }
+
+    [Fact]
+    public void Ambiguous_characters_follow_the_toggle()
+    {
+        const string ambiguous = "O0Il1";
+        for (var i = 0; i < 30; i++)
+        {
+            var safe = PasswordGenerator.Generate(new PasswordGeneratorOptions { Length = 64 });
+            Assert.DoesNotContain(safe, c => ambiguous.Contains(c));
+        }
+        // With the toggle off the full alphabets are in play — over enough draws
+        // an ambiguous character must appear.
+        var sawAmbiguous = Enumerable.Range(0, 50)
+            .Select(_ => PasswordGenerator.Generate(new PasswordGeneratorOptions { Length = 64, ExcludeAmbiguous = false }))
+            .Any(p => p.Any(c => ambiguous.Contains(c)));
+        Assert.True(sawAmbiguous);
+    }
+
+    [Fact]
+    public void Generator_is_safe_at_the_edges()
+    {
+        // Length clamps rather than throwing.
+        Assert.Equal(8, PasswordGenerator.Generate(new PasswordGeneratorOptions { Length = 3 }).Length);
+        Assert.Equal(128, PasswordGenerator.Generate(new PasswordGeneratorOptions { Length = 500 }).Length);
+
+        // Every class disabled falls back to lowercase instead of failing.
+        var fallback = PasswordGenerator.Generate(new PasswordGeneratorOptions
+        {
+            Uppercase = false,
+            Lowercase = false,
+            Digits = false,
+            Symbols = false,
+        });
+        Assert.All(fallback, c => Assert.True(char.IsLower(c)));
+    }
+
+    [Fact]
     public void Deterministic_guids_are_stable_and_distinct()
     {
         var a1 = DeterministicGuid.For("group-1", "alice");

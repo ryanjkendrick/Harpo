@@ -18,7 +18,10 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   been added to a group can see its passwords. Group admins manage membership;
   any user can create a group and becomes its admin.
 - **Named, decorated entries** — every password has a name, an icon, the URL it
-  belongs to, an account username, and free-text notes.
+  belongs to, an account username, and free-text notes. The built-in generator
+  is configurable (length 8–64, character classes, ambiguous-character
+  avoidance; preferences remembered per browser) and the editor shows a live
+  strength rating as you type.
 - **Full password history** — every password change is an immutable revision
   recording *who* changed it and *when*; old values remain viewable.
 - **Cross-site replication** — multiple sites (offices, datacenters) each run

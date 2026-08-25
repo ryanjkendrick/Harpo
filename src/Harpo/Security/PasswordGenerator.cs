@@ -2,32 +2,69 @@ using System.Security.Cryptography;
 
 namespace Harpo.Security;
 
+/// <summary>User-tunable generation settings (the vault UI persists these per browser).</summary>
+public sealed record PasswordGeneratorOptions
+{
+    public int Length { get; init; } = 20;
+    public bool Uppercase { get; init; } = true;
+    public bool Lowercase { get; init; } = true;
+    public bool Digits { get; init; } = true;
+    public bool Symbols { get; init; } = true;
+    /// <summary>Skip visually confusable characters (O/0, I/l/1).</summary>
+    public bool ExcludeAmbiguous { get; init; } = true;
+}
+
 public static class PasswordGenerator
 {
-    private const string Upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-    private const string Lower = "abcdefghijkmnopqrstuvwxyz";
-    private const string Digits = "23456789";
-    private const string Symbols = "!@#$%^&*-_=+?";
+    private const string UpperFull = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private const string UpperSafe = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private const string LowerFull = "abcdefghijklmnopqrstuvwxyz";
+    private const string LowerSafe = "abcdefghijkmnopqrstuvwxyz";
+    private const string DigitsFull = "0123456789";
+    private const string DigitsSafe = "23456789";
+    private const string SymbolSet = "!@#$%^&*-_=+?";
+
+    public static string Generate(int length = 20) =>
+        Generate(new PasswordGeneratorOptions { Length = length });
 
     /// <summary>
-    /// Generates a random password containing at least one character from each
-    /// class, using a cryptographic RNG. Visually ambiguous characters (O/0, l/1)
-    /// are excluded.
+    /// Generates with a cryptographic RNG, guaranteeing at least one character
+    /// from every enabled class. Length is clamped to 8–128; with every class
+    /// disabled it falls back to lowercase rather than failing.
     /// </summary>
-    public static string Generate(int length = 20)
+    public static string Generate(PasswordGeneratorOptions options)
     {
-        if (length < 8)
+        var length = Math.Clamp(options.Length, 8, 128);
+
+        var pools = new List<string>();
+        if (options.Uppercase)
         {
-            length = 8;
+            pools.Add(options.ExcludeAmbiguous ? UpperSafe : UpperFull);
+        }
+        if (options.Lowercase)
+        {
+            pools.Add(options.ExcludeAmbiguous ? LowerSafe : LowerFull);
+        }
+        if (options.Digits)
+        {
+            pools.Add(options.ExcludeAmbiguous ? DigitsSafe : DigitsFull);
+        }
+        if (options.Symbols)
+        {
+            pools.Add(SymbolSet);
+        }
+        if (pools.Count == 0)
+        {
+            pools.Add(options.ExcludeAmbiguous ? LowerSafe : LowerFull);
         }
 
-        var all = Upper + Lower + Digits + Symbols;
+        var all = string.Concat(pools);
         var chars = new char[length];
-        chars[0] = Pick(Upper);
-        chars[1] = Pick(Lower);
-        chars[2] = Pick(Digits);
-        chars[3] = Pick(Symbols);
-        for (var i = 4; i < length; i++)
+        for (var i = 0; i < pools.Count; i++)
+        {
+            chars[i] = Pick(pools[i]); // one from each enabled class
+        }
+        for (var i = pools.Count; i < length; i++)
         {
             chars[i] = Pick(all);
         }
