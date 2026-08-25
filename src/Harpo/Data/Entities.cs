@@ -31,8 +31,18 @@ public class Group : IReplicatedRow
 
 public enum GroupRole
 {
+    /// <summary>Full access to the group's passwords: read, create, edit, delete.</summary>
     Member = 0,
+    /// <summary>Member rights plus managing the group itself and its membership.</summary>
     Admin = 1,
+    /// <summary>Read-only: can see, reveal, and copy passwords but change nothing.</summary>
+    Viewer = 2,
+}
+
+public static class GroupRoleExtensions
+{
+    /// <summary>Whether this role may create, edit, restore, or delete entries.</summary>
+    public static bool CanWrite(this GroupRole role) => role is GroupRole.Member or GroupRole.Admin;
 }
 
 /// <summary>

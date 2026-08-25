@@ -66,7 +66,14 @@
                 <h1>@_selectedGroupName</h1>
                 <input class="search" type="search" placeholder="Search name, URL, username…"
                        @bind="_search" @bind:event="oninput" />
-                <button class="btn btn-primary" @onclick="OpenNewEntry">＋ New password</button>
+                @if (CanEdit)
+                {
+                    <button class="btn btn-primary" @onclick="OpenNewEntry">＋ New password</button>
+                }
+                else
+                {
+                    <span class="badge" title="You have read-only access to this group">viewer</span>
+                }
             </div>
 
             @if (_entries is null)
@@ -139,9 +146,15 @@
                                         }
                                     </td>
                                     <td class="cell-actions">
-                                        <button class="btn btn-icon" title="Edit" @onclick="() => OpenEditEntry(entry)">✏️</button>
+                                        @if (CanEdit)
+                                        {
+                                            <button class="btn btn-icon" title="Edit" @onclick="() => OpenEditEntry(entry)">✏️</button>
+                                        }
                                         <button class="btn btn-icon" title="Password history" @onclick="() => OpenHistoryAsync(entry)">🕘</button>
-                                        <button class="btn btn-icon" title="Delete" @onclick="() => DeleteEntryAsync(entry)">🗑️</button>
+                                        @if (CanEdit)
+                                        {
+                                            <button class="btn btn-icon" title="Delete" @onclick="() => DeleteEntryAsync(entry)">🗑️</button>
+                                        }
                                     </td>
                                 </tr>
                             }
@@ -272,6 +285,12 @@
     private CancellationTokenSource? _toastCts;
 
     private Guid? SelectedGroupId => GroupId ?? _groups?.FirstOrDefault()?.Group.Id;
+
+    private GroupRole? SelectedRole =>
+        _groups?.FirstOrDefault(g => g.Group.Id == SelectedGroupId)?.MyRole;
+
+    private bool CanEdit =>
+        _user?.IsSiteAdmin == true || (SelectedRole?.CanWrite() ?? false);
 
     private List<EntryView> FilteredEntries
     {

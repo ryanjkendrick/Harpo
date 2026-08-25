@@ -57,6 +57,35 @@ public class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Viewers_can_read_and_reveal_but_change_nothing()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        await _site.Groups.AddMemberAsync(_alice, group.Id, "bob", "", GroupRole.Viewer);
+
+        // Read side: everything works.
+        Assert.Single(await _site.Vault.GetEntriesAsync(_bob, group.Id));
+        Assert.Equal("pw1", await _site.Vault.RevealPasswordAsync(_bob, entry.Id));
+        Assert.Single(await _site.Vault.GetHistoryAsync(_bob, entry.Id));
+
+        // Write side: everything is denied.
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(
+            () => _site.Vault.CreateEntryAsync(_bob, group.Id, "New", "🔐", "", "", "", "pw"));
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(
+            () => _site.Vault.UpdateEntryAsync(_bob, entry.Id, "Renamed", "🌐", "", "", ""));
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(
+            () => _site.Vault.ChangePasswordAsync(_bob, entry.Id, "pw2"));
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(
+            () => _site.Vault.DeleteEntryAsync(_bob, entry.Id));
+
+        // Promoting a viewer to member unlocks writes.
+        await _site.Groups.SetMemberRoleAsync(_alice, group.Id, "bob", GroupRole.Member);
+        _site.Time.Advance(TimeSpan.FromMinutes(1));
+        await _site.Vault.ChangePasswordAsync(_bob, entry.Id, "pw2");
+        Assert.Equal("pw2", await _site.Vault.RevealPasswordAsync(_bob, entry.Id));
+    }
+
+    [Fact]
     public async Task Members_cannot_manage_membership_but_admins_can()
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");

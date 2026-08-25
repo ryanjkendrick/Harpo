@@ -82,7 +82,7 @@ public class VaultService
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireMemberAsync(db, user, groupId, ct);
+        await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
 
         var now = _time.GetUtcNow().UtcDateTime;
         var entry = new PasswordEntry
@@ -116,7 +116,7 @@ public class VaultService
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct);
+        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
         entry.Name = name;
         entry.Icon = icon.Trim();
         entry.Url = url.Trim();
@@ -134,7 +134,7 @@ public class VaultService
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct);
+        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
         var now = _time.GetUtcNow().UtcDateTime;
         db.PasswordRevisions.Add(NewRevision(entry.Id, newPassword, user, now));
         // Touch the entry so list views (and replication consumers) see it moved.
@@ -146,7 +146,7 @@ public class VaultService
     public async Task DeleteEntryAsync(UserContext user, Guid entryId, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct);
+        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
         entry.IsDeleted = true;
         entry.UpdatedBy = user.Username;
         await db.SaveChangesAsync(ct);
@@ -297,7 +297,8 @@ public class VaultService
             .FirstOrDefault();
     }
 
-    private static async Task RequireMemberAsync(HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct)
+    private static async Task RequireMemberAsync(
+        HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct, bool requireWrite = false)
     {
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Group not found.");
@@ -310,13 +311,18 @@ public class VaultService
         {
             throw new VaultAccessDeniedException("You are not a member of this group.");
         }
+        if (requireWrite && !role.Value.CanWrite())
+        {
+            throw new VaultAccessDeniedException("Viewers can see passwords but not change them.");
+        }
     }
 
-    private static async Task<PasswordEntry> RequireEntryAsync(HarpoDbContext db, UserContext user, Guid entryId, CancellationToken ct)
+    private static async Task<PasswordEntry> RequireEntryAsync(
+        HarpoDbContext db, UserContext user, Guid entryId, CancellationToken ct, bool requireWrite = false)
     {
         var entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && !e.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Entry not found.");
-        await RequireMemberAsync(db, user, entry.GroupId, ct);
+        await RequireMemberAsync(db, user, entry.GroupId, ct, requireWrite);
         return entry;
     }
 }

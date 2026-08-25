@@ -77,6 +77,7 @@
                                         @if (CanAdmin)
                                         {
                                             <select value="@member.Role" @onchange="e => ChangeRoleAsync(member, e)">
+                                                <option value="@GroupRole.Viewer">Viewer</option>
                                                 <option value="@GroupRole.Member">Member</option>
                                                 <option value="@GroupRole.Admin">Admin</option>
                                             </select>
@@ -116,6 +117,7 @@
                         <label class="field">
                             <span class="field-label">Role</span>
                             <select @bind="_newMemberRole">
+                                <option value="@GroupRole.Viewer">Viewer</option>
                                 <option value="@GroupRole.Member">Member</option>
                                 <option value="@GroupRole.Admin">Admin</option>
                             </select>
@@ -125,6 +127,9 @@
                     <p class="muted form-hint">
                         The username must match the account name the person signs in with
                         (their AD <span class="mono">sAMAccountName</span>).
+                        <strong>Viewers</strong> can see and copy passwords but change nothing;
+                        <strong>members</strong> can also add and edit them; <strong>admins</strong>
+                        additionally manage this group and its members.
                     </p>
                 }
             }
