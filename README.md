@@ -387,3 +387,7 @@ auth, and a throwaway master key.
   everywhere but their ciphertext and history remain in the database.
 - Blazor interactive server rendering keeps secrets and crypto on the server;
   revealed passwords transit the SignalR websocket (over your HTTPS).
+
+## License
+
+[MIT](LICENSE) — © 2026 Ryan Kendrick.
