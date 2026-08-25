@@ -49,7 +49,7 @@ public class ReplicationEngine
     public async Task<PullResponse> BuildResponseAsync(PullRequest request, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var response = new PullResponse { SiteId = _siteId };
+        var response = new PullResponse { SiteId = _siteId, UtcNow = DateTime.UtcNow };
         var limit = Math.Max(100, _options.BatchSize);
 
         var origins = new HashSet<string>();

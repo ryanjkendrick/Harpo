@@ -11,6 +11,8 @@ public sealed class PeerSyncStatus
     public string? LastError { get; set; }
     public int LastPulledRows { get; set; }
     public long TotalPulledRows { get; set; }
+    /// <summary>Peer clock minus ours at the last sync (positive = peer ahead). Includes network latency, so treat as coarse.</summary>
+    public TimeSpan? ClockSkew { get; set; }
 }
 
 /// <summary>In-memory sync health per configured peer, shown on the admin page.</summary>

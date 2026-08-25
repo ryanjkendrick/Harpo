@@ -59,7 +59,7 @@
             <div class="table-scroll">
                 <table class="peers-table">
                     <thead>
-                        <tr><th>Peer</th><th>URL</th><th>Last sync</th><th>Rows pulled</th><th>Status</th></tr>
+                        <tr><th>Peer</th><th>URL</th><th>Last sync</th><th>Rows pulled</th><th>Clock skew</th><th>Status</th></tr>
                     </thead>
                     <tbody>
                         @foreach (var peer in PeerStatuses)
@@ -71,6 +71,27 @@
                                     @(peer.LastSuccessUtc is null ? "never" : Relative(peer.LastSuccessUtc.Value))
                                 </td>
                                 <td>@peer.TotalPulledRows</td>
+                                <td>
+                                    @if (peer.ClockSkew is { } skew)
+                                    {
+                                        var abs = skew.Duration();
+                                        if (abs > TimeSpan.FromSeconds(30))
+                                        {
+                                            <span class="badge badge-error"
+                                                  title="Clocks differ by @abs — last-writer-wins conflict resolution needs NTP-synced sites.">
+                                                @FormatSkew(abs) drift
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="mono muted">@FormatSkew(abs)</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">—</span>
+                                    }
+                                </td>
                                 <td>
                                     @if (peer.LastError is not null)
                                     {
@@ -314,6 +335,11 @@
     }
 
     public void Dispose() => _refreshTimer?.Dispose();
+
+    private static string FormatSkew(TimeSpan skew) =>
+        skew.TotalSeconds < 10 ? $"{skew.TotalSeconds:0.0}s"
+        : skew.TotalMinutes < 2 ? $"{skew.TotalSeconds:0}s"
+        : $"{skew.TotalMinutes:0}m";
 
     private static string Relative(DateTime utc)
     {

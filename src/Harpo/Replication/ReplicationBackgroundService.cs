@@ -91,6 +91,11 @@ public class ReplicationBackgroundService : BackgroundService
             var response = await httpResponse.Content.ReadFromJsonAsync<PullResponse>(ct)
                 ?? throw new InvalidOperationException("Peer returned an empty response.");
 
+            if (response.UtcNow != default)
+            {
+                status.ClockSkew = response.UtcNow - DateTime.UtcNow;
+            }
+
             if (response.RowCount > 0)
             {
                 await _engine.ApplyAsync(response, ct);
