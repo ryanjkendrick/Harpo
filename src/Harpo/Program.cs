@@ -10,6 +10,11 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 
+// We ship the SQLCipher build of SQLite (optional full-file encryption via
+// Harpo:DatabaseKey); with the Sqlite.Core packages the provider must be
+// initialized explicitly before any database use.
+SQLitePCL.Batteries_V2.Init();
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
@@ -24,7 +29,9 @@ builder.Services.Configure<LdapOptions>(builder.Configuration.GetSection("Auth:L
 builder.Services.Configure<DevAuthOptions>(builder.Configuration.GetSection("Auth"));
 
 // ---- Data ----
-var connectionString = builder.Configuration.GetConnectionString("Harpo") ?? "Data Source=harpo.db";
+var rawConnectionString = builder.Configuration.GetConnectionString("Harpo") ?? "Data Source=harpo.db";
+var dbEncryption = DbEncryptionOptions.FromConfiguration(builder.Configuration);
+var connectionString = DbEncryption.ApplyKey(rawConnectionString, dbEncryption);
 builder.Services.AddDbContextFactory<HarpoDbContext>(options => options.UseSqlite(connectionString));
 builder.Services.AddSingleton(TimeProvider.System);
 
@@ -87,6 +94,8 @@ if (devAuth)
         "Never use this outside local testing; set Auth:Mode=Ldap for Active Directory.");
 }
 
+// Encrypt / rekey / decrypt the database file to match configuration, then init.
+await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString);
 

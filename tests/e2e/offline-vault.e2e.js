@@ -63,6 +63,7 @@ async function jsClick(page, selector) {
 // events fail to even focus elements in headless Chrome, so set the value
 // directly and dispatch input+change (covers both @bind flavours).
 async function typeInto(page, selector, text) {
+    await page.waitForSelector(selector, { timeout: 10000 });
     await page.evaluate((sel, value) => {
         const el = document.querySelector(sel);
         if (!el) {
@@ -79,6 +80,19 @@ async function waitForText(page, selector, text, timeout = 15000) {
     await page.waitForFunction(
         (sel, needle) => [...document.querySelectorAll(sel)].some((e) => e.textContent.includes(needle)),
         { timeout }, selector, text);
+}
+
+// Outcome-first retry: succeed fast if `probe` already holds, otherwise run the
+// (idempotent) `action` and re-check. Prevents duplicate creates on retries.
+async function ensure(probe, action, tries = 6) {
+    for (let i = 0; i < tries; i++) {
+        try {
+            await probe();
+            return;
+        } catch { }
+        try { await action(); } catch { }
+    }
+    await probe();
 }
 
 // Blazor interactive pages ignore clicks until the SignalR circuit attaches, so
@@ -114,28 +128,33 @@ async function retryUntil(action, probe, tries = 15) {
         // ---- 2. Create a throwaway group ----
         await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
         await page.waitForSelector(".page-header .btn-primary");
-        await retryUntil(
-            () => jsClick(page, ".page-header .btn-primary"),
-            () => page.waitForSelector(".modal-panel", { visible: true, timeout: 1500 }));
-        await typeInto(page, ".modal-panel .form-grid label:nth-of-type(1) input", GROUP_NAME);
-        await jsClick(page, ".modal-actions .btn-primary");
-        await waitForText(page, ".group-card", GROUP_NAME);
+        await ensure(
+            () => waitForText(page, ".group-card", GROUP_NAME, 4000),
+            async () => {
+                await jsClick(page, ".page-header .btn-primary");
+                await page.waitForSelector(".modal-panel .form-grid label:nth-of-type(1) input", { visible: true, timeout: 4000 });
+                await typeInto(page, ".modal-panel .form-grid label:nth-of-type(1) input", GROUP_NAME);
+                await jsClick(page, ".modal-actions .btn-primary");
+            });
         check("create test group", true);
 
         // ---- 3. Create a password entry in it ----
         await page.goto(`${BASE}/`, { waitUntil: "networkidle2" });
         await waitForText(page, ".group-item", GROUP_NAME);
-        await clickByText(page, ".group-item", GROUP_NAME);
-        await page.waitForFunction(
-            (name) => document.querySelector(".vault-toolbar h1")?.textContent === name,
-            { timeout: 15000 }, GROUP_NAME);
-        await retryUntil(
-            () => jsClick(page, ".vault-toolbar .btn-primary"),
-            () => page.waitForSelector(".modal-panel", { visible: true, timeout: 1500 }));
-        await typeInto(page, ".modal-panel .form-grid > label:nth-of-type(1) input", ENTRY_NAME);
-        await typeInto(page, ".modal-panel .password-row input", ENTRY_PASSWORD);
-        await jsClick(page, ".modal-actions .btn-primary");
-        await waitForText(page, ".entries-table", ENTRY_NAME);
+        await ensure(
+            () => page.waitForFunction(
+                (name) => document.querySelector(".vault-toolbar h1")?.textContent === name,
+                { timeout: 4000 }, GROUP_NAME),
+            () => clickByText(page, ".group-item", GROUP_NAME));
+        await ensure(
+            () => waitForText(page, ".entries-table", ENTRY_NAME, 4000),
+            async () => {
+                await jsClick(page, ".vault-toolbar .btn-primary");
+                await page.waitForSelector(".modal-panel .password-row input", { visible: true, timeout: 4000 });
+                await typeInto(page, ".modal-panel .form-grid > label:nth-of-type(1) input", ENTRY_NAME);
+                await typeInto(page, ".modal-panel .password-row input", ENTRY_PASSWORD);
+                await jsClick(page, ".modal-actions .btn-primary");
+            });
         check("create test entry", true);
 
         // ---- 4. Offline vault: set up & sync (retry once if throttled) ----

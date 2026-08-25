@@ -207,6 +207,37 @@ Operational notes:
   automatically; the code handles this recovery case).
 - Adding a site later: start it empty with a new id and a peer — done.
 
+## Encrypting the database file
+
+Password *values* are always AES-256-GCM encrypted, but the rest of the SQLite
+file (entry names, URLs, usernames, membership) is plaintext by default —
+protect it with disk encryption and encrypted backups, or turn on **full-file
+encryption** (SQLCipher):
+
+```yaml
+Harpo__DatabaseKey: "…per-site secret…"
+```
+
+- **Existing databases are migrated automatically**: on the next start Harpo
+  detects a plaintext file and encrypts it in place (and cleans up the WAL
+  sidecar files, which would otherwise still hold plaintext pages).
+- The key is **per-site** — unlike the master key it does not need to match
+  other sites, and replication is completely unaffected.
+- **Rotate keys** by setting `Harpo__PreviousDatabaseKey` to the old key next
+  to the new `Harpo__DatabaseKey` for one start (the file is rekeyed in place;
+  then remove the previous key from configuration).
+- **Remove encryption** deliberately by adding
+  `Harpo__RemoveDatabaseEncryption: "true"` alongside the current key for one
+  start. A missing or wrong key never silently falls back — Harpo refuses to
+  start with a clear error instead.
+
+Be clear about what this buys: it protects *copied files* — stolen volumes,
+disk images, careless backups. An attacker on the live host can read the key
+from the container environment, exactly like the master key. It is defence in
+depth, not a new trust boundary. (Implementation: the bundled SQLite is the
+SQLCipher community build, which behaves identically to stock SQLite when no
+key is configured.)
+
 ## Configuration reference
 
 All settings can be given as environment variables (`Section__Key` form).
@@ -216,6 +247,9 @@ All settings can be given as environment variables (`Section__Key` form).
 | `ConnectionStrings__Harpo` | `Data Source=harpo.db` (image: `/data/harpo.db`) | SQLite database location |
 | `Harpo__SiteId` | `default` | Unique, stable id of this site |
 | `Harpo__MasterKey` | *(required)* | Base64 32-byte key or passphrase; encrypts passwords at rest; identical on all sites |
+| `Harpo__DatabaseKey` | *(empty = off)* | Optional SQLCipher key encrypting the whole database file; per-site |
+| `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
+| `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
 | `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
@@ -231,7 +265,10 @@ All settings can be given as environment variables (`Section__Key` form).
 - Passwords are encrypted with AES-256-GCM before hitting the database; the
   master key comes from configuration/environment only. Anyone with both the
   database *and* the key can read secrets — protect the key like a domain admin
-  password (Docker secrets, a vault, or locked-down env files).
+  password (Docker secrets, a vault, or locked-down env files). Optionally the
+  whole database file can be SQLCipher-encrypted too (`Harpo__DatabaseKey`) so
+  copied files and backups expose no metadata either — see "Encrypting the
+  database file".
 - Decryption happens **server-side, on explicit reveal/copy actions only**, and
   every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is

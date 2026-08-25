@@ -20,6 +20,14 @@ services:
       # REQUIRED — same value on every replicated site. Generate: openssl rand -base64 32
       Harpo__MasterKey: "${HARPO_MASTER_KEY:?Set HARPO_MASTER_KEY in .env}"
 
+      # Optional: encrypt the SQLite database FILE itself with SQLCipher, so
+      # copied volumes/backups expose nothing (entry names, URLs and usernames
+      # are otherwise plaintext in the file; password values are always
+      # encrypted regardless). Per-site key — it does NOT need to match other
+      # sites. An existing unencrypted database is encrypted automatically on
+      # the next start. See README → "Encrypting the database file".
+      # Harpo__DatabaseKey: "${HARPO_DATABASE_KEY}"
+
       # --- Active Directory ---
       Auth__Mode: "Ldap"
       Auth__Ldap__Server: "dc01.corp.example.com"

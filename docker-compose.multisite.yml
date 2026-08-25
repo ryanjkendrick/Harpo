@@ -41,6 +41,10 @@ services:
     environment:
       <<: *harpo-env
       Harpo__SiteId: "alpha"
+      # Alpha demonstrates optional database-file encryption (SQLCipher).
+      # The key is per-site: beta below runs unencrypted and replication does
+      # not care. An existing plaintext database is encrypted on next start.
+      Harpo__DatabaseKey: "alpha-demo-database-key"
       Replication__Peers__0__Name: "beta"
       Replication__Peers__0__Url: "http://harpo-beta:8080"
     volumes:
