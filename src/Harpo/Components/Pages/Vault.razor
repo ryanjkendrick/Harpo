@@ -6,6 +6,7 @@
 @inject VaultService Passwords
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@implements IDisposable
 
 <PageTitle>Vault · Harpo</PageTitle>
 
@@ -296,6 +297,9 @@
     private string _selectedGroupName = "";
     private string _search = "";
     private readonly Dictionary<Guid, string> _revealed = new();
+    private readonly Dictionary<Guid, CancellationTokenSource> _revealTimers = new();
+    private const int RevealAutoHideSeconds = 30;
+    private const int ClipboardClearMs = 60_000;
 
     private EntryEditModel? _editor;
     private bool _editorIsNew;
@@ -383,6 +387,7 @@
         try
         {
             _revealed[entryId] = await Passwords.RevealPasswordAsync(_user!, entryId);
+            ScheduleAutoHide(entryId, () => _revealed.Remove(entryId));
         }
         catch (Exception ex)
         {
@@ -390,14 +395,63 @@
         }
     }
 
-    private void Hide(Guid entryId) => _revealed.Remove(entryId);
+    private void Hide(Guid entryId)
+    {
+        _revealed.Remove(entryId);
+        CancelAutoHide(entryId);
+    }
+
+    private void ScheduleAutoHide(Guid key, Action hide)
+    {
+        CancelAutoHide(key);
+        var cts = new CancellationTokenSource();
+        _revealTimers[key] = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(RevealAutoHideSeconds), cts.Token);
+                await InvokeAsync(() =>
+                {
+                    hide();
+                    _revealTimers.Remove(key);
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+    }
+
+    private void CancelAutoHide(Guid key)
+    {
+        if (_revealTimers.Remove(key, out var cts))
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        foreach (var cts in _revealTimers.Values)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+        _revealTimers.Clear();
+        _toastCts?.Cancel();
+    }
 
     private async Task CopyPasswordAsync(Guid entryId)
     {
         try
         {
             var plain = await Passwords.RevealPasswordAsync(_user!, entryId, RevealPurpose.Copy);
-            await CopyTextAsync(plain, "Password copied");
+            var ok = await JS.InvokeAsync<bool>("harpoCopy", plain, ClipboardClearMs);
+            ShowToast(ok ? "Password copied — clipboard clears in 60s"
+                         : "Copy failed — your browser may require HTTPS for clipboard access.", isError: !ok);
         }
         catch (Exception ex)
         {
@@ -420,6 +474,7 @@
         try
         {
             _revealedRevisions[revisionId] = await Passwords.RevealRevisionAsync(_user!, _historyEntry.Id, revisionId);
+            ScheduleAutoHide(revisionId, () => _revealedRevisions.Remove(revisionId));
         }
         catch (Exception ex)
         {

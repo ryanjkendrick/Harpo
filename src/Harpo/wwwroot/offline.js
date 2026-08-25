@@ -351,16 +351,22 @@ function renderEntry(entry) {
     row.appendChild(pw);
 
     let shown = false;
+    let hideTimer = null;
     const reveal = document.createElement("button");
     reveal.className = "btn-icon";
     reveal.title = "Reveal";
     reveal.textContent = "👁️";
-    reveal.addEventListener("click", () => {
-        shown = !shown;
+    const setShown = (value) => {
+        shown = value;
         pw.textContent = shown ? (entry.password ?? "(no password)") : "••••••••";
         pw.classList.toggle("shown", shown);
         reveal.textContent = shown ? "🙈" : "👁️";
-    });
+        clearTimeout(hideTimer);
+        if (shown) {
+            hideTimer = setTimeout(() => setShown(false), 30000); // auto-hide
+        }
+    };
+    reveal.addEventListener("click", () => setShown(!shown));
     row.appendChild(reveal);
 
     const copy = document.createElement("button");
@@ -372,14 +378,30 @@ function renderEntry(entry) {
             toast("This entry has no password");
             return;
         }
-        toast(await copyText(entry.password) ? "Password copied" : "Copy failed");
+        toast(await copyText(entry.password, 60000)
+            ? "Password copied — clipboard clears in 60s"
+            : "Copy failed");
     });
     row.appendChild(copy);
 
     return row;
 }
 
-async function copyText(text) {
+let clipboardTimer = null;
+async function copyText(text, clearAfterMs = 0) {
+    const ok = await copyTextCore(text);
+    if (ok && clearAfterMs > 0) {
+        clearTimeout(clipboardTimer);
+        clipboardTimer = setTimeout(() => {
+            try {
+                navigator.clipboard?.writeText(" ").catch(() => { });
+            } catch { }
+        }, clearAfterMs);
+    }
+    return ok;
+}
+
+async function copyTextCore(text) {
     try {
         if (navigator.clipboard && window.isSecureContext) {
             await navigator.clipboard.writeText(text);

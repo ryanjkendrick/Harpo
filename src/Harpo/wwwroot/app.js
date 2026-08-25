@@ -6,7 +6,24 @@ if ("serviceWorker" in navigator) {
 // Copies text to the clipboard; returns true on success.
 // navigator.clipboard needs a secure context (HTTPS or localhost), so fall back
 // to the legacy execCommand path for plain-HTTP deployments behind a proxy.
-window.harpoCopy = async function (text) {
+let harpoClipboardTimer = null;
+window.harpoCopy = async function (text, clearAfterMs = 0) {
+    const ok = await harpoCopyCore(text);
+    if (ok && clearAfterMs > 0) {
+        // Overwrite the clipboard after a delay so a copied password doesn't
+        // linger. Browsers refuse clipboard writes from unfocused pages; if the
+        // user has moved on, the overwrite silently doesn't happen.
+        clearTimeout(harpoClipboardTimer);
+        harpoClipboardTimer = setTimeout(() => {
+            try {
+                navigator.clipboard?.writeText(" ").catch(() => { });
+            } catch { }
+        }, clearAfterMs);
+    }
+    return ok;
+};
+
+async function harpoCopyCore(text) {
     try {
         if (navigator.clipboard && window.isSecureContext) {
             await navigator.clipboard.writeText(text);
