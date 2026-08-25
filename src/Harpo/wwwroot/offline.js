@@ -369,6 +369,51 @@ function renderEntry(entry) {
     reveal.addEventListener("click", () => setShown(!shown));
     row.appendChild(reveal);
 
+    if (entry.totp) {
+        const totpBtn = document.createElement("button");
+        totpBtn.className = "btn-icon";
+        totpBtn.title = "Show 2FA code";
+        totpBtn.textContent = "🕐";
+        const codeEl = document.createElement("span");
+        codeEl.className = "pw shown";
+        codeEl.style.display = "none";
+        let totpTimer = null;
+        const stopTotp = () => {
+            clearInterval(totpTimer);
+            totpTimer = null;
+            codeEl.style.display = "none";
+            totpBtn.textContent = "🕐";
+        };
+        const renderCode = async () => {
+            try {
+                const { code, remaining } = await totpNow(entry.totp);
+                codeEl.textContent = `${code.slice(0, 3)} ${code.slice(3)} · ${remaining}s`;
+            } catch {
+                codeEl.textContent = "2FA error";
+                stopTotp();
+            }
+        };
+        totpBtn.addEventListener("click", async () => {
+            if (totpTimer) {
+                stopTotp();
+                return;
+            }
+            codeEl.style.display = "";
+            totpBtn.textContent = "🙈";
+            await renderCode();
+            const startedAt = Date.now();
+            totpTimer = setInterval(() => {
+                if (Date.now() - startedAt > 120000) {
+                    stopTotp(); // same hygiene as revealed passwords
+                    return;
+                }
+                renderCode();
+            }, 1000);
+        });
+        row.appendChild(codeEl);
+        row.appendChild(totpBtn);
+    }
+
     const copy = document.createElement("button");
     copy.className = "btn-icon";
     copy.title = "Copy password";
@@ -388,6 +433,56 @@ function renderEntry(entry) {
 }
 
 let clipboardTimer = null;
+// ---------- TOTP (RFC 6238 via WebCrypto) ----------
+
+function base32Decode(input) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const cleaned = input.replace(/[\s-]/g, "").replace(/=+$/, "").toUpperCase();
+    let bits = 0, value = 0;
+    const out = [];
+    for (const c of cleaned) {
+        const idx = alphabet.indexOf(c);
+        if (idx < 0) {
+            throw new Error("bad base32");
+        }
+        value = (value << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            out.push((value >> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    return new Uint8Array(out);
+}
+
+function parseTotp(stored) {
+    let secret = stored, digits = 6, period = 30, algorithm = "SHA-1";
+    if (stored.toLowerCase().startsWith("otpauth://")) {
+        const url = new URL(stored);
+        const q = url.searchParams;
+        secret = q.get("secret") || "";
+        digits = parseInt(q.get("digits") || "6", 10);
+        period = parseInt(q.get("period") || "30", 10);
+        const algo = (q.get("algorithm") || "SHA1").toUpperCase();
+        algorithm = algo === "SHA256" ? "SHA-256" : algo === "SHA512" ? "SHA-512" : "SHA-1";
+    }
+    return { key: base32Decode(secret), digits, period, algorithm };
+}
+
+async function totpNow(stored) {
+    const p = parseTotp(stored);
+    const counter = Math.floor(Date.now() / 1000 / p.period);
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setBigUint64(0, BigInt(counter));
+    const key = await crypto.subtle.importKey("raw", p.key, { name: "HMAC", hash: { name: p.algorithm } }, false, ["sign"]);
+    const hash = new Uint8Array(await crypto.subtle.sign("HMAC", key, bytes));
+    const offset = hash[hash.length - 1] & 0x0f;
+    const binary = ((hash[offset] & 0x7f) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
+    const code = String(binary % 10 ** p.digits).padStart(p.digits, "0");
+    const remaining = p.period - (Math.floor(Date.now() / 1000) % p.period);
+    return { code, remaining };
+}
+
 async function copyText(text, clearAfterMs = 0) {
     const ok = await copyTextCore(text);
     if (ok && clearAfterMs > 0) {

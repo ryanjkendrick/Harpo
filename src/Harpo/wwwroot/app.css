@@ -473,6 +473,12 @@ tbody tr:hover { background: var(--bg); }
 .history-caption { margin-top: 0; }
 
 .panel > .search { width: 100%; margin-bottom: .7rem; }
+.totp-code { white-space: nowrap; }
+.totp-remaining { font-size: .78rem; margin-left: .25rem; }
+
+.checkbox-row { flex-direction: column; gap: .35rem; }
+.small { font-size: .83rem; }
+
 .reuse-cluster { margin-top: .6rem; }
 .reuse-entries { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
 .reuse-chip { display: inline-flex; align-items: center; gap: .35rem; font-weight: 600; }

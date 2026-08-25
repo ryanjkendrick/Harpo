@@ -82,6 +82,13 @@ public class PasswordEntry : IReplicatedRow
     /// <summary>The account/login name this password belongs to (not an AD user).</summary>
     public string Username { get; set; } = "";
     public string Notes { get; set; } = "";
+    /// <summary>
+    /// Optional TOTP (2FA) secret — a base32 seed or full otpauth:// URI —
+    /// AES-256-GCM encrypted like passwords. Entry-level rather than versioned:
+    /// unlike an old password, an old TOTP seed is worthless the moment the
+    /// provider re-enrolls, so there is no history worth keeping.
+    /// </summary>
+    public string? EncryptedTotpSecret { get; set; }
     public string CreatedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
     /// <summary>Who last edited the metadata (password changes are tracked on revisions).</summary>

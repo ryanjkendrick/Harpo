@@ -74,7 +74,7 @@ public class VaultService
 
     public async Task<PasswordEntry> CreateEntryAsync(
         UserContext user, Guid groupId, string name, string icon, string url, string username, string notes, string password,
-        CancellationToken ct = default)
+        string totpSecret = "", CancellationToken ct = default)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -85,6 +85,7 @@ public class VaultService
         {
             throw new VaultValidationException("Password is required.");
         }
+        var encryptedTotp = EncryptTotpOrThrow(totpSecret);
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
@@ -99,6 +100,7 @@ public class VaultService
             Url = url.Trim(),
             Username = username.Trim(),
             Notes = notes.Trim(),
+            EncryptedTotpSecret = encryptedTotp,
             CreatedBy = user.Username,
             CreatedAtUtc = now,
             UpdatedBy = user.Username,
@@ -110,15 +112,21 @@ public class VaultService
         return entry;
     }
 
+    /// <summary>
+    /// Metadata update. TOTP semantics: empty <paramref name="totpSecret"/> keeps
+    /// the current 2FA configuration, a value replaces it, <paramref name="clearTotp"/>
+    /// removes it.
+    /// </summary>
     public async Task UpdateEntryAsync(
         UserContext user, Guid entryId, string name, string icon, string url, string username, string notes,
-        CancellationToken ct = default)
+        string totpSecret = "", bool clearTotp = false, CancellationToken ct = default)
     {
         name = name.Trim();
         if (name.Length == 0)
         {
             throw new VaultValidationException("Name is required.");
         }
+        var encryptedTotp = EncryptTotpOrThrow(totpSecret);
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
@@ -127,9 +135,71 @@ public class VaultService
         entry.Url = url.Trim();
         entry.Username = username.Trim();
         entry.Notes = notes.Trim();
+        var totpChanged = false;
+        if (clearTotp && entry.EncryptedTotpSecret is not null)
+        {
+            entry.EncryptedTotpSecret = null;
+            totpChanged = true;
+        }
+        else if (encryptedTotp is not null)
+        {
+            entry.EncryptedTotpSecret = encryptedTotp;
+            totpChanged = true;
+        }
         entry.UpdatedBy = user.Username;
         await db.SaveChangesAsync(ct);
+        if (totpChanged)
+        {
+            await _audit.RecordAsync(user, AuditActions.TotpChange, await DescribeEntryAsync(db, entry, ct),
+                detail: entry.EncryptedTotpSecret is null ? "2FA removed" : "2FA secret set",
+                groupId: entry.GroupId, entryId: entry.Id);
+        }
     }
+
+    private string? EncryptTotpOrThrow(string totpSecret)
+    {
+        if (string.IsNullOrWhiteSpace(totpSecret))
+        {
+            return null;
+        }
+        try
+        {
+            return _crypto.Encrypt(Totp.Normalize(totpSecret));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new VaultValidationException(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Current 2FA code for an entry. Read access suffices (viewers included).
+    /// Audited like a reveal, deduplicated so a code panel refreshing every
+    /// rollover produces one trail event per viewing, not one per 30 seconds.
+    /// </summary>
+    public async Task<TotpCode> GetTotpCodeAsync(UserContext user, Guid entryId, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var entry = await RequireEntryAsync(db, user, entryId, ct);
+        if (entry.EncryptedTotpSecret is null)
+        {
+            throw new VaultNotFoundException("This entry has no 2FA secret.");
+        }
+        var stored = _crypto.Decrypt(entry.EncryptedTotpSecret);
+        var code = Totp.GenerateCurrent(stored, _time.GetUtcNow());
+
+        var auditKey = (user.Username, entryId);
+        var now = _time.GetUtcNow();
+        if (!_recentTotpAudits.TryGetValue(auditKey, out var last) || now - last > TimeSpan.FromMinutes(2))
+        {
+            _recentTotpAudits[auditKey] = now;
+            await _audit.RecordAsync(user, AuditActions.TotpReveal, await DescribeEntryAsync(db, entry, ct),
+                groupId: entry.GroupId, entryId: entry.Id);
+        }
+        return code;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid), DateTimeOffset> _recentTotpAudits = new();
 
     public async Task ChangePasswordAsync(UserContext user, Guid entryId, string newPassword, CancellationToken ct = default)
     {
@@ -304,7 +374,8 @@ public class VaultService
                     e.Notes,
                     latest is null ? null : _crypto.Decrypt(latest.EncryptedPassword),
                     latest?.CreatedBy ?? e.CreatedBy,
-                    latest?.CreatedAtUtc);
+                    latest?.CreatedAtUtc,
+                    e.EncryptedTotpSecret is null ? null : _crypto.Decrypt(e.EncryptedTotpSecret));
             })
             .ToList();
 

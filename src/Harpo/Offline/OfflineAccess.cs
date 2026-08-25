@@ -43,7 +43,8 @@ public sealed record OfflineEntry(
     string Notes,
     string? Password,
     string PasswordUpdatedBy,
-    DateTime? PasswordUpdatedAtUtc);
+    DateTime? PasswordUpdatedAtUtc,
+    string? Totp = null);
 
 /// <summary>
 /// Per-user cooldown for snapshot downloads. A snapshot decrypts the user's whole

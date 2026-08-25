@@ -43,4 +43,6 @@ public static class AuditActions
     public const string MemberRemove = "member.remove";
     public const string MemberRole = "member.role";
     public const string HealthReport = "health.report";
+    public const string TotpReveal = "totp.reveal";
+    public const string TotpChange = "totp.change";
 }

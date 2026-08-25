@@ -186,6 +186,7 @@ public class ReplicationEngine
                 local.Url = incoming.Url;
                 local.Username = incoming.Username;
                 local.Notes = incoming.Notes;
+                local.EncryptedTotpSecret = incoming.EncryptedTotpSecret;
                 local.CreatedBy = incoming.CreatedBy;
                 local.CreatedAtUtc = incoming.CreatedAtUtc;
                 local.UpdatedBy = incoming.UpdatedBy;

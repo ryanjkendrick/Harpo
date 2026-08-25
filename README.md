@@ -28,6 +28,9 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
 - **Audit log** — who revealed, copied, or deleted what, when, from where;
   append-only, replicated to every site, browsable by site admins, with
   configurable retention — and an admin kill switch.
+- **2FA codes (TOTP)** — entries can hold an authenticator secret and show the
+  live 6-digit code with a countdown, so shared accounts with 2FA are fully
+  usable by exactly the people in the group. Works in the offline vault too.
 - **Vault health report** — weak, reused, and stale passwords across the org,
   computed from keyed fingerprints and stored strength scores so nothing is
   decrypted to build the page. Site admins see everything; group admins see
@@ -303,6 +306,34 @@ replicated from other sites) remain visible. Retention purges run daily per
 site. Recording is fail-open by design: an audit-write failure is logged loudly
 but never blocks the user's operation. Password *changes* aren't audit events —
 they're already permanently attributed in each entry's revision history.
+
+## 2FA codes (TOTP)
+
+Shared accounts often have 2FA, and then the *second factor* becomes the thing
+the team can't share cleanly. Harpo entries can store the authenticator secret
+— paste either the bare base32 seed or the full `otpauth://` URI from the
+provider's "can't scan?" link into the entry editor. Entries with 2FA show a 🕐
+chip in the vault; clicking it reveals the current code with a countdown,
+refreshing at each rollover and hiding itself after two minutes.
+
+- Codes are RFC 6238 (SHA-1/256/512, 6–8 digits, custom periods all honoured)
+  and generated **server-side** — the seed never reaches the browser online.
+  The implementation is dependency-free and pinned by the RFC's official test
+  vectors.
+- Seeds are AES-256-GCM encrypted like passwords, replicate with the entry,
+  and are included in the encrypted **offline vault** snapshot, where codes are
+  generated locally via WebCrypto — an outage is exactly when you need
+  break-glass access *including* the second factor.
+- Viewers can see codes (read access); setting or removing a seed needs write
+  rights and lands in the audit trail (`totp.change`). Showing codes is audited
+  as `totp.reveal`, deduplicated to one event per viewing rather than one per
+  30-second tick.
+
+Be clear-eyed about the trade-off: storing the password *and* its second factor
+together collapses that account's 2FA to one factor for anyone who compromises
+the group. For shared accounts the realistic alternative is seeds in
+spreadsheets and screenshots — unencrypted, unaudited, unmanaged — so Harpo is
+the better home for them. Keep personal high-value 2FA on a separate device.
 
 ## Vault health report
 

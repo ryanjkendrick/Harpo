@@ -138,6 +138,24 @@
                                         }
                                         <button class="btn btn-icon" title="Copy password"
                                                 @onclick="() => CopyPasswordAsync(entry.Id)">📋</button>
+                                        @if (entry.EncryptedTotpSecret is not null)
+                                        {
+                                            @if (_totp.TryGetValue(entry.Id, out var totp))
+                                            {
+                                                <span class="totp-code" title="Current 2FA code">
+                                                    <code class="mono revealed">@FormatTotp(totp.Code)</code>
+                                                    <span class="muted totp-remaining">@(totp.Remaining)s</span>
+                                                </span>
+                                                <button class="btn btn-icon" title="Copy 2FA code"
+                                                        @onclick='() => CopyTextAsync(totp.Code, "2FA code copied")'>📋</button>
+                                                <button class="btn btn-icon" title="Hide 2FA code" @onclick="() => HideTotp(entry.Id)">🙈</button>
+                                            }
+                                            else
+                                            {
+                                                <button class="btn btn-icon totp-chip" title="Show 2FA code"
+                                                        @onclick="() => ShowTotpAsync(entry.Id)">🕐</button>
+                                            }
+                                        }
                                     </td>
                                     <td class="cell-updated" title="@FullTime(view.PasswordUpdatedAtUtc)">
                                         <span class="mono">@view.PasswordUpdatedBy</span>
@@ -220,6 +238,21 @@
                 </span>
             </label>
             <label class="field">
+                <span class="field-label">2FA secret (TOTP) — optional</span>
+                <input class="mono" @bind="_editor.Totp"
+                       placeholder="base32 secret or otpauth:// URI" autocomplete="off" />
+            </label>
+            @if (!_editorIsNew && _editorHasTotp)
+            {
+                <label class="field checkbox-row">
+                    <span class="muted small">
+                        2FA is configured on this entry. Leave the field blank to keep it,
+                        paste a new secret to replace it, or remove it:
+                    </span>
+                    <span><input type="checkbox" @bind="_editor.RemoveTotp" /> Remove 2FA</span>
+                </label>
+            }
+            <label class="field">
                 <span class="field-label">Notes</span>
                 <textarea rows="2" @bind="_editor.Notes"></textarea>
             </label>
@@ -298,6 +331,16 @@
     private string _search = "";
     private readonly Dictionary<Guid, string> _revealed = new();
     private readonly Dictionary<Guid, CancellationTokenSource> _revealTimers = new();
+    private readonly Dictionary<Guid, TotpDisplay> _totp = new();
+    private System.Threading.Timer? _totpTimer;
+    private bool _editorHasTotp;
+
+    private sealed class TotpDisplay
+    {
+        public string Code = "";
+        public int Remaining;
+        public DateTimeOffset ShownAtUtc;
+    }
     private const int RevealAutoHideSeconds = 30;
     private const int ClipboardClearMs = 60_000;
 
@@ -441,6 +484,7 @@
             cts.Dispose();
         }
         _revealTimers.Clear();
+        _totpTimer?.Dispose();
         _toastCts?.Cancel();
     }
 
@@ -496,6 +540,7 @@
         _editorIsNew = false;
         _editorEntryId = entry.Id;
         _editorError = null;
+        _editorHasTotp = entry.EncryptedTotpSecret is not null;
         _editor = new EntryEditModel
         {
             Name = entry.Name,
@@ -527,13 +572,15 @@
             if (_editorIsNew)
             {
                 await Passwords.CreateEntryAsync(_user!, SelectedGroupId.Value,
-                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes, _editor.Password);
+                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes, _editor.Password,
+                    _editor.Totp);
                 ShowToast("Password created");
             }
             else
             {
                 await Passwords.UpdateEntryAsync(_user!, _editorEntryId,
-                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes);
+                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes,
+                    _editor.Totp, _editor.RemoveTotp);
                 if (_editor.Password.Length > 0)
                 {
                     await Passwords.ChangePasswordAsync(_user!, _editorEntryId, _editor.Password);
@@ -673,5 +720,79 @@
         public string Username { get; set; } = "";
         public string Notes { get; set; } = "";
         public string Password { get; set; } = "";
+        public string Totp { get; set; } = "";
+        public bool RemoveTotp { get; set; }
     }
+
+    // ---- TOTP display: tick every second, refetch at rollover, close after 2 minutes ----
+
+    private async Task ShowTotpAsync(Guid entryId)
+    {
+        await FetchTotpAsync(entryId, markShown: true);
+        _totpTimer ??= new System.Threading.Timer(_ => _ = OnTotpTickAsync(), null,
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void HideTotp(Guid entryId)
+    {
+        _totp.Remove(entryId);
+        if (_totp.Count == 0)
+        {
+            _totpTimer?.Dispose();
+            _totpTimer = null;
+        }
+    }
+
+    private async Task FetchTotpAsync(Guid entryId, bool markShown)
+    {
+        try
+        {
+            var code = await Passwords.GetTotpCodeAsync(_user!, entryId);
+            var shownAt = markShown || !_totp.TryGetValue(entryId, out var existing)
+                ? DateTimeOffset.UtcNow
+                : existing.ShownAtUtc;
+            _totp[entryId] = new TotpDisplay { Code = code.Code, Remaining = code.SecondsRemaining, ShownAtUtc = shownAt };
+        }
+        catch (Exception ex)
+        {
+            _totp.Remove(entryId);
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    private async Task OnTotpTickAsync()
+    {
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                foreach (var (entryId, display) in _totp.ToList())
+                {
+                    if (now - display.ShownAtUtc > TimeSpan.FromMinutes(2))
+                    {
+                        HideTotp(entryId); // reveal hygiene: don't stay open forever
+                        continue;
+                    }
+                    display.Remaining--;
+                    if (display.Remaining <= 0)
+                    {
+                        await FetchTotpAsync(entryId, markShown: false);
+                    }
+                }
+                if (_totp.Count == 0)
+                {
+                    _totpTimer?.Dispose();
+                    _totpTimer = null;
+                }
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private static string FormatTotp(string code) =>
+        code.Length == 6 ? $"{code[..3]} {code[3..]}" : $"{code[..(code.Length / 2)]} {code[(code.Length / 2)..]}";
 }
