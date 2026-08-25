@@ -108,7 +108,7 @@
                                 var entry = view.Entry;
                                 <tr>
                                     <td class="cell-name" title="@entry.Notes">
-                                        <span class="entry-icon">@(string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon)</span>
+                                        <EntryIcon Icon="@entry.Icon" />
                                         <span class="entry-name">@entry.Name</span>
                                     </td>
                                     <td class="cell-username">
@@ -192,7 +192,7 @@
                                 {
                                     <tr>
                                         <td class="cell-name">
-                                            <span class="entry-icon">@(string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon)</span>
+                                            <EntryIcon Icon="@entry.Icon" />
                                             <span class="entry-name">@entry.Name</span>
                                         </td>
                                         <td class="muted">deleted by <span class="mono">@entry.UpdatedBy</span> · @Relative(entry.UpdatedAtUtc)</td>
@@ -220,7 +220,7 @@
             </label>
             <label class="field">
                 <span class="field-label">Icon</span>
-                <IconPicker @bind-Value="_editor.Icon" />
+                <IconPicker @bind-Value="_editor.Icon" User="_user" />
             </label>
             <label class="field">
                 <span class="field-label">URL</span>

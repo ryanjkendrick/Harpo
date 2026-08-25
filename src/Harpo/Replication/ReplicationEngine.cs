@@ -58,6 +58,7 @@ public class ReplicationEngine
         origins.UnionWith(await db.PasswordEntries.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.UnionWith(await db.PasswordRevisions.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.UnionWith(await db.AuditEvents.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
+        origins.UnionWith(await db.CustomIcons.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.Remove("");
 
         foreach (var origin in origins.OrderBy(o => o, StringComparer.Ordinal))
@@ -79,12 +80,16 @@ public class ReplicationEngine
             var audits = await db.AuditEvents.AsNoTracking()
                 .Where(x => x.OriginSiteId == origin && x.OriginSeq > since)
                 .OrderBy(x => x.OriginSeq).Take(limit + 1).ToListAsync(ct);
+            var icons = await db.CustomIcons.AsNoTracking()
+                .Where(x => x.OriginSiteId == origin && x.OriginSeq > since)
+                .OrderBy(x => x.OriginSeq).Take(limit + 1).ToListAsync(ct);
 
             var merged = groups.Cast<IReplicatedRow>()
                 .Concat(members)
                 .Concat(entries)
                 .Concat(revisions)
                 .Concat(audits)
+                .Concat(icons)
                 .OrderBy(r => r.OriginSeq)
                 .ToList();
 
@@ -106,6 +111,7 @@ public class ReplicationEngine
                     case PasswordEntry e: response.Entries.Add(e); break;
                     case PasswordRevision r: response.Revisions.Add(r); break;
                     case AuditEvent a: response.Audits.Add(a); break;
+                    case CustomIcon i: response.Icons.Add(i); break;
                 }
             }
         }
@@ -215,6 +221,27 @@ public class ReplicationEngine
             if (!exists)
             {
                 db.AuditEvents.Add(incoming);
+                accepted++;
+            }
+        }
+
+        foreach (var incoming in response.Icons)
+        {
+            Track(highWater, incoming);
+            var local = await db.CustomIcons.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
+            if (local is null)
+            {
+                db.CustomIcons.Add(incoming);
+                accepted++;
+            }
+            else if (IncomingWins(incoming, local))
+            {
+                local.Name = incoming.Name;
+                local.ContentType = incoming.ContentType;
+                local.Data = incoming.Data;
+                local.CreatedBy = incoming.CreatedBy;
+                local.CreatedAtUtc = incoming.CreatedAtUtc;
+                CopyStamps(incoming, local);
                 accepted++;
             }
         }

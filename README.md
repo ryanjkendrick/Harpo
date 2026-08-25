@@ -18,7 +18,11 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   been added to a group can see its passwords. Group admins manage membership;
   any user can create a group and becomes its admin.
 - **Named, decorated entries** — every password has a name, an icon, the URL it
-  belongs to, an account username, and free-text notes. The built-in generator
+  belongs to, an account username, and free-text notes. Icons come from emoji
+  or an org-wide **custom icon catalogue**: anyone can upload small images
+  (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
+  picker, they replicate to every site, and site admins curate the catalogue
+  from the Administration page. The built-in generator
   is configurable (length 8–64, character classes, ambiguous-character
   avoidance; preferences remembered per browser) and the editor shows a live
   strength rating as you type.
@@ -290,6 +294,7 @@ record captures:
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
 | `entry.delete` / `group.delete` | something is deleted |
 | `member.add` / `member.remove` / `member.role` | group access changes |
+| `icon.add` / `icon.delete` | the custom icon catalogue changes |
 
 Each event stores who, when, what (denormalized names, so the trail outlives
 renames and deletions), the site it happened on, and a best-effort client

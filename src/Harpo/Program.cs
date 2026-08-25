@@ -51,6 +51,7 @@ builder.Services.AddHostedService<AuditRetentionService>();
 builder.Services.AddSingleton<GroupService>();
 builder.Services.AddSingleton<VaultService>();
 builder.Services.AddSingleton<HealthService>();
+builder.Services.AddSingleton<IconService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
 
 // ---- Authentication: LDAP bind against Active Directory (or dev users for local testing) ----
@@ -131,6 +132,21 @@ app.MapReplicationEndpoints();
 app.MapOfflineEndpoints();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
+
+// Catalogue icons. Immutable per id, so clients may cache hard. The headers
+// neuter scripted SVGs even when the URL is opened directly.
+app.MapGet("/api/icons/{id:guid}", async (Guid id, IconService icons, HttpContext http, CancellationToken ct) =>
+{
+    var icon = await icons.GetDataAsync(id, ct);
+    if (icon is null)
+    {
+        return Results.NotFound();
+    }
+    http.Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    http.Response.Headers.CacheControl = "private, max-age=86400, immutable";
+    return Results.File(icon.Value.Data, icon.Value.ContentType);
+}).RequireAuthorization();
 
 app.MapPost("/logout", async (HttpContext context, IAntiforgery antiforgery) =>
 {

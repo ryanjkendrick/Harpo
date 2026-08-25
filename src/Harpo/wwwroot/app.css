@@ -553,6 +553,30 @@ tbody tr:hover { background: var(--bg); }
 
 .icon-free { width: 3.4rem; text-align: center; }
 
+.entry-icon-img {
+    width: 1.35rem;
+    height: 1.35rem;
+    object-fit: contain;
+    vertical-align: middle;
+    border-radius: 4px;
+}
+
+.icon-option .entry-icon-img { width: 1.25rem; height: 1.25rem; display: block; }
+
+.icon-upload {
+    font-size: 1rem;
+    font-weight: 700;
+    background: var(--panel);
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: .25rem .55rem;
+    cursor: pointer;
+    color: var(--muted);
+}
+
+.icon-upload:hover { border-color: var(--accent); color: var(--accent); }
+.icon-upload input[type=file] { display: none; }
+
 /* ---------- misc ---------- */
 
 .empty-state {

@@ -1,4 +1,7 @@
-@* Emoji icon picker: preset grid plus free entry. *@
+@* Icon picker: emoji presets, the org's custom icon catalogue, free emoji entry,
+   and an inline upload that adds straight to the catalogue. *@
+@inject IconService Icons
+
 <div class="icon-picker">
     @foreach (var icon in Presets)
     {
@@ -6,11 +9,34 @@
                 class="icon-option @(icon == Value ? "selected" : "")"
                 @onclick="() => SelectAsync(icon)">@icon</button>
     }
+    @if (_catalogue is not null)
+    {
+        @foreach (var icon in _catalogue)
+        {
+            <button type="button"
+                    class="icon-option @(Reference(icon) == Value ? "selected" : "")"
+                    title="@icon.Name"
+                    @onclick="() => SelectAsync(Reference(icon))">
+                <img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" loading="lazy" />
+            </button>
+        }
+    }
     <input class="icon-free" maxlength="4" placeholder="…"
-           value="@Value"
+           value="@(Value.StartsWith(CustomIcon.ReferencePrefix) ? "" : Value)"
            @onchange='e => SelectAsync(e.Value?.ToString() ?? "")'
            title="Or type any emoji" />
+    @if (User is not null)
+    {
+        <label class="icon-upload" title="Add an image to the org-wide icon catalogue (≤64 KB)">
+            ＋
+            <InputFile OnChange="UploadAsync" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" />
+        </label>
+    }
 </div>
+@if (_uploadError is not null)
+{
+    <div class="alert alert-error">@_uploadError</div>
+}
 
 @code {
     private static readonly string[] Presets =
@@ -20,10 +46,54 @@
 
     [Parameter] public string Value { get; set; } = "🔐";
     [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    /// <summary>Enables uploading when the host page provides the caller's identity.</summary>
+    [Parameter] public UserContext? User { get; set; }
+
+    private List<IconSummary>? _catalogue;
+    private string? _uploadError;
+
+    protected override async Task OnInitializedAsync() =>
+        _catalogue = await Icons.GetAllAsync();
+
+    private static string Reference(IconSummary icon) =>
+        CustomIcon.ReferencePrefix + icon.Id.ToString("N");
 
     private async Task SelectAsync(string icon)
     {
         Value = string.IsNullOrWhiteSpace(icon) ? "🔐" : icon.Trim();
         await ValueChanged.InvokeAsync(Value);
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs e)
+    {
+        _uploadError = null;
+        if (User is null)
+        {
+            return;
+        }
+        try
+        {
+            var file = e.File;
+            if (file.Size > CustomIcon.MaxBytes)
+            {
+                _uploadError = $"Icons are capped at {CustomIcon.MaxBytes / 1024} KB — resize the image first.";
+                return;
+            }
+            await using var stream = file.OpenReadStream(CustomIcon.MaxBytes);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+            var name = Path.GetFileNameWithoutExtension(file.Name);
+            var icon = await Icons.AddAsync(User, name, file.ContentType, buffer.ToArray());
+            _catalogue = await Icons.GetAllAsync();
+            await SelectAsync(icon.Reference);
+        }
+        catch (VaultValidationException ex)
+        {
+            _uploadError = ex.Message;
+        }
+        catch (Exception)
+        {
+            _uploadError = "Upload failed — try a different image.";
+        }
     }
 }

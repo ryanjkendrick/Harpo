@@ -327,7 +327,8 @@ function renderEntry(entry) {
 
     const icon = document.createElement("span");
     icon.className = "icon";
-    icon.textContent = entry.icon || "🔐";
+    // Catalogue icons ("icon:{id}") live on the server; offline we show the default glyph.
+    icon.textContent = !entry.icon || entry.icon.startsWith("icon:") ? "🔐" : entry.icon;
     row.appendChild(icon);
 
     const who = document.createElement("div");

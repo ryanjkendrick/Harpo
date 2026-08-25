@@ -52,6 +52,7 @@ public sealed class TestSite : IDisposable
     public GroupService Groups { get; }
     public VaultService Vault { get; }
     public HealthService Health { get; }
+    public IconService Icons { get; }
     public ReplicationEngine Engine { get; }
 
     private readonly SqliteConnection _connection;
@@ -78,6 +79,7 @@ public sealed class TestSite : IDisposable
             Options.Create(new HealthOptions()));
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
             NullLogger<HealthService>.Instance);
+        Icons = new IconService(Db, Time, Audit);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),

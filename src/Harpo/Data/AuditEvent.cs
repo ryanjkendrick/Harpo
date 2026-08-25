@@ -45,4 +45,6 @@ public static class AuditActions
     public const string HealthReport = "health.report";
     public const string TotpReveal = "totp.reveal";
     public const string TotpChange = "totp.change";
+    public const string IconAdd = "icon.add";
+    public const string IconDelete = "icon.delete";
 }

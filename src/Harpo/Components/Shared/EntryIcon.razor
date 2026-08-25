@@ -1,0 +1,14 @@
+@* Renders an entry icon: either an emoji or a catalogue reference ("icon:{id}").
+   The alt text doubles as the fallback glyph if a referenced icon was deleted. *@
+@if (CustomIcon.ParseReference(Icon) is { } id)
+{
+    <img class="entry-icon-img" src="/api/icons/@id" alt="🔐" loading="lazy" />
+}
+else
+{
+    <span class="entry-icon">@(string.IsNullOrEmpty(Icon) ? "🔐" : Icon)</span>
+}
+
+@code {
+    [Parameter] public string? Icon { get; set; }
+}
