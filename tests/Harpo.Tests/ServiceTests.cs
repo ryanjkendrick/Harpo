@@ -164,6 +164,51 @@ public class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Deleted_entries_appear_in_trash_and_can_be_restored()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        await _site.Vault.DeleteEntryAsync(_alice, entry.Id);
+
+        var trash = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id);
+        Assert.Equal(entry.Id, Assert.Single(trash).Id);
+
+        // Viewers have no trash access; restore requires write rights.
+        await _site.Groups.AddMemberAsync(_alice, group.Id, "bob", "", GroupRole.Viewer);
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Vault.GetDeletedEntriesAsync(_bob, group.Id));
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Vault.RestoreEntryAsync(_bob, entry.Id));
+
+        await _site.Vault.RestoreEntryAsync(_alice, entry.Id);
+        Assert.Single(await _site.Vault.GetEntriesAsync(_alice, group.Id));
+        Assert.Empty(await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id));
+        Assert.Equal("pw1", await _site.Vault.RevealPasswordAsync(_alice, entry.Id));
+    }
+
+    [Fact]
+    public async Task Deleted_groups_can_be_restored_by_site_admins_only()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        await _site.Groups.DeleteGroupAsync(_alice, group.Id);
+
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Groups.GetDeletedGroupsAsync(_alice));
+        await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Groups.RestoreGroupAsync(_alice, group.Id));
+
+        var deleted = await _site.Groups.GetDeletedGroupsAsync(_admin);
+        Assert.Equal(group.Id, Assert.Single(deleted).Id);
+
+        await _site.Groups.RestoreGroupAsync(_admin, group.Id);
+        // The group and its surviving entries come back for its members.
+        var mine = await _site.Groups.GetMyGroupsAsync(_alice);
+        Assert.Equal(group.Id, Assert.Single(mine).Group.Id);
+        Assert.Single(await _site.Vault.GetEntriesAsync(_alice, group.Id));
+
+        // Both restores landed in the audit trail.
+        var actions = (await _site.Audit.GetEventsAsync(_admin)).Select(e => e.Action).ToList();
+        Assert.Contains(AuditActions.GroupRestore, actions);
+    }
+
+    [Fact]
     public async Task Deleted_group_disappears_from_listings()
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");

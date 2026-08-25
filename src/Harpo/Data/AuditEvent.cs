@@ -36,7 +36,9 @@ public static class AuditActions
     public const string RevisionReveal = "revision.reveal";
     public const string OfflineSync = "offline.sync";
     public const string EntryDelete = "entry.delete";
+    public const string EntryRestore = "entry.restore";
     public const string GroupDelete = "group.delete";
+    public const string GroupRestore = "group.restore";
     public const string MemberAdd = "member.add";
     public const string MemberRemove = "member.remove";
     public const string MemberRole = "member.role";

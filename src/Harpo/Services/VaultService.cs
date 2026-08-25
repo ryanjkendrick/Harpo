@@ -156,6 +156,34 @@ public class VaultService
             groupId: entry.GroupId, entryId: entry.Id);
     }
 
+    /// <summary>Tombstoned entries of a live group, newest first. Requires write rights (viewers have no trash).</summary>
+    public async Task<List<PasswordEntry>> GetDeletedEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
+        return await db.PasswordEntries
+            .Where(e => e.GroupId == groupId && e.IsDeleted)
+            .OrderByDescending(e => e.UpdatedAtUtc)
+            .Take(50)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>Undoes a delete — tombstones replicate, so this works on any site and syncs everywhere.</summary>
+    public async Task RestoreEntryAsync(UserContext user, Guid entryId, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && e.IsDeleted, ct)
+            ?? throw new VaultNotFoundException("Deleted entry not found.");
+        await RequireMemberAsync(db, user, entry.GroupId, ct, requireWrite: true);
+        entry.IsDeleted = false;
+        entry.UpdatedBy = user.Username;
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("{User} restored entry {Entry}", user.Username, entryId);
+        await _audit.RecordAsync(
+            user, AuditActions.EntryRestore, await DescribeEntryAsync(db, entry, ct),
+            groupId: entry.GroupId, entryId: entry.Id);
+    }
+
     /// <summary>Decrypts the current password of an entry (and audits the access).</summary>
     public async Task<string> RevealPasswordAsync(
         UserContext user, Guid entryId, RevealPurpose purpose = RevealPurpose.View, CancellationToken ct = default)

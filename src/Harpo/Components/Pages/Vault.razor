@@ -162,6 +162,31 @@
                     </table>
                 </div>
             }
+            @if (CanEdit && _deletedEntries is { Count: > 0 })
+            {
+                <details class="trash">
+                    <summary class="muted">🗑 Recently deleted (@_deletedEntries.Count)</summary>
+                    <div class="table-scroll">
+                        <table>
+                            <tbody>
+                                @foreach (var entry in _deletedEntries)
+                                {
+                                    <tr>
+                                        <td class="cell-name">
+                                            <span class="entry-icon">@(string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon)</span>
+                                            <span class="entry-name">@entry.Name</span>
+                                        </td>
+                                        <td class="muted">deleted by <span class="mono">@entry.UpdatedBy</span> · @Relative(entry.UpdatedAtUtc)</td>
+                                        <td class="cell-actions">
+                                            <button class="btn btn-ghost btn-sm" @onclick="() => RestoreEntryAsync(entry)">Restore</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            }
         }
     </div>
 </div>
@@ -267,6 +292,7 @@
     private UserContext? _user;
     private List<GroupSummary>? _groups;
     private List<EntryView>? _entries;
+    private List<PasswordEntry>? _deletedEntries;
     private string _selectedGroupName = "";
     private string _search = "";
     private readonly Dictionary<Guid, string> _revealed = new();
@@ -340,6 +366,7 @@
         {
             _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
             _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
+            _deletedEntries = CanEdit ? await Passwords.GetDeletedEntriesAsync(_user, groupId.Value) : null;
             _revealed.Clear();
         }
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
@@ -468,6 +495,20 @@
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
         {
             _editorError = ex.Message;
+        }
+    }
+
+    private async Task RestoreEntryAsync(PasswordEntry entry)
+    {
+        try
+        {
+            await Passwords.RestoreEntryAsync(_user!, entry.Id);
+            ShowToast($"\"{entry.Name}\" restored");
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
         }
     }
 

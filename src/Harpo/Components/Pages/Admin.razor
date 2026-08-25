@@ -169,6 +169,28 @@
         }
     </section>
 
+    @if (_deletedGroups is { Count: > 0 })
+    {
+        <section class="panel">
+            <h2>Deleted groups</h2>
+            <p class="muted">Restoring a group brings back the passwords that were not deleted individually.</p>
+            <div class="card-list">
+                @foreach (var g in _deletedGroups)
+                {
+                    <div class="card group-card">
+                        <div class="group-card-main">
+                            <span class="group-card-name">@g.Name</span>
+                            <span class="muted">deleted @Relative(g.UpdatedAtUtc)</span>
+                        </div>
+                        <div class="group-card-meta">
+                            <button class="btn btn-ghost btn-sm" @onclick="() => RestoreGroupAsync(g)">Restore</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+
     <section class="panel">
         <h2>All groups</h2>
         @if (_groups is null)
@@ -203,6 +225,7 @@
     private ReplicationStatusResponse? _status;
     private List<GroupSummary>? _groups;
     private List<AuditEvent>? _auditEvents;
+    private List<Group>? _deletedGroups;
     private bool _auditHasMore;
     private string _auditFilter = "";
     private Timer? _refreshTimer;
@@ -261,6 +284,7 @@
         _status = await Engine.GetStatusAsync();
         _auditEvents = await Audit.GetEventsAsync(_user, take: AuditPageSize);
         _auditHasMore = _auditEvents.Count == AuditPageSize;
+        _deletedGroups = await Groups.GetDeletedGroupsAsync(_user);
         _refreshTimer = new Timer(_ => _ = RefreshAsync(), null,
             TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
@@ -279,6 +303,14 @@
         catch (ObjectDisposedException)
         {
         }
+    }
+
+    private async Task RestoreGroupAsync(Group group)
+    {
+        await Groups.RestoreGroupAsync(_user!, group.Id);
+        _groups = await Groups.GetMyGroupsAsync(_user!);
+        _deletedGroups = await Groups.GetDeletedGroupsAsync(_user!);
+        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
     }
 
     public void Dispose() => _refreshTimer?.Dispose();

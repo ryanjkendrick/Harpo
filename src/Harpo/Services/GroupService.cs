@@ -133,6 +133,36 @@ public class GroupService
         await _audit.RecordAsync(user, AuditActions.GroupDelete, group.Name, groupId: groupId);
     }
 
+    /// <summary>Tombstoned groups, newest first. Site admins only.</summary>
+    public async Task<List<Group>> GetDeletedGroupsAsync(UserContext user, CancellationToken ct = default)
+    {
+        if (!user.IsSiteAdmin)
+        {
+            throw new VaultAccessDeniedException("Only site admins can see deleted groups.");
+        }
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        return await db.Groups
+            .Where(g => g.IsDeleted)
+            .OrderByDescending(g => g.UpdatedAtUtc)
+            .Take(50)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>Restores a deleted group; its entries that were not individually deleted come back with it.</summary>
+    public async Task RestoreGroupAsync(UserContext user, Guid groupId, CancellationToken ct = default)
+    {
+        if (!user.IsSiteAdmin)
+        {
+            throw new VaultAccessDeniedException("Only site admins can restore deleted groups.");
+        }
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && g.IsDeleted, ct)
+            ?? throw new VaultNotFoundException("Deleted group not found.");
+        group.IsDeleted = false;
+        await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.GroupRestore, group.Name, groupId: groupId);
+    }
+
     public async Task<List<GroupMember>> GetMembersAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
         await GetGroupAsync(user, groupId, ct); // access check
