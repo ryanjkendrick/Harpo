@@ -24,6 +24,7 @@ builder.Services.AddCascadingAuthenticationState();
 // ---- Options ----
 builder.Services.Configure<SiteOptions>(builder.Configuration.GetSection("Harpo"));
 builder.Services.Configure<Harpo.Offline.OfflineOptions>(builder.Configuration.GetSection("Harpo:Offline"));
+builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Harpo:Audit"));
 builder.Services.Configure<ReplicationOptions>(builder.Configuration.GetSection("Replication"));
 builder.Services.Configure<LdapOptions>(builder.Configuration.GetSection("Auth:Ldap"));
 builder.Services.Configure<DevAuthOptions>(builder.Configuration.GetSection("Auth"));
@@ -37,7 +38,10 @@ builder.Services.AddDbContextFactory<HarpoDbContext>(options => options.UseSqlit
 builder.Services.AddSingleton(TimeProvider.System);
 
 // ---- Domain services ----
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<CryptoService>();
+builder.Services.AddSingleton<AuditService>();
+builder.Services.AddHostedService<AuditRetentionService>();
 builder.Services.AddSingleton<GroupService>();
 builder.Services.AddSingleton<VaultService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
@@ -100,7 +104,7 @@ if (devAuth)
 // Encrypt / rekey / decrypt the database file to match configuration, then init.
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
-    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString);
+    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
 
 if (!app.Environment.IsDevelopment())
 {

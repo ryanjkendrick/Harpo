@@ -23,6 +23,9 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   their own Harpo with their own database and continuously merge changes, AD-style.
 - **Encrypted at rest** — password values are AES-256-GCM encrypted under a
   master key that never lives in the database.
+- **Audit log** — who revealed, copied, or deleted what, when, from where;
+  append-only, replicated to every site, browsable by site admins, with
+  configurable retention — and an admin kill switch.
 - **Installable PWA with an offline vault** — users can keep an encrypted,
   passphrase-protected, read-only copy of their passwords on their device for
   when the server (or the network) is down. Admins can forbid this org-wide
@@ -238,6 +241,38 @@ depth, not a new trust boundary. (Implementation: the bundled SQLite is the
 SQLCipher community build, which behaves identically to stock SQLite when no
 key is configured.)
 
+## Audit log
+
+Harpo records the events that matter for a password manager — the ones no other
+record captures:
+
+| Action | Recorded when |
+| --- | --- |
+| `password.reveal` / `password.copy` | someone views or copies a current password |
+| `revision.reveal` | someone views a historical password value |
+| `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
+| `entry.delete` / `group.delete` | something is deleted |
+| `member.add` / `member.remove` / `member.role` | group access changes |
+
+Each event stores who, when, what (denormalized names, so the trail outlives
+renames and deletions), the site it happened on, and a best-effort client
+address. Events are **append-only and replicate between sites** like password
+revisions, so every site's admins see the whole organisation's trail on the
+**Administration** page (filterable, newest first).
+
+Controls:
+
+```yaml
+Harpo__Audit__Enabled: "false"     # stop recording on this site
+Harpo__Audit__RetentionDays: "90"  # hard-delete older events (default 365; 0 = keep forever)
+```
+
+The toggle governs *recording on that site*; events already recorded (or
+replicated from other sites) remain visible. Retention purges run daily per
+site. Recording is fail-open by design: an audit-write failure is logged loudly
+but never blocks the user's operation. Password *changes* aren't audit events —
+they're already permanently attributed in each entry's revision history.
+
 ## Configuration reference
 
 All settings can be given as environment variables (`Section__Key` form).
@@ -251,6 +286,8 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
 | `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
 | `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist |
+| `Harpo__Audit__Enabled` | `true` | Record audit events (reveals, copies, deletions, membership changes) on this site |
+| `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
@@ -311,8 +348,11 @@ auth, and a throwaway master key.
 - **SQLite, one writer** — each site's container owns its database file; scale-out
   within a site (multiple replicas of one site) is not supported. Multiple
   *sites* are the scaling model.
-- **Schema** is created with `EnsureCreated` for simplicity; moving to EF
-  migrations is the natural next step before schema-evolving upgrades.
+- **Schema** is managed with EF Core migrations, applied automatically at
+  startup. Databases created by older Harpo versions (pre-migrations) are
+  baselined automatically on first start. When upgrading a replicated
+  deployment, upgrade sites one at a time; the replication protocol tolerates
+  peers that don't yet know about newer tables.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Deleting a group** tombstones the group; its entries stop being visible

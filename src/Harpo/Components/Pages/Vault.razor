@@ -350,7 +350,7 @@
     {
         try
         {
-            var plain = await Passwords.RevealPasswordAsync(_user!, entryId);
+            var plain = await Passwords.RevealPasswordAsync(_user!, entryId, RevealPurpose.Copy);
             await CopyTextAsync(plain, "Password copied");
         }
         catch (Exception ex)

@@ -20,10 +20,11 @@ public sealed class PullResponse
     public List<GroupMember> Members { get; set; } = new();
     public List<PasswordEntry> Entries { get; set; } = new();
     public List<PasswordRevision> Revisions { get; set; } = new();
+    public List<AuditEvent> Audits { get; set; } = new();
     /// <summary>True when at least one origin was truncated at the batch limit — pull again.</summary>
     public bool HasMore { get; set; }
 
-    public int RowCount => Groups.Count + Members.Count + Entries.Count + Revisions.Count;
+    public int RowCount => Groups.Count + Members.Count + Entries.Count + Revisions.Count + Audits.Count;
 }
 
 public sealed class ReplicationStatusResponse

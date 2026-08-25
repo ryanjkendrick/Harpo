@@ -17,11 +17,13 @@ public class GroupService
 {
     private readonly IDbContextFactory<HarpoDbContext> _dbFactory;
     private readonly TimeProvider _time;
+    private readonly AuditService _audit;
 
-    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time)
+    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit)
     {
         _dbFactory = dbFactory;
         _time = time;
+        _audit = audit;
     }
 
     public async Task<List<GroupSummary>> GetMyGroupsAsync(UserContext user, CancellationToken ct = default)
@@ -128,6 +130,7 @@ public class GroupService
         var group = await RequireGroupAdminAsync(db, user, groupId, ct);
         group.IsDeleted = true;
         await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.GroupDelete, group.Name, groupId: groupId);
     }
 
     public async Task<List<GroupMember>> GetMembersAsync(UserContext user, Guid groupId, CancellationToken ct = default)
@@ -149,7 +152,7 @@ public class GroupService
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireGroupAdminAsync(db, user, groupId, ct);
+        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
 
         var id = DeterministicGuid.For(groupId.ToString("N"), username);
         var existing = await db.GroupMembers.SingleOrDefaultAsync(m => m.Id == id, ct);
@@ -182,13 +185,15 @@ public class GroupService
             });
         }
         await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.MemberAdd, group.Name,
+            detail: $"{username} as {role}", groupId: groupId);
     }
 
     public async Task SetMemberRoleAsync(UserContext user, Guid groupId, string username, GroupRole role, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireGroupAdminAsync(db, user, groupId, ct);
+        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
 
         var member = await db.GroupMembers
             .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
@@ -200,13 +205,15 @@ public class GroupService
         }
         member.Role = role;
         await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.MemberRole, group.Name,
+            detail: $"{username} → {role}", groupId: groupId);
     }
 
     public async Task RemoveMemberAsync(UserContext user, Guid groupId, string username, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireGroupAdminAsync(db, user, groupId, ct);
+        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
 
         var member = await db.GroupMembers
             .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
@@ -218,6 +225,8 @@ public class GroupService
         }
         member.IsDeleted = true;
         await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.MemberRemove, group.Name,
+            detail: username, groupId: groupId);
     }
 
     /// <summary>Role of the user in the group, resolved fresh; null when not a member.</summary>

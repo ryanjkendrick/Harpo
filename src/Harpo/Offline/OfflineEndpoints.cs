@@ -23,6 +23,7 @@ public static class OfflineEndpoints
             ClaimsPrincipal principal,
             HttpContext http,
             VaultService vault,
+            AuditService audit,
             OfflineSnapshotThrottle throttle,
             IOptions<OfflineOptions> options,
             IOptions<SiteOptions> site,
@@ -52,6 +53,8 @@ public static class OfflineEndpoints
             logger.LogInformation(
                 "Offline snapshot issued to {User}: {EntryCount} entries in {GroupCount} groups",
                 user.Username, entries.Count, groups.Count);
+            await audit.RecordAsync(user, Harpo.Data.AuditActions.OfflineSync, "offline vault snapshot",
+                detail: $"{entries.Count} entries in {groups.Count} groups");
 
             var snapshot = new OfflineSnapshot(
                 user.Username,

@@ -48,6 +48,7 @@ public sealed class TestSite : IDisposable
     public ManualTime Time { get; }
     public TestDbFactory Db { get; }
     public CryptoService Crypto { get; }
+    public AuditService Audit { get; }
     public GroupService Groups { get; }
     public VaultService Vault { get; }
     public ReplicationEngine Engine { get; }
@@ -70,8 +71,9 @@ public sealed class TestSite : IDisposable
         }
 
         Crypto = new CryptoService(MasterKey);
-        Groups = new GroupService(Db, Time);
-        Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance);
+        Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance);
+        Groups = new GroupService(Db, Time, Audit);
+        Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),

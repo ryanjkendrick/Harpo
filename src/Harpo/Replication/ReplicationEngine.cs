@@ -57,6 +57,7 @@ public class ReplicationEngine
         origins.UnionWith(await db.GroupMembers.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.UnionWith(await db.PasswordEntries.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.UnionWith(await db.PasswordRevisions.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
+        origins.UnionWith(await db.AuditEvents.Select(x => x.OriginSiteId).Distinct().ToListAsync(ct));
         origins.Remove("");
 
         foreach (var origin in origins.OrderBy(o => o, StringComparer.Ordinal))
@@ -75,11 +76,15 @@ public class ReplicationEngine
             var revisions = await db.PasswordRevisions.AsNoTracking()
                 .Where(x => x.OriginSiteId == origin && x.OriginSeq > since)
                 .OrderBy(x => x.OriginSeq).Take(limit + 1).ToListAsync(ct);
+            var audits = await db.AuditEvents.AsNoTracking()
+                .Where(x => x.OriginSiteId == origin && x.OriginSeq > since)
+                .OrderBy(x => x.OriginSeq).Take(limit + 1).ToListAsync(ct);
 
             var merged = groups.Cast<IReplicatedRow>()
                 .Concat(members)
                 .Concat(entries)
                 .Concat(revisions)
+                .Concat(audits)
                 .OrderBy(r => r.OriginSeq)
                 .ToList();
 
@@ -100,6 +105,7 @@ public class ReplicationEngine
                     case GroupMember m: response.Members.Add(m); break;
                     case PasswordEntry e: response.Entries.Add(e); break;
                     case PasswordRevision r: response.Revisions.Add(r); break;
+                    case AuditEvent a: response.Audits.Add(a); break;
                 }
             }
         }
@@ -200,6 +206,18 @@ public class ReplicationEngine
             }
         }
 
+        foreach (var incoming in response.Audits)
+        {
+            Track(highWater, incoming);
+            // Audit events are immutable too: union by Id.
+            var exists = await db.AuditEvents.AnyAsync(x => x.Id == incoming.Id, ct);
+            if (!exists)
+            {
+                db.AuditEvents.Add(incoming);
+                accepted++;
+            }
+        }
+
         // Advance high-watermarks for every origin seen, whether or not each row won
         // its merge — losers must not be re-offered forever.
         foreach (var (origin, seq) in highWater)
@@ -242,12 +260,16 @@ public class ReplicationEngine
     public async Task<ReplicationStatusResponse> GetStatusAsync(CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var liveGroupIds = db.Groups.Where(g => !g.IsDeleted).Select(g => g.Id);
         return new ReplicationStatusResponse
         {
             SiteId = _siteId,
             Vector = await GetVectorAsync(ct),
             Groups = await db.Groups.CountAsync(g => !g.IsDeleted, ct),
-            Entries = await db.PasswordEntries.CountAsync(e => !e.IsDeleted, ct),
+            // Entries inside tombstoned groups linger in the database by design;
+            // don't count them as live passwords.
+            Entries = await db.PasswordEntries.CountAsync(
+                e => !e.IsDeleted && liveGroupIds.Contains(e.GroupId), ct),
             UtcNow = DateTime.UtcNow,
         };
     }

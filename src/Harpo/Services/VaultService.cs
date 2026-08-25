@@ -9,6 +9,12 @@ public sealed record EntryView(PasswordEntry Entry, string PasswordUpdatedBy, Da
 
 public sealed record RevisionView(Guid RevisionId, string CreatedBy, DateTime CreatedAtUtc, bool IsCurrent);
 
+public enum RevealPurpose
+{
+    View,
+    Copy,
+}
+
 /// <summary>
 /// Password entry CRUD, revealing, and history. Every operation checks group
 /// membership; passwords are decrypted only on explicit reveal/copy calls.
@@ -19,13 +25,15 @@ public class VaultService
     private readonly CryptoService _crypto;
     private readonly TimeProvider _time;
     private readonly ILogger<VaultService> _logger;
+    private readonly AuditService _audit;
 
-    public VaultService(IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time, ILogger<VaultService> logger)
+    public VaultService(IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time, ILogger<VaultService> logger, AuditService audit)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
         _time = time;
         _logger = logger;
+        _audit = audit;
     }
 
     public async Task<List<EntryView>> GetEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
@@ -143,16 +151,26 @@ public class VaultService
         entry.UpdatedBy = user.Username;
         await db.SaveChangesAsync(ct);
         _logger.LogInformation("{User} deleted entry {Entry}", user.Username, entryId);
+        await _audit.RecordAsync(
+            user, AuditActions.EntryDelete, await DescribeEntryAsync(db, entry, ct),
+            groupId: entry.GroupId, entryId: entry.Id);
     }
 
-    /// <summary>Decrypts the current password of an entry.</summary>
-    public async Task<string> RevealPasswordAsync(UserContext user, Guid entryId, CancellationToken ct = default)
+    /// <summary>Decrypts the current password of an entry (and audits the access).</summary>
+    public async Task<string> RevealPasswordAsync(
+        UserContext user, Guid entryId, RevealPurpose purpose = RevealPurpose.View, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var entry = await RequireEntryAsync(db, user, entryId, ct);
         var latest = await LatestRevisionAsync(db, entry.Id, ct)
             ?? throw new VaultNotFoundException("This entry has no password yet (it may still be replicating).");
-        return _crypto.Decrypt(latest.EncryptedPassword);
+        var plaintext = _crypto.Decrypt(latest.EncryptedPassword);
+        await _audit.RecordAsync(
+            user,
+            purpose == RevealPurpose.Copy ? AuditActions.PasswordCopy : AuditActions.PasswordReveal,
+            await DescribeEntryAsync(db, entry, ct),
+            groupId: entry.GroupId, entryId: entry.Id);
+        return plaintext;
     }
 
     public async Task<List<RevisionView>> GetHistoryAsync(UserContext user, Guid entryId, CancellationToken ct = default)
@@ -180,7 +198,22 @@ public class VaultService
         var revision = await db.PasswordRevisions
             .SingleOrDefaultAsync(r => r.Id == revisionId && r.EntryId == entryId, ct)
             ?? throw new VaultNotFoundException("Revision not found.");
-        return _crypto.Decrypt(revision.EncryptedPassword);
+        var plaintext = _crypto.Decrypt(revision.EncryptedPassword);
+        var entry = await db.PasswordEntries.SingleAsync(e => e.Id == entryId, ct);
+        await _audit.RecordAsync(
+            user, AuditActions.RevisionReveal, await DescribeEntryAsync(db, entry, ct),
+            detail: $"historical value set {revision.CreatedAtUtc:u} by {revision.CreatedBy}",
+            groupId: entry.GroupId, entryId: entry.Id);
+        return plaintext;
+    }
+
+    private static async Task<string> DescribeEntryAsync(HarpoDbContext db, PasswordEntry entry, CancellationToken ct)
+    {
+        var groupName = await db.Groups
+            .Where(g => g.Id == entry.GroupId)
+            .Select(g => g.Name)
+            .FirstOrDefaultAsync(ct);
+        return groupName is null ? entry.Name : $"{entry.Name} ({groupName})";
     }
 
     /// <summary>

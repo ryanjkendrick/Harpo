@@ -31,6 +31,7 @@ public class HarpoDbContext : DbContext
     public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
     public DbSet<PasswordEntry> PasswordEntries => Set<PasswordEntry>();
     public DbSet<PasswordRevision> PasswordRevisions => Set<PasswordRevision>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<SiteCounter> SiteCounters => Set<SiteCounter>();
     public DbSet<PeerCursor> PeerCursors => Set<PeerCursor>();
 
@@ -67,6 +68,12 @@ public class HarpoDbContext : DbContext
         modelBuilder.Entity<PasswordRevision>(b =>
         {
             b.HasIndex(x => x.EntryId);
+            b.HasIndex(x => new { x.OriginSiteId, x.OriginSeq });
+        });
+
+        modelBuilder.Entity<AuditEvent>(b =>
+        {
+            b.HasIndex(x => x.OccurredAtUtc);
             b.HasIndex(x => new { x.OriginSiteId, x.OriginSeq });
         });
 

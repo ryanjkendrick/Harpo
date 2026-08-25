@@ -8,6 +8,7 @@
 @inject IOptions<ReplicationOptions> ReplicationConfig
 @inject IOptions<Harpo.Offline.OfflineOptions> OfflineConfig
 @inject GroupService Groups
+@inject AuditService Audit
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -108,6 +109,67 @@
     </section>
 
     <section class="panel">
+        <h2>Audit log</h2>
+        <p class="muted">
+            Who revealed, copied, or deleted what — recorded
+            @(Audit.Enabled ? "on this site" : "on other sites only") and replicated everywhere.
+            @if (!Audit.Enabled)
+            {
+                <span class="badge badge-error" title="Set Harpo__Audit__Enabled=true to record events on this site.">recording off</span>
+            }
+            else
+            {
+                <span class="badge badge-ok" title="Set Harpo__Audit__Enabled=false to stop recording on this site.">recording on</span>
+                <span class="badge">@(Audit.RetentionDays > 0 ? $"kept {Audit.RetentionDays}d" : "kept forever")</span>
+            }
+        </p>
+
+        @if (_auditEvents is null)
+        {
+            <p class="muted">Loading…</p>
+        }
+        else if (_auditEvents.Count == 0)
+        {
+            <p class="muted">No audit events yet.</p>
+        }
+        else
+        {
+            <input class="search" type="search" placeholder="Filter by user, action, or target…"
+                   @bind="_auditFilter" @bind:event="oninput" />
+            <div class="table-scroll">
+                <table class="audit-table">
+                    <thead>
+                        <tr><th>When</th><th>Who</th><th>Action</th><th>What</th><th>Site</th><th>From</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var e in FilteredAudit)
+                        {
+                            <tr>
+                                <td title="@($"{e.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC")">@Relative(e.OccurredAtUtc)</td>
+                                <td class="mono">@e.Username</td>
+                                <td><span class="badge @AuditBadgeClass(e.Action)">@e.Action</span></td>
+                                <td>
+                                    @e.Target
+                                    @if (!string.IsNullOrEmpty(e.Detail))
+                                    {
+                                        <span class="muted"> · @e.Detail</span>
+                                    }
+                                </td>
+                                <td class="mono muted">@e.OriginSiteId</td>
+                                <td class="mono muted">@e.ClientAddress</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_auditHasMore)
+            {
+                <button class="btn btn-ghost btn-sm" @onclick="LoadMoreAuditAsync">Load older events</button>
+            }
+        }
+    </section>
+
+    <section class="panel">
         <h2>All groups</h2>
         @if (_groups is null)
         {
@@ -140,7 +202,52 @@
     private UserContext? _user;
     private ReplicationStatusResponse? _status;
     private List<GroupSummary>? _groups;
+    private List<AuditEvent>? _auditEvents;
+    private bool _auditHasMore;
+    private string _auditFilter = "";
     private Timer? _refreshTimer;
+
+    private const int AuditPageSize = 50;
+
+    private IEnumerable<AuditEvent> FilteredAudit
+    {
+        get
+        {
+            if (_auditEvents is null)
+            {
+                return [];
+            }
+            var term = _auditFilter.Trim();
+            if (term.Length == 0)
+            {
+                return _auditEvents;
+            }
+            return _auditEvents.Where(e =>
+                e.Username.Contains(term, StringComparison.OrdinalIgnoreCase)
+                || e.Action.Contains(term, StringComparison.OrdinalIgnoreCase)
+                || e.Target.Contains(term, StringComparison.OrdinalIgnoreCase)
+                || e.Detail.Contains(term, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private static string AuditBadgeClass(string action) => action switch
+    {
+        AuditActions.PasswordReveal or AuditActions.PasswordCopy or AuditActions.RevisionReveal => "badge-admin",
+        AuditActions.EntryDelete or AuditActions.GroupDelete or AuditActions.MemberRemove => "badge-error",
+        _ => "",
+    };
+
+    private async Task LoadMoreAuditAsync()
+    {
+        if (_auditEvents is null || _auditEvents.Count == 0)
+        {
+            return;
+        }
+        var oldest = _auditEvents[^1].OccurredAtUtc;
+        var more = await Audit.GetEventsAsync(_user!, beforeUtc: oldest, take: AuditPageSize);
+        _auditEvents.AddRange(more);
+        _auditHasMore = more.Count == AuditPageSize;
+    }
 
     private IReadOnlyList<PeerSyncStatus> PeerStatuses =>
         ReplicationConfig.Value.Peers
@@ -152,6 +259,8 @@
         _user = UserContext.FromPrincipal((await AuthState).User);
         _groups = await Groups.GetMyGroupsAsync(_user);
         _status = await Engine.GetStatusAsync();
+        _auditEvents = await Audit.GetEventsAsync(_user, take: AuditPageSize);
+        _auditHasMore = _auditEvents.Count == AuditPageSize;
         _refreshTimer = new Timer(_ => _ = RefreshAsync(), null,
             TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
