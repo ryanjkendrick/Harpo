@@ -1,6 +1,7 @@
 @inherits LayoutComponentBase
 @inject Microsoft.Extensions.Options.IOptions<SiteOptions> Site
 @inject Microsoft.Extensions.Options.IOptions<Harpo.Offline.OfflineOptions> Offline
+@inject Microsoft.Extensions.Options.IOptions<HealthOptions> Health
 
 <div class="shell">
     <aside class="sidebar">
@@ -15,6 +16,12 @@
             <NavLink class="side-link" href="/groups">
                 <span class="side-link-icon">👥</span> Groups
             </NavLink>
+            @if (Health.Value.Enabled)
+            {
+                <NavLink class="side-link" href="/health">
+                    <span class="side-link-icon">🩺</span> Vault health
+                </NavLink>
+            }
             @if (Offline.Value.Enabled)
             {
                 <a class="side-link" href="/offline.html">

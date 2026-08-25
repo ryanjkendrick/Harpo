@@ -68,6 +68,7 @@ public class HarpoDbContext : DbContext
         modelBuilder.Entity<PasswordRevision>(b =>
         {
             b.HasIndex(x => x.EntryId);
+            b.HasIndex(x => x.Fingerprint);
             b.HasIndex(x => new { x.OriginSiteId, x.OriginSeq });
         });
 

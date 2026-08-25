@@ -28,6 +28,10 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
 - **Audit log** — who revealed, copied, or deleted what, when, from where;
   append-only, replicated to every site, browsable by site admins, with
   configurable retention — and an admin kill switch.
+- **Vault health report** — weak, reused, and stale passwords across the org,
+  computed from keyed fingerprints and stored strength scores so nothing is
+  decrypted to build the page. Site admins see everything; group admins see
+  their groups (cross-scope reuse appears as a count, never as names).
 - **Installable PWA with an offline vault** — users can keep an encrypted,
   passphrase-protected, read-only copy of their passwords on their device for
   when the server (or the network) is down. Admins can forbid this org-wide
@@ -300,6 +304,36 @@ site. Recording is fail-open by design: an audit-write failure is logged loudly
 but never blocks the user's operation. Password *changes* aren't audit events —
 they're already permanently attributed in each entry's revision history.
 
+## Vault health report
+
+![Vault health report](docs/screenshot-health.png)
+
+The **Vault health** page (sidebar) grades password hygiene:
+
+- **Weak** — a dependency-free heuristic scores every password 0–4 at write
+  time (length/variety entropy, penalties for common passwords, repeats, and
+  sequences); scores of 0–1 are flagged.
+- **Reused** — entries sharing a password are clustered by comparing **keyed
+  fingerprints**: an HMAC of the plaintext under a subkey derived from the
+  master key, stored next to the ciphertext. Equal passwords → equal
+  fingerprints, on every site (the derivation is deterministic), so reuse is
+  detected **without decrypting anything** — including reuse across sites.
+- **Stale** — passwords unchanged for more than `StalePasswordDays`
+  (default 365).
+
+Scope follows responsibility: site admins see the whole vault; group admins
+see the groups they administer, and reuse that crosses out of their scope is
+shown only as "+N outside your groups" — names never leak. Report views are
+audit events. Rows written before this feature (or replicated from a site
+without it) are analyzed lazily the first time a report needs them, without
+touching their replication stamps.
+
+Honesty note on fingerprints: to someone holding the master key they reveal
+password *equality* (and enable offline guessing) — but a master-key holder
+can decrypt outright anyway, so they add no new exposure. Disable computation
+per site with `Harpo__Health__Enabled: "false"` (already-stored analysis
+remains until passwords change).
+
 ## Configuration reference
 
 All settings can be given as environment variables (`Section__Key` form).
@@ -315,6 +349,8 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
 | `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist |
 | `Harpo__Audit__Enabled` | `true` | Record audit events (reveals, copies, deletions, membership changes) on this site |
+| `Harpo__Health__Enabled` | `true` | Compute password fingerprints/strength and offer the vault health report |
+| `Harpo__Health__StalePasswordDays` | `365` | Age at which an unchanged password counts as stale |
 | `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |

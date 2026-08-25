@@ -42,4 +42,5 @@ public static class AuditActions
     public const string MemberAdd = "member.add";
     public const string MemberRemove = "member.remove";
     public const string MemberRole = "member.role";
+    public const string HealthReport = "health.report";
 }

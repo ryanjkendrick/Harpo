@@ -17,6 +17,7 @@ public sealed class CryptoService
     private const int TagSize = 16;
 
     private readonly byte[] _key;
+    private readonly byte[] _fingerprintKey;
 
     public CryptoService(IConfiguration configuration)
         : this(configuration["Harpo:MasterKey"]
@@ -34,6 +35,22 @@ public sealed class CryptoService
             throw new InvalidOperationException("Harpo master key must not be empty.");
         }
         _key = DeriveKey(masterKey);
+        // Distinct subkey for fingerprints so equality hashes never share key
+        // material with the encryption path. Deterministic across sites (same
+        // master key), which replication and cross-site reuse detection require.
+        using var hmac = new HMACSHA256(_key);
+        _fingerprintKey = hmac.ComputeHash(Encoding.UTF8.GetBytes("Harpo.Fingerprint.v1"));
+    }
+
+    /// <summary>
+    /// Keyed equality hash of a password for reuse detection. Reveals nothing to
+    /// anyone without the master key; to a master-key holder it reveals only
+    /// equality — and a master-key holder can decrypt outright anyway.
+    /// </summary>
+    public string Fingerprint(string plaintext)
+    {
+        using var hmac = new HMACSHA256(_fingerprintKey);
+        return Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(plaintext)));
     }
 
     private static byte[] DeriveKey(string masterKey)

@@ -1,6 +1,7 @@
 using Harpo.Data;
 using Harpo.Security;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Harpo.Services;
 
@@ -26,14 +27,18 @@ public class VaultService
     private readonly TimeProvider _time;
     private readonly ILogger<VaultService> _logger;
     private readonly AuditService _audit;
+    private readonly HealthOptions _health;
 
-    public VaultService(IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time, ILogger<VaultService> logger, AuditService audit)
+    public VaultService(
+        IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time,
+        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
         _time = time;
         _logger = logger;
         _audit = audit;
+        _health = health.Value;
     }
 
     public async Task<List<EntryView>> GetEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
@@ -313,6 +318,10 @@ public class VaultService
         EncryptedPassword = _crypto.Encrypt(password),
         CreatedBy = user.Username,
         CreatedAtUtc = now,
+        // Health analysis, when enabled: an equality fingerprint (reuse
+        // detection) and a strength score, so the report never needs plaintext.
+        Fingerprint = _health.Enabled ? _crypto.Fingerprint(password) : null,
+        Strength = _health.Enabled ? PasswordStrength.Score(password) : null,
     };
 
     private static async Task<PasswordRevision?> LatestRevisionAsync(HarpoDbContext db, Guid entryId, CancellationToken ct)

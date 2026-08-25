@@ -51,6 +51,7 @@ public sealed class TestSite : IDisposable
     public AuditService Audit { get; }
     public GroupService Groups { get; }
     public VaultService Vault { get; }
+    public HealthService Health { get; }
     public ReplicationEngine Engine { get; }
 
     private readonly SqliteConnection _connection;
@@ -73,7 +74,10 @@ public sealed class TestSite : IDisposable
         Crypto = new CryptoService(MasterKey);
         Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance);
         Groups = new GroupService(Db, Time, Audit);
-        Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit);
+        Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
+            Options.Create(new HealthOptions()));
+        Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
+            NullLogger<HealthService>.Instance);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),

@@ -107,6 +107,16 @@ public class PasswordRevision : IReplicatedRow
     public string CreatedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
 
+    /// <summary>
+    /// Keyed HMAC of the plaintext (key derived from the master key), letting the
+    /// health report detect reuse by equality without decrypting anything. Null on
+    /// rows written before this feature (or with health disabled) — healed lazily.
+    /// </summary>
+    public string? Fingerprint { get; set; }
+
+    /// <summary>Heuristic strength 0 (terrible) … 4 (strong), computed at write time. Null = not yet computed.</summary>
+    public int? Strength { get; set; }
+
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }
     public DateTime UpdatedAtUtc { get; set; }

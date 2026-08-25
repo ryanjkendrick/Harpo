@@ -473,6 +473,11 @@ tbody tr:hover { background: var(--bg); }
 .history-caption { margin-top: 0; }
 
 .panel > .search { width: 100%; margin-bottom: .7rem; }
+.reuse-cluster { margin-top: .6rem; }
+.reuse-entries { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+.reuse-chip { display: inline-flex; align-items: center; gap: .35rem; font-weight: 600; }
+.reuse-chip a { font-weight: 400; }
+
 .trash { margin-top: 1rem; }
 .trash summary { cursor: pointer; }
 .audit-table td { font-size: .87rem; }

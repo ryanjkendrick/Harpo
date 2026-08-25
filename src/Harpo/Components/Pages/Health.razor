@@ -1,0 +1,204 @@
+@page "/health"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject HealthService Reports
+
+<PageTitle>Vault health · Harpo</PageTitle>
+
+<div class="page-narrow">
+    <div class="page-header">
+        <h1>Vault health</h1>
+        @if (_report is not null)
+        {
+            <button class="btn btn-ghost btn-sm" @onclick="LoadAsync">Refresh</button>
+        }
+    </div>
+
+    @if (!Reports.Enabled)
+    {
+        <div class="empty-state">
+            <span class="empty-icon">🩺</span>
+            <p class="muted">The vault health report is disabled on this site (<span class="mono">Harpo__Health__Enabled</span>).</p>
+        </div>
+    }
+    else if (_loading)
+    {
+        <p class="muted">Analyzing…</p>
+    }
+    else if (_report is null)
+    {
+        <div class="empty-state">
+            <span class="empty-icon">🩺</span>
+            <p class="muted">
+                The health report covers groups you administer — you don't administer any yet.
+                Group admins see their groups; site admins see the whole vault.
+            </p>
+        </div>
+    }
+    else
+    {
+        <p class="muted">
+            Weak, reused, and stale passwords across
+            @(_report.Analyzed == 1 ? "1 entry" : $"{_report.Analyzed} entries") in your scope.
+            Reuse is detected from keyed fingerprints — no passwords are decrypted to build this page.
+        </p>
+
+        <section class="panel">
+            <div class="stat-row">
+                <div class="stat">
+                    <span class="stat-value">@ScorePercent%</span>
+                    <span class="stat-label">healthy</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">@_report.Analyzed</span>
+                    <span class="stat-label">analyzed</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">@_report.Weak.Count</span>
+                    <span class="stat-label">weak</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">@_report.Reused.Count</span>
+                    <span class="stat-label">reused sets</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">@_report.Stale.Count</span>
+                    <span class="stat-label">stale (&gt;@(_report.StaleDays)d)</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Weak passwords</h2>
+            @if (_report.Weak.Count == 0)
+            {
+                <p class="muted">None — nothing here scores below "fair". 🎉</p>
+            }
+            else
+            {
+                <div class="table-scroll">
+                    <table>
+                        <thead><tr><th>Entry</th><th>Group</th><th>Strength</th><th>Set by</th></tr></thead>
+                        <tbody>
+                            @foreach (var e in _report.Weak)
+                            {
+                                <tr>
+                                    <td class="cell-name">
+                                        <span class="entry-icon">@(string.IsNullOrEmpty(e.Icon) ? "🔐" : e.Icon)</span>
+                                        <span class="entry-name">@e.Name</span>
+                                    </td>
+                                    <td><a href="/vault/@e.GroupId">@e.GroupName</a></td>
+                                    <td><span class="badge badge-error">@PasswordStrength.Label(e.Strength)</span></td>
+                                    <td class="muted"><span class="mono">@e.PasswordChangedBy</span> · @Age(e.PasswordChangedUtc)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Reused passwords</h2>
+            @if (_report.Reused.Count == 0)
+            {
+                <p class="muted">None — every entry in your scope has a unique password. 🎉</p>
+            }
+            else
+            {
+                <p class="muted">Entries in the same set share one password — a breach of any of them exposes all of them.</p>
+                @foreach (var cluster in _report.Reused)
+                {
+                    <div class="card reuse-cluster">
+                        <div class="reuse-entries">
+                            @foreach (var e in cluster.Entries)
+                            {
+                                <span class="reuse-chip">
+                                    <span class="entry-icon">@(string.IsNullOrEmpty(e.Icon) ? "🔐" : e.Icon)</span>
+                                    @e.Name <a class="muted" href="/vault/@e.GroupId">(@e.GroupName)</a>
+                                </span>
+                            }
+                            @if (cluster.HiddenCount > 0)
+                            {
+                                <span class="badge badge-error"
+                                      title="This password is also used by entries in groups outside your scope; their names are not shown.">
+                                    +@cluster.HiddenCount outside your groups
+                                </span>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Stale passwords</h2>
+            @if (_report.Stale.Count == 0)
+            {
+                <p class="muted">None — everything has been rotated within @(_report.StaleDays) days. 🎉</p>
+            }
+            else
+            {
+                <div class="table-scroll">
+                    <table>
+                        <thead><tr><th>Entry</th><th>Group</th><th>Unchanged for</th><th>Set by</th></tr></thead>
+                        <tbody>
+                            @foreach (var e in _report.Stale)
+                            {
+                                <tr>
+                                    <td class="cell-name">
+                                        <span class="entry-icon">@(string.IsNullOrEmpty(e.Icon) ? "🔐" : e.Icon)</span>
+                                        <span class="entry-name">@e.Name</span>
+                                    </td>
+                                    <td><a href="/vault/@e.GroupId">@e.GroupName</a></td>
+                                    <td><span class="badge">@Age(e.PasswordChangedUtc)</span></td>
+                                    <td class="muted"><span class="mono">@e.PasswordChangedBy</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private UserContext? _user;
+    private VaultHealthReport? _report;
+    private bool _loading = true;
+
+    private int ScorePercent =>
+        _report is null || _report.Analyzed == 0
+            ? 100
+            : (int)Math.Round(100.0 * _report.HealthyCount / _report.Analyzed);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _user = UserContext.FromPrincipal((await AuthState).User);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (!Reports.Enabled)
+        {
+            _loading = false;
+            return;
+        }
+        _loading = true;
+        _report = await Reports.GetReportAsync(_user!);
+        _loading = false;
+    }
+
+    private string Age(DateTime utc)
+    {
+        var days = (DateTime.UtcNow - utc).TotalDays;
+        return days < 1 ? "today"
+            : days < 60 ? $"{days:0}d"
+            : days < 365 ? $"{days / 30.4:0} months"
+            : $"{days / 365.25:0.1} years";
+    }
+}
