@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
+    <meta name="theme-color" content="#191d2b" />
+    <title>Offline vault · Harpo</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤫</text></svg>" />
+    <style>
+        :root {
+            --bg: #141722; --panel: #1d2130; --panel2: #252a3d; --ink: #e6e8f0; --muted: #9aa1b5;
+            --accent: #6d67f0; --accent-soft: #2c2f52; --danger: #e2574c; --ok: #3fbf8a;
+            --line: #323752; --radius: 12px;
+            --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 15px;
+            display: flex; flex-direction: column; align-items: center; padding: 1.2rem;
+        }
+        header { text-align: center; margin: 1.2rem 0 .8rem; }
+        header .logo { font-size: 2.4rem; display: block; }
+        header h1 { font-size: 1.3rem; margin: .2rem 0 0; letter-spacing: .04em; }
+        header .sub { color: var(--muted); font-size: .85rem; margin-top: .2rem; }
+        .badge-net {
+            display: inline-block; margin-top: .5rem; font-size: .75rem; font-weight: 700;
+            padding: .15rem .6rem; border-radius: 999px; background: var(--panel2); color: var(--muted);
+        }
+        .badge-net.online { color: var(--ok); }
+        .badge-net.warn { color: #e0b054; }
+        .card {
+            width: 100%; max-width: 560px; background: var(--panel); border: 1px solid var(--line);
+            border-radius: var(--radius); padding: 1.3rem; margin-top: .8rem;
+        }
+        .hidden { display: none !important; }
+        h2 { font-size: 1.02rem; margin: 0 0 .6rem; }
+        p { line-height: 1.45; }
+        .muted { color: var(--muted); }
+        .small { font-size: .83rem; }
+        label { display: block; font-size: .78rem; font-weight: 700; letter-spacing: .05em;
+                text-transform: uppercase; color: var(--muted); margin: .8rem 0 .3rem; }
+        input[type=password], input[type=search] {
+            width: 100%; font: inherit; color: var(--ink); background: var(--panel2);
+            border: 1px solid var(--line); border-radius: 8px; padding: .55rem .7rem;
+        }
+        input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+        .btn {
+            font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: 8px;
+            padding: .5rem .95rem; cursor: pointer; background: var(--panel2); color: var(--ink);
+        }
+        .btn:disabled { opacity: .55; cursor: wait; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-ghost { border-color: var(--line); background: transparent; }
+        .btn-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+        .btn-row { display: flex; gap: .6rem; margin-top: 1rem; flex-wrap: wrap; }
+        .btn-icon { padding: .2rem .45rem; border-radius: 6px; background: transparent; border: none;
+                    cursor: pointer; font-size: .95rem; }
+        .btn-icon:hover { background: var(--accent-soft); }
+        .alert { border-radius: 8px; padding: .6rem .8rem; margin-top: .8rem; font-size: .9rem; }
+        .alert-error { background: rgba(226, 87, 76, .12); color: #f2968e; }
+        .mono { font-family: var(--mono); font-size: .92em; }
+        .vault-top { display: flex; gap: .7rem; align-items: center; margin-bottom: .8rem; }
+        .vault-top input { flex: 1; }
+        .group-block { margin-top: 1rem; }
+        .group-name { font-weight: 700; font-size: .95rem; margin-bottom: .3rem; }
+        .entry {
+            display: flex; align-items: center; gap: .6rem; padding: .55rem .6rem;
+            border: 1px solid var(--line); border-radius: 10px; margin-top: .45rem; background: var(--panel2);
+            flex-wrap: wrap;
+        }
+        .entry .icon { font-size: 1.25rem; }
+        .entry .who { min-width: 0; flex: 1; }
+        .entry .name { font-weight: 650; }
+        .entry .meta { color: var(--muted); font-size: .8rem; overflow: hidden; text-overflow: ellipsis; }
+        .entry .pw { font-family: var(--mono); font-size: .88em; letter-spacing: .06em; color: var(--muted); }
+        .entry .pw.shown { color: var(--ink); background: var(--accent-soft); padding: .12rem .4rem; border-radius: 6px;
+                           user-select: all; letter-spacing: 0; }
+        .footerline { color: var(--muted); font-size: .8rem; margin-top: 1rem; display: flex;
+                      justify-content: space-between; gap: .8rem; flex-wrap: wrap; }
+        .toast {
+            position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
+            background: #000; color: #fff; padding: .5rem 1rem; border-radius: 999px; font-size: .88rem;
+        }
+        a { color: #9b96ff; }
+    </style>
+</head>
+<body>
+    <header>
+        <span class="logo">🤫</span>
+        <h1>Harpo · Offline vault</h1>
+        <div class="sub">A read-only copy of your passwords, encrypted on this device.</div>
+        <span id="netBadge" class="badge-net">…</span>
+    </header>
+
+    <section id="state-loading" class="card">
+        <p class="muted">Loading…</p>
+    </section>
+
+    <section id="state-setup" class="card hidden">
+        <h2>Set up offline access</h2>
+        <p class="small muted">
+            Harpo will keep an encrypted, read-only copy of the passwords you can see on
+            this device, so you can still get to them without a connection. Choose an
+            <strong>offline passphrase</strong> — it protects the local copy and is
+            separate from your sign-in password. If you forget it, wipe and re-sync.
+        </p>
+        <label for="setupPass">Offline passphrase (min 10 characters)</label>
+        <input type="password" id="setupPass" autocomplete="new-password" />
+        <label for="setupPass2">Repeat passphrase</label>
+        <input type="password" id="setupPass2" autocomplete="new-password" />
+        <div id="setupError" class="alert alert-error hidden"></div>
+        <div class="btn-row">
+            <button id="setupBtn" class="btn btn-primary">Enable &amp; sync now</button>
+        </div>
+    </section>
+
+    <section id="state-unlock" class="card hidden">
+        <h2>Unlock offline vault</h2>
+        <p class="small muted" id="unlockInfo"></p>
+        <label for="unlockPass">Offline passphrase</label>
+        <input type="password" id="unlockPass" autocomplete="current-password" />
+        <div id="unlockError" class="alert alert-error hidden"></div>
+        <div class="btn-row">
+            <button id="unlockBtn" class="btn btn-primary">Unlock</button>
+            <button id="wipeBtn1" class="btn btn-danger">Wipe offline data</button>
+        </div>
+    </section>
+
+    <section id="state-vault" class="card hidden">
+        <div class="vault-top">
+            <input type="search" id="search" placeholder="Search name, URL, username…" />
+            <button id="lockBtn" class="btn btn-ghost">Lock</button>
+        </div>
+        <div id="entryList"></div>
+        <div class="footerline">
+            <span id="syncInfo"></span>
+            <span>
+                <button id="refreshBtn" class="btn btn-ghost">Refresh from server</button>
+                <button id="wipeBtn2" class="btn btn-danger">Wipe</button>
+            </span>
+        </div>
+    </section>
+
+    <section id="state-message" class="card hidden">
+        <h2 id="messageTitle"></h2>
+        <p class="small muted" id="messageBody"></p>
+        <div class="btn-row">
+            <a id="messageLoginLink" class="btn btn-primary hidden" href="/login?returnUrl=%2Foffline.html">Sign in</a>
+            <button id="wipeBtn3" class="btn btn-danger hidden">Wipe offline data</button>
+            <a class="btn btn-ghost" href="/">Back to Harpo</a>
+        </div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/offline.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+bin/
+obj/
+node_modules/
+*.user
+*.db
+*.db-shm
+*.db-wal
+.vs/
+.idea/
+.DS_Store

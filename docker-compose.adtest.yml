@@ -1,0 +1,69 @@
+# Full Active Directory login testing without a real domain controller:
+# a Samba AD DC (domain HARPO.LAB) plus one Harpo running in genuine Ldap mode
+# against it — the exact code path used against production AD.
+#
+#   docker compose -f docker-compose.adtest.yml up -d --build
+#
+# Then open http://localhost:8083 and sign in with a *directory* account:
+#
+#   ada   / Passw0rd!   (member of the "Harpo Admins" AD group → site admin)
+#   grace / Passw0rd!   (regular user)
+#
+# The first start provisions the domain, which takes a minute or so — the Harpo
+# container waits for the DC's healthcheck before starting. Lab use only.
+
+name: harpo-adlab
+
+services:
+  samba-ad:
+    build: dev/samba-ad
+    image: harpo-samba-ad:latest
+    container_name: harpo-samba-ad
+    hostname: samba-ad
+    restart: unless-stopped
+    environment:
+      REALM: "HARPO.LAB"
+      DOMAIN: "HARPO"
+      ADMIN_PASSWORD: "Adm1nPassw0rd!"
+      USER_PASSWORD: "Passw0rd!"
+    volumes:
+      - samba-data:/var/lib/samba
+      - samba-etc:/etc/samba
+    # Uncomment to poke at the directory from the host with ldapsearch:
+    # ports:
+    #   - "6360:636"
+
+  harpo:
+    build: .
+    image: harpo:latest
+    container_name: harpo-adtest
+    restart: unless-stopped
+    depends_on:
+      samba-ad:
+        condition: service_healthy
+    ports:
+      - "8083:8080"
+    environment:
+      Harpo__SiteId: "adlab"
+      Harpo__MasterKey: "adlab-demo-master-key"
+      Auth__Mode: "Ldap"
+      Auth__Ldap__Server: "samba-ad"
+      Auth__Ldap__Port: "636"
+      Auth__Ldap__UseSsl: "true"
+      # The lab DC has a self-signed certificate:
+      Auth__Ldap__SkipCertificateValidation: "true"
+      LDAPTLS_REQCERT: "never"
+      Auth__Ldap__UpnSuffix: "harpo.lab"
+      Auth__Ldap__SearchBase: "DC=harpo,DC=lab"
+      Auth__Ldap__AdminGroup: "Harpo Admins"
+      # This lab demonstrates the admin kill switch: offline password storage is
+      # forbidden here (no offline vault link, snapshot API dark, devices wipe
+      # any existing copy at next contact). Flip to "true" to allow it.
+      Harpo__Offline__Enabled: "false"
+    volumes:
+      - harpo-adtest-data:/data
+
+volumes:
+  samba-data:
+  samba-etc:
+  harpo-adtest-data:

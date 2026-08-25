@@ -1,0 +1,11 @@
+{
+  "name": "harpo-e2e",
+  "private": true,
+  "description": "End-to-end tests for Harpo's PWA offline vault (real headless Chrome).",
+  "scripts": {
+    "test": "node offline-vault.e2e.js"
+  },
+  "dependencies": {
+    "puppeteer": "^25.9.0"
+  }
+}

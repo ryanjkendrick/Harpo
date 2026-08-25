@@ -1,0 +1,185 @@
+@page "/admin"
+@attribute [Authorize(Roles = HarpoClaims.SiteAdminRole)]
+@rendermode InteractiveServer
+@using Harpo.Replication
+@using Microsoft.Extensions.Options
+@inject ReplicationEngine Engine
+@inject ReplicationStatusTracker Tracker
+@inject IOptions<ReplicationOptions> ReplicationConfig
+@inject IOptions<Harpo.Offline.OfflineOptions> OfflineConfig
+@inject GroupService Groups
+@implements IDisposable
+
+<PageTitle>Administration · Harpo</PageTitle>
+
+<div class="page-narrow">
+    <h1>Administration</h1>
+
+    <section class="panel">
+        <h2>This site</h2>
+        <div class="stat-row">
+            <div class="stat">
+                <span class="stat-value mono">@Engine.SiteId</span>
+                <span class="stat-label">site id</span>
+            </div>
+            <div class="stat">
+                <span class="stat-value">@(_status?.Groups.ToString() ?? "…")</span>
+                <span class="stat-label">groups</span>
+            </div>
+            <div class="stat">
+                <span class="stat-value">@(_status?.Entries.ToString() ?? "…")</span>
+                <span class="stat-label">passwords</span>
+            </div>
+            <div class="stat" title="Set Harpo__Offline__Enabled=false to forbid offline password storage on devices.">
+                <span class="stat-value">@(OfflineConfig.Value.Enabled ? $"on · {OfflineConfig.Value.SnapshotMaxAgeDays}d" : "off")</span>
+                <span class="stat-label">offline access</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <h2>Cross-site replication</h2>
+        @if (!ReplicationConfig.Value.Enabled)
+        {
+            <p class="muted">
+                Replication is disabled — set <span class="mono">Replication:Key</span> and
+                <span class="mono">Replication:Peers</span> to connect this site to others.
+            </p>
+        }
+        else if (ReplicationConfig.Value.Peers.Count == 0)
+        {
+            <p class="muted">
+                A replication key is set, so other sites can pull from this one, but this
+                site has no peers of its own configured.
+            </p>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="peers-table">
+                    <thead>
+                        <tr><th>Peer</th><th>URL</th><th>Last sync</th><th>Rows pulled</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var peer in PeerStatuses)
+                        {
+                            <tr>
+                                <td class="mono">@peer.Name</td>
+                                <td class="mono muted">@peer.Url</td>
+                                <td title="@(peer.LastSuccessUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")">
+                                    @(peer.LastSuccessUtc is null ? "never" : Relative(peer.LastSuccessUtc.Value))
+                                </td>
+                                <td>@peer.TotalPulledRows</td>
+                                <td>
+                                    @if (peer.LastError is not null)
+                                    {
+                                        <span class="badge badge-error" title="@peer.LastError">error</span>
+                                    }
+                                    else if (peer.LastSuccessUtc is not null)
+                                    {
+                                        <span class="badge badge-ok">healthy</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge">waiting</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @if (_status is not null && _status.Vector.Count > 0)
+        {
+            <h3>High-watermark vector</h3>
+            <p class="muted">
+                Highest change sequence this site has seen from each origin — replication
+                is caught up when peers report the same numbers.
+            </p>
+            <div class="vector">
+                @foreach (var (site, seq) in _status.Vector.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                {
+                    <span class="vector-chip mono">@site → @seq</span>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="panel">
+        <h2>All groups</h2>
+        @if (_groups is null)
+        {
+            <p class="muted">Loading…</p>
+        }
+        else
+        {
+            <div class="card-list">
+                @foreach (var g in _groups)
+                {
+                    <a class="card group-card" href="/groups/@g.Group.Id">
+                        <div class="group-card-main">
+                            <span class="group-card-name">@g.Group.Name</span>
+                            <span class="muted">created by @g.Group.CreatedBy</span>
+                        </div>
+                        <div class="group-card-meta">
+                            <span>@g.MemberCount members</span>
+                            <span>@g.EntryCount passwords</span>
+                        </div>
+                    </a>
+                }
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private UserContext? _user;
+    private ReplicationStatusResponse? _status;
+    private List<GroupSummary>? _groups;
+    private Timer? _refreshTimer;
+
+    private IReadOnlyList<PeerSyncStatus> PeerStatuses =>
+        ReplicationConfig.Value.Peers
+            .Select(p => Tracker.GetOrAdd(p.Name, p.Url))
+            .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _user = UserContext.FromPrincipal((await AuthState).User);
+        _groups = await Groups.GetMyGroupsAsync(_user);
+        _status = await Engine.GetStatusAsync();
+        _refreshTimer = new Timer(_ => _ = RefreshAsync(), null,
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            var status = await Engine.GetStatusAsync();
+            await InvokeAsync(() =>
+            {
+                _status = status;
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    public void Dispose() => _refreshTimer?.Dispose();
+
+    private static string Relative(DateTime utc)
+    {
+        var span = DateTime.UtcNow - utc;
+        return span.TotalSeconds < 5 ? "just now"
+            : span.TotalSeconds < 90 ? $"{Math.Round(span.TotalSeconds)}s ago"
+            : span.TotalMinutes < 90 ? $"{Math.Round(span.TotalMinutes)}m ago"
+            : $"{Math.Round(span.TotalHours)}h ago";
+    }
+}

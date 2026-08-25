@@ -1,0 +1,29 @@
+@* Emoji icon picker: preset grid plus free entry. *@
+<div class="icon-picker">
+    @foreach (var icon in Presets)
+    {
+        <button type="button"
+                class="icon-option @(icon == Value ? "selected" : "")"
+                @onclick="() => SelectAsync(icon)">@icon</button>
+    }
+    <input class="icon-free" maxlength="4" placeholder="…"
+           value="@Value"
+           @onchange='e => SelectAsync(e.Value?.ToString() ?? "")'
+           title="Or type any emoji" />
+</div>
+
+@code {
+    private static readonly string[] Presets =
+    {
+        "🔐", "🌐", "🖥️", "🗄️", "☁️", "📧", "💳", "🏦", "📱", "💬", "🛠️", "📦", "🧪", "📊", "🎫", "🔑",
+    };
+
+    [Parameter] public string Value { get; set; } = "🔐";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+
+    private async Task SelectAsync(string icon)
+    {
+        Value = string.IsNullOrWhiteSpace(icon) ? "🔐" : icon.Trim();
+        await ValueChanged.InvokeAsync(Value);
+    }
+}

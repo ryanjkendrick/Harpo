@@ -1,0 +1,618 @@
+// Harpo offline vault.
+//
+// While online and signed in, this page downloads the user's accessible entries
+// from /api/offline/snapshot and stores them on the device encrypted under an
+// offline passphrase the user chooses:
+//
+//   KEK = PBKDF2-SHA256(passphrase, salt, 600k iterations)
+//   DEK = random AES-256-GCM key, stored wrapped by the KEK
+//   vault blob = AES-256-GCM(DEK, snapshot JSON)  → IndexedDB
+//
+// Offline, the passphrase unwraps the DEK and decrypts the blob — read-only.
+// The server master key is never on the device; the server re-encrypts nothing
+// here — it hands the snapshot to *this authenticated user*, and the device
+// protects it locally. All rendering uses textContent (never innerHTML).
+"use strict";
+
+const DB_NAME = "harpo-offline";
+const STORE = "vault";
+const RECORD_KEY = "current";
+const PBKDF2_ITERATIONS = 600000;
+const AUTO_LOCK_MS = 10 * 60 * 1000;
+
+let dek = null;          // in-memory only while unlocked
+let vaultData = null;    // decrypted snapshot while unlocked
+let record = null;       // encrypted record from IndexedDB
+let idleTimer = null;
+
+// ---------- tiny helpers ----------
+
+const $ = (id) => document.getElementById(id);
+function b64(buf) {
+    // Chunked to keep large vault blobs from overflowing the argument stack.
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(s);
+}
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const utf8 = (s) => new TextEncoder().encode(s);
+
+function show(stateId) {
+    for (const sec of document.querySelectorAll("section")) {
+        sec.classList.toggle("hidden", sec.id !== stateId);
+    }
+}
+
+function showMessage(title, body, { loginLink = false, wipe = false } = {}) {
+    $("messageTitle").textContent = title;
+    $("messageBody").textContent = body;
+    $("messageLoginLink").classList.toggle("hidden", !loginLink);
+    $("wipeBtn3").classList.toggle("hidden", !wipe);
+    show("state-message");
+}
+
+let toastTimer = null;
+function toast(text) {
+    const el = $("toast");
+    el.textContent = text;
+    el.classList.remove("hidden");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), 2500);
+}
+
+function setError(id, text) {
+    const el = $(id);
+    if (text) {
+        el.textContent = text;
+        el.classList.remove("hidden");
+    } else {
+        el.classList.add("hidden");
+    }
+}
+
+// navigator.onLine only knows about the network; the case this page exists for
+// is "network up, Harpo server down" — so track actual server reachability too.
+let serverReachable = null;
+
+function noteServer(ok) {
+    serverReachable = ok;
+    updateNetBadge();
+}
+
+function updateNetBadge() {
+    const el = $("netBadge");
+    el.classList.remove("online", "warn");
+    if (!navigator.onLine) {
+        el.textContent = "offline";
+    } else if (serverReachable === false) {
+        el.textContent = "server unreachable";
+        el.classList.add("warn");
+    } else {
+        el.textContent = "online";
+        el.classList.add("online");
+    }
+}
+
+// ---------- IndexedDB ----------
+
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function idbGet() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const req = db.transaction(STORE).objectStore(STORE).get(RECORD_KEY);
+        req.onsuccess = () => { resolve(req.result || null); db.close(); };
+        req.onerror = () => { reject(req.error); db.close(); };
+    });
+}
+
+async function idbPut(value) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(value, RECORD_KEY);
+        tx.oncomplete = () => { resolve(); db.close(); };
+        tx.onerror = () => { reject(tx.error); db.close(); };
+    });
+}
+
+async function idbWipe() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).delete(RECORD_KEY);
+        tx.oncomplete = () => { resolve(); db.close(); };
+        tx.onerror = () => { reject(tx.error); db.close(); };
+    });
+}
+
+// ---------- crypto ----------
+
+async function deriveKek(passphrase, salt, iterations) {
+    const material = await crypto.subtle.importKey("raw", utf8(passphrase), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]);
+}
+
+async function encryptWithKey(key, bytes) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bytes);
+    return { iv: b64(iv), ct: b64(ct) };
+}
+
+async function decryptWithKey(key, ivB64, ctB64) {
+    return crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(ivB64) }, key, unb64(ctB64));
+}
+
+async function encryptVaultRecord(passphraseOrNull, snapshot) {
+    // Reuse the unlocked DEK when we have one; otherwise mint everything fresh.
+    let salt, iterations, wrapped;
+    if (dek === null) {
+        salt = crypto.getRandomValues(new Uint8Array(16));
+        iterations = PBKDF2_ITERATIONS;
+        const kek = await deriveKek(passphraseOrNull, salt, iterations);
+        dek = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+        const rawDek = await crypto.subtle.exportKey("raw", dek);
+        wrapped = await encryptWithKey(kek, rawDek);
+    } else {
+        salt = unb64(record.salt);
+        iterations = record.iterations;
+        wrapped = { iv: record.wrapIv, ct: record.wrappedDek };
+    }
+    const blob = await encryptWithKey(dek, utf8(JSON.stringify(snapshot)));
+    return {
+        salt: b64(salt.buffer ? salt : new Uint8Array(salt)),
+        iterations,
+        wrapIv: wrapped.iv,
+        wrappedDek: wrapped.ct,
+        vaultIv: blob.iv,
+        vaultCt: blob.ct,
+        syncedAt: Date.now(),
+        maxAgeDays: snapshot.maxAgeDays,
+        username: snapshot.username,
+        displayName: snapshot.displayName,
+        siteId: snapshot.siteId,
+    };
+}
+
+// ---------- server ----------
+
+async function fetchSnapshot() {
+    let res;
+    try {
+        res = await fetch("/api/offline/snapshot", {
+            headers: { "X-Harpo-Offline": "1" },
+            credentials: "same-origin",
+            cache: "no-store",
+        });
+    } catch {
+        noteServer(false);
+        throw new Error("The server is unreachable — connect to the network and try again.");
+    }
+    noteServer(true);
+    if (res.redirected || res.status === 401) {
+        throw new Error("SIGN_IN");
+    }
+    if (res.status === 404) {
+        throw new Error("DISABLED");
+    }
+    if (res.status === 429) {
+        throw new Error("The server asked us to slow down — try again in a moment.");
+    }
+    if (!res.ok) {
+        throw new Error("The server rejected the request (" + res.status + ").");
+    }
+    return res.json();
+}
+
+async function probeEnabled() {
+    try {
+        const res = await fetch("/api/offline/enabled", { credentials: "same-origin", cache: "no-store" });
+        if (!res.ok) {
+            noteServer(false);
+            return null;
+        }
+        noteServer(true);
+        return (await res.json()).enabled === true;
+    } catch {
+        noteServer(false);
+        return null; // server unreachable — can't tell
+    }
+}
+
+// ---------- expiry / lock ----------
+
+const isExpired = (rec) => Date.now() - rec.syncedAt > rec.maxAgeDays * 86400000;
+
+function expiresText(rec) {
+    const left = rec.syncedAt + rec.maxAgeDays * 86400000 - Date.now();
+    if (left <= 0) {
+        return "expired";
+    }
+    const days = Math.floor(left / 86400000);
+    return days >= 1 ? `expires in ${days}d` : `expires in ${Math.max(1, Math.floor(left / 3600000))}h`;
+}
+
+function lock() {
+    dek = null;
+    vaultData = null;
+    clearTimeout(idleTimer);
+    $("entryList").replaceChildren();
+    $("unlockPass").value = "";
+    enterUnlockState();
+}
+
+function armAutoLock() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+        if (vaultData !== null) {
+            lock();
+            toast("Locked after inactivity");
+        }
+    }, AUTO_LOCK_MS);
+}
+
+for (const evt of ["click", "keydown", "input"]) {
+    document.addEventListener(evt, () => {
+        if (vaultData !== null) {
+            armAutoLock();
+        }
+    });
+}
+
+// ---------- rendering ----------
+
+function renderVault() {
+    const filter = $("search").value.trim().toLowerCase();
+    const groups = new Map(vaultData.groups.map((g) => [g.id, g]));
+    const byGroup = new Map();
+    for (const entry of vaultData.entries) {
+        const hit = !filter
+            || entry.name.toLowerCase().includes(filter)
+            || (entry.url || "").toLowerCase().includes(filter)
+            || (entry.username || "").toLowerCase().includes(filter);
+        if (!hit) {
+            continue;
+        }
+        if (!byGroup.has(entry.groupId)) {
+            byGroup.set(entry.groupId, []);
+        }
+        byGroup.get(entry.groupId).push(entry);
+    }
+
+    const list = $("entryList");
+    list.replaceChildren();
+    if (byGroup.size === 0) {
+        const p = document.createElement("p");
+        p.className = "muted small";
+        p.textContent = vaultData.entries.length === 0
+            ? "Your snapshot has no passwords (you may not belong to any group)."
+            : "Nothing matches your search.";
+        list.appendChild(p);
+        return;
+    }
+
+    for (const [groupId, entries] of byGroup) {
+        const block = document.createElement("div");
+        block.className = "group-block";
+        const heading = document.createElement("div");
+        heading.className = "group-name";
+        heading.textContent = groups.get(groupId)?.name ?? "Unknown group";
+        block.appendChild(heading);
+
+        for (const entry of entries) {
+            block.appendChild(renderEntry(entry));
+        }
+        list.appendChild(block);
+    }
+}
+
+function renderEntry(entry) {
+    const row = document.createElement("div");
+    row.className = "entry";
+
+    const icon = document.createElement("span");
+    icon.className = "icon";
+    icon.textContent = entry.icon || "🔐";
+    row.appendChild(icon);
+
+    const who = document.createElement("div");
+    who.className = "who";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = entry.name;
+    who.appendChild(name);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = [entry.username, entry.url].filter(Boolean).join(" · ");
+    if (entry.notes) {
+        meta.title = entry.notes;
+    }
+    who.appendChild(meta);
+    row.appendChild(who);
+
+    const pw = document.createElement("span");
+    pw.className = "pw";
+    pw.textContent = "••••••••";
+    row.appendChild(pw);
+
+    let shown = false;
+    const reveal = document.createElement("button");
+    reveal.className = "btn-icon";
+    reveal.title = "Reveal";
+    reveal.textContent = "👁️";
+    reveal.addEventListener("click", () => {
+        shown = !shown;
+        pw.textContent = shown ? (entry.password ?? "(no password)") : "••••••••";
+        pw.classList.toggle("shown", shown);
+        reveal.textContent = shown ? "🙈" : "👁️";
+    });
+    row.appendChild(reveal);
+
+    const copy = document.createElement("button");
+    copy.className = "btn-icon";
+    copy.title = "Copy password";
+    copy.textContent = "📋";
+    copy.addEventListener("click", async () => {
+        if (entry.password == null) {
+            toast("This entry has no password");
+            return;
+        }
+        toast(await copyText(entry.password) ? "Password copied" : "Copy failed");
+    });
+    row.appendChild(copy);
+
+    return row;
+}
+
+async function copyText(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch { /* fall through */ }
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+    } catch {
+        return false;
+    }
+}
+
+// ---------- states / flows ----------
+
+function enterVaultState() {
+    $("syncInfo").textContent =
+        `${record.username}@${record.siteId} · synced ${new Date(record.syncedAt).toLocaleString()} · ${expiresText(record)}`;
+    $("refreshBtn").disabled = !navigator.onLine;
+    renderVault();
+    show("state-vault");
+    armAutoLock();
+}
+
+function enterUnlockState() {
+    $("unlockInfo").textContent =
+        `Offline copy for ${record.displayName} (${record.username}) from site "${record.siteId}" · ${expiresText(record)}` +
+        (isExpired(record) ? " — unlocking will refresh it from the server." : "");
+    setError("unlockError", null);
+    show("state-unlock");
+}
+
+async function doSetup() {
+    const pass = $("setupPass").value;
+    const pass2 = $("setupPass2").value;
+    if (pass.length < 10) {
+        setError("setupError", "The passphrase must be at least 10 characters.");
+        return;
+    }
+    if (pass !== pass2) {
+        setError("setupError", "The passphrases don't match.");
+        return;
+    }
+    setError("setupError", null);
+    const btn = $("setupBtn");
+    btn.disabled = true;
+    btn.textContent = "Syncing…";
+    try {
+        const snapshot = await fetchSnapshot();
+        record = await encryptVaultRecord(pass, snapshot);
+        await idbPut(record);
+        if (navigator.storage?.persist) {
+            navigator.storage.persist().catch(() => { });
+        }
+        vaultData = snapshot;
+        toast(`Synced ${snapshot.entries.length} entries`);
+        enterVaultState();
+    } catch (err) {
+        handleFlowError(err, "setupError");
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Enable & sync now";
+    }
+}
+
+async function doUnlock() {
+    const btn = $("unlockBtn");
+    btn.disabled = true;
+    btn.textContent = "Deriving key…";
+    try {
+        const kek = await deriveKek($("unlockPass").value, unb64(record.salt), record.iterations);
+        const rawDek = await decryptWithKey(kek, record.wrapIv, record.wrappedDek);
+        dek = await crypto.subtle.importKey("raw", rawDek, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+        const json = await decryptWithKey(dek, record.vaultIv, record.vaultCt);
+        vaultData = JSON.parse(new TextDecoder().decode(json));
+    } catch {
+        dek = null;
+        setError("unlockError", "Wrong passphrase.");
+        btn.disabled = false;
+        btn.textContent = "Unlock";
+        return;
+    }
+    btn.disabled = false;
+    btn.textContent = "Unlock";
+
+    if (isExpired(record)) {
+        // Never show stale data: a successful refresh is required to proceed.
+        const refreshed = await doRefresh({ quiet: true });
+        if (!refreshed) {
+            dek = null;
+            vaultData = null;
+            showMessage("Snapshot expired",
+                "This offline copy is older than allowed. Sign in while online, then refresh it.",
+                { loginLink: true, wipe: true });
+            return;
+        }
+    }
+    enterVaultState();
+}
+
+async function doRefresh({ quiet = false } = {}) {
+    const btn = $("refreshBtn");
+    btn.disabled = true;
+    try {
+        const snapshot = await fetchSnapshot();
+        record = await encryptVaultRecord(null, snapshot);
+        await idbPut(record);
+        vaultData = snapshot;
+        if (!quiet) {
+            toast(`Refreshed — ${snapshot.entries.length} entries`);
+            enterVaultState();
+        }
+        return true;
+    } catch (err) {
+        if (!quiet) {
+            handleFlowError(err, null);
+        }
+        return false;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function handleFlowError(err, errorElementId) {
+    if (err.message === "SIGN_IN") {
+        showMessage("Sign in first",
+            "You need to be signed in to Harpo (online) before syncing an offline copy.",
+            { loginLink: true });
+    } else if (err.message === "DISABLED") {
+        showMessage("Offline access is disabled",
+            "Your administrator has turned off offline password storage for this Harpo.");
+    } else if (errorElementId) {
+        setError(errorElementId, err.message);
+    } else {
+        toast(err.message);
+    }
+}
+
+async function doWipe() {
+    if (!confirm("Wipe the offline copy from this device? You can re-sync while online.")) {
+        return;
+    }
+    await idbWipe();
+    dek = null;
+    vaultData = null;
+    record = null;
+    toast("Offline data wiped");
+    init();
+}
+
+// ---------- boot ----------
+
+async function init() {
+    updateNetBadge();
+    if (!window.isSecureContext || !crypto.subtle) {
+        showMessage("Secure context required",
+            "The offline vault needs HTTPS (or localhost) so the browser exposes its cryptography APIs.");
+        return;
+    }
+
+    record = await idbGet().catch(() => null);
+
+    if (navigator.onLine) {
+        const enabled = await probeEnabled();
+        if (enabled === false) {
+            if (record) {
+                // Admin turned the feature off: honour it on next contact.
+                await idbWipe();
+                record = null;
+                showMessage("Offline access is disabled",
+                    "Your administrator turned off offline password storage, so the local copy on this device has been removed.");
+            } else {
+                showMessage("Offline access is disabled",
+                    "Your administrator has turned off offline password storage for this Harpo.");
+            }
+            return;
+        }
+    }
+
+    if (!record) {
+        if (!navigator.onLine) {
+            showMessage("No offline data on this device",
+                "Connect to the network, sign in to Harpo, and set up offline access first.");
+            return;
+        }
+        show("state-setup");
+        return;
+    }
+
+    if (isExpired(record) && !navigator.onLine) {
+        showMessage("Snapshot expired",
+            "This offline copy is older than allowed and can't be shown. Connect to the network to refresh it.",
+            { wipe: true });
+        return;
+    }
+
+    enterUnlockState();
+}
+
+$("setupBtn").addEventListener("click", doSetup);
+$("unlockBtn").addEventListener("click", doUnlock);
+$("unlockPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doUnlock(); });
+$("refreshBtn").addEventListener("click", () => doRefresh());
+$("lockBtn").addEventListener("click", () => { lock(); toast("Locked"); });
+$("search").addEventListener("input", renderVault);
+for (const id of ["wipeBtn1", "wipeBtn2", "wipeBtn3"]) {
+    $(id).addEventListener("click", doWipe);
+}
+window.addEventListener("online", () => {
+    updateNetBadge();
+    if (vaultData === null) {
+        init(); // don't yank an unlocked vault out from under the user
+    } else {
+        $("refreshBtn").disabled = false;
+    }
+});
+window.addEventListener("offline", () => {
+    updateNetBadge();
+    if (vaultData !== null) {
+        $("refreshBtn").disabled = true;
+    }
+});
+
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => { });
+}
+
+init();

@@ -1,0 +1,108 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@layout Harpo.Components.Layout.AuthLayout
+@inject IAuthenticator Authenticator
+@inject NavigationManager Navigation
+@inject ILogger<Login> Logger
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+
+<PageTitle>Sign in · Harpo</PageTitle>
+
+<div class="login-card">
+    <div class="login-brand">
+        <span class="login-logo">🤫</span>
+        <h1>Harpo</h1>
+        <p class="login-tagline">The god of silence keeps your secrets.</p>
+    </div>
+
+    <EditForm Model="Model" OnValidSubmit="HandleLoginAsync" FormName="login">
+        @if (_error is not null)
+        {
+            <div class="alert alert-error" role="alert">@_error</div>
+        }
+        <label class="field">
+            <span class="field-label">Username</span>
+            <InputText @bind-Value="Model.Username" autocomplete="username" autofocus
+                       placeholder="AD account, e.g. jsmith" />
+        </label>
+        <label class="field">
+            <span class="field-label">Password</span>
+            <InputText type="password" @bind-Value="Model.Password" autocomplete="current-password" />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <p class="login-hint">Sign in with your Active Directory account.</p>
+    </EditForm>
+</div>
+
+@code {
+    [CascadingParameter]
+    public HttpContext? HttpContext { get; set; }
+
+    [SupplyParameterFromForm]
+    private LoginModel? Model { get; set; }
+
+    [SupplyParameterFromQuery]
+    private string? ReturnUrl { get; set; }
+
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Model ??= new LoginModel();
+        // Already signed in? Skip the form.
+        if (HttpContext?.User.Identity?.IsAuthenticated == true)
+        {
+            Navigation.NavigateTo(SafeReturnUrl());
+            return;
+        }
+        await Task.CompletedTask;
+    }
+
+    private async Task HandleLoginAsync()
+    {
+        if (HttpContext is null)
+        {
+            return; // Only reachable during static server-side rendering.
+        }
+
+        try
+        {
+            var result = await Authenticator.AuthenticateAsync(
+                Model!.Username, Model.Password, HttpContext.RequestAborted);
+            if (result is null)
+            {
+                _error = "Invalid username or password.";
+                return;
+            }
+
+            var principal = HarpoClaims.CreatePrincipal(result);
+            await HttpContext.SignInAsync(
+                CookieAuthenticationDefaults.AuthenticationScheme,
+                principal,
+                new AuthenticationProperties { IsPersistent = false });
+            Logger.LogInformation("{User} signed in", result.Username);
+            Navigation.NavigateTo(SafeReturnUrl());
+        }
+        catch (AuthenticationUnavailableException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private string SafeReturnUrl()
+    {
+        // Only allow local paths — never redirect off-site.
+        if (string.IsNullOrEmpty(ReturnUrl) || !ReturnUrl.StartsWith('/') || ReturnUrl.StartsWith("//"))
+        {
+            return "/";
+        }
+        return ReturnUrl;
+    }
+
+    public sealed class LoginModel
+    {
+        public string Username { get; set; } = "";
+        public string Password { get; set; } = "";
+    }
+}

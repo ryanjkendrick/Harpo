@@ -1,0 +1,60 @@
+@inherits LayoutComponentBase
+@inject Microsoft.Extensions.Options.IOptions<SiteOptions> Site
+@inject Microsoft.Extensions.Options.IOptions<Harpo.Offline.OfflineOptions> Offline
+
+<div class="shell">
+    <aside class="sidebar">
+        <a class="brand" href="/">
+            <span class="brand-icon">🤫</span>
+            <span class="brand-name">Harpo</span>
+        </a>
+        <nav class="side-nav">
+            <NavLink class="side-link" href="/" Match="NavLinkMatch.All">
+                <span class="side-link-icon">🔐</span> Vault
+            </NavLink>
+            <NavLink class="side-link" href="/groups">
+                <span class="side-link-icon">👥</span> Groups
+            </NavLink>
+            @if (Offline.Value.Enabled)
+            {
+                <a class="side-link" href="/offline.html">
+                    <span class="side-link-icon">📴</span> Offline vault
+                </a>
+            }
+            <AuthorizeView Roles="@HarpoClaims.SiteAdminRole">
+                <NavLink class="side-link" href="/admin">
+                    <span class="side-link-icon">🛠️</span> Administration
+                </NavLink>
+            </AuthorizeView>
+        </nav>
+        <div class="sidebar-footer">
+            <span class="site-badge" title="This Harpo site's replication id">site: @Site.Value.SiteId</span>
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="topbar">
+            <div class="topbar-spacer"></div>
+            <AuthorizeView>
+                <Authorized>
+                    <span class="user-chip" title="@context.User.Identity?.Name">
+                        @(context.User.FindFirst(HarpoClaims.DisplayName)?.Value ?? context.User.Identity?.Name)
+                    </span>
+                    <form method="post" action="logout" class="logout-form">
+                        <AntiforgeryToken />
+                        <button type="submit" class="btn btn-ghost">Sign out</button>
+                    </form>
+                </Authorized>
+            </AuthorizeView>
+        </header>
+        <main class="content">
+            @Body
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

@@ -1,0 +1,31 @@
+{
+  "name": "Harpo",
+  "short_name": "Harpo",
+  "description": "Team password manager — the god of silence keeps your secrets.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#191d2b",
+  "theme_color": "#191d2b",
+  "icons": [
+    {
+      "src": "/icons/harpo-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/harpo-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/harpo-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+# Two-site replication demo: "alpha" (http://localhost:8081) and "beta"
+# (http://localhost:8082), each with its own database, pulling changes from each
+# other every 5 seconds.
+#
+# Auth runs in Development mode so you can try it without a domain controller:
+#   alice / alice   (site admin)
+#   bob   / bob
+#
+# docker compose -f docker-compose.multisite.yml up -d --build
+#
+# Create a password on alpha, watch it appear on beta. NOT a production setup —
+# see docker-compose.yml for the AD-backed single-site template.
+
+x-harpo-common: &harpo-common
+  build: .
+  image: harpo:latest
+  restart: unless-stopped
+  environment: &harpo-env
+    ASPNETCORE_ENVIRONMENT: "Production"
+    Harpo__MasterKey: "multisite-demo-master-key"
+    Auth__Mode: "Development"
+    Auth__DevUsers__0__Username: "alice"
+    Auth__DevUsers__0__Password: "alice"
+    Auth__DevUsers__0__DisplayName: "Alice Liddell"
+    Auth__DevUsers__0__IsSiteAdmin: "true"
+    Auth__DevUsers__1__Username: "bob"
+    Auth__DevUsers__1__Password: "bob"
+    Auth__DevUsers__1__DisplayName: "Bob Loblaw"
+    Auth__DevUsers__1__IsSiteAdmin: "false"
+    Replication__Key: "multisite-demo-replication-key"
+    Replication__IntervalSeconds: "5"
+    # Offline (PWA) vault is allowed in this demo; set "false" to forbid it.
+    Harpo__Offline__Enabled: "true"
+
+services:
+  harpo-alpha:
+    <<: *harpo-common
+    container_name: harpo-alpha
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *harpo-env
+      Harpo__SiteId: "alpha"
+      Replication__Peers__0__Name: "beta"
+      Replication__Peers__0__Url: "http://harpo-beta:8080"
+    volumes:
+      - harpo-alpha-data:/data
+
+  harpo-beta:
+    <<: *harpo-common
+    container_name: harpo-beta
+    ports:
+      - "8082:8080"
+    environment:
+      <<: *harpo-env
+      Harpo__SiteId: "beta"
+      Replication__Peers__0__Name: "alpha"
+      Replication__Peers__0__Url: "http://harpo-alpha:8080"
+    volumes:
+      - harpo-beta-data:/data
+
+volumes:
+  harpo-alpha-data:
+  harpo-beta-data:

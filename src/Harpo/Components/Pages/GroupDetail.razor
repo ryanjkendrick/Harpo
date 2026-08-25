@@ -1,0 +1,258 @@
+@page "/groups/{Id:guid}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GroupService Groups
+@inject NavigationManager Navigation
+
+<PageTitle>@(_group?.Name ?? "Group") · Harpo</PageTitle>
+
+<div class="page-narrow">
+    @if (_loadError is not null)
+    {
+        <div class="alert alert-error">@_loadError</div>
+    }
+    else if (_group is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else
+    {
+        <div class="page-header">
+            <h1>@_group.Name</h1>
+            <a class="btn btn-ghost" href="/vault/@_group.Id">Open in vault →</a>
+        </div>
+        @if (!string.IsNullOrEmpty(_group.Description))
+        {
+            <p class="muted">@_group.Description</p>
+        }
+
+        @if (CanAdmin)
+        {
+            <section class="panel">
+                <h2>Group settings</h2>
+                <div class="form-row">
+                    <label class="field">
+                        <span class="field-label">Name</span>
+                        <input @bind="_editName" />
+                    </label>
+                    <label class="field field-grow">
+                        <span class="field-label">Description</span>
+                        <input @bind="_editDescription" />
+                    </label>
+                    <button class="btn btn-primary" @onclick="SaveGroupAsync">Save</button>
+                </div>
+            </section>
+        }
+
+        <section class="panel">
+            <h2>Members</h2>
+            <p class="muted">Only these people can see the passwords in this group.</p>
+            @if (_members is not null)
+            {
+                <div class="table-scroll">
+                    <table class="members-table">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Role</th>
+                                <th>Added by</th>
+                                @if (CanAdmin)
+                                {
+                                    <th></th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var member in _members)
+                            {
+                                <tr>
+                                    <td>
+                                        <span class="mono">@member.Username</span>
+                                        @if (!string.IsNullOrEmpty(member.DisplayName) && member.DisplayName != member.Username)
+                                        {
+                                            <span class="muted"> · @member.DisplayName</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (CanAdmin)
+                                        {
+                                            <select value="@member.Role" @onchange="e => ChangeRoleAsync(member, e)">
+                                                <option value="@GroupRole.Member">Member</option>
+                                                <option value="@GroupRole.Admin">Admin</option>
+                                            </select>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge @(member.Role == GroupRole.Admin ? "badge-admin" : "")">
+                                                @member.Role.ToString().ToLowerInvariant()
+                                            </span>
+                                        }
+                                    </td>
+                                    <td class="muted">@member.AddedBy</td>
+                                    @if (CanAdmin)
+                                    {
+                                        <td class="cell-actions">
+                                            <button class="btn btn-icon" title="Remove from group"
+                                                    @onclick="() => RemoveMemberAsync(member)">🗑️</button>
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                @if (CanAdmin)
+                {
+                    <div class="form-row add-member-row">
+                        <label class="field">
+                            <span class="field-label">AD username</span>
+                            <input @bind="_newMemberUsername" placeholder="e.g. jsmith" />
+                        </label>
+                        <label class="field">
+                            <span class="field-label">Display name (optional)</span>
+                            <input @bind="_newMemberDisplayName" />
+                        </label>
+                        <label class="field">
+                            <span class="field-label">Role</span>
+                            <select @bind="_newMemberRole">
+                                <option value="@GroupRole.Member">Member</option>
+                                <option value="@GroupRole.Admin">Admin</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-primary" @onclick="AddMemberAsync">Add member</button>
+                    </div>
+                    <p class="muted form-hint">
+                        The username must match the account name the person signs in with
+                        (their AD <span class="mono">sAMAccountName</span>).
+                    </p>
+                }
+            }
+        </section>
+
+        @if (_error is not null)
+        {
+            <div class="alert alert-error">@_error</div>
+        }
+
+        @if (CanAdmin)
+        {
+            <section class="panel panel-danger">
+                <h2>Danger zone</h2>
+                <p class="muted">
+                    Deleting a group hides it and its passwords on every site.
+                    Password history is retained in the database.
+                </p>
+                <button class="btn btn-danger" @onclick="DeleteGroupAsync">Delete this group</button>
+            </section>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private UserContext? _user;
+    private Group? _group;
+    private GroupRole? _myRole;
+    private List<GroupMember>? _members;
+    private string _editName = "";
+    private string _editDescription = "";
+    private string _newMemberUsername = "";
+    private string _newMemberDisplayName = "";
+    private GroupRole _newMemberRole = GroupRole.Member;
+    private string? _error;
+    private string? _loadError;
+
+    private bool CanAdmin => _user is not null && (_user.IsSiteAdmin || _myRole == GroupRole.Admin);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _user = UserContext.FromPrincipal((await AuthState).User);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            var (group, role) = await Groups.GetGroupAsync(_user!, Id);
+            _group = group;
+            _myRole = role;
+            _editName = group.Name;
+            _editDescription = group.Description;
+            _members = await Groups.GetMembersAsync(_user!, Id);
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _loadError = ex.Message;
+        }
+    }
+
+    private async Task SaveGroupAsync()
+    {
+        await Guarded(async () =>
+        {
+            await Groups.UpdateGroupAsync(_user!, Id, _editName, _editDescription);
+            await LoadAsync();
+        });
+    }
+
+    private async Task AddMemberAsync()
+    {
+        await Guarded(async () =>
+        {
+            await Groups.AddMemberAsync(_user!, Id, _newMemberUsername, _newMemberDisplayName, _newMemberRole);
+            _newMemberUsername = "";
+            _newMemberDisplayName = "";
+            _newMemberRole = GroupRole.Member;
+            await LoadAsync();
+        });
+    }
+
+    private async Task ChangeRoleAsync(GroupMember member, ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<GroupRole>(e.Value?.ToString(), out var role))
+        {
+            return;
+        }
+        await Guarded(async () =>
+        {
+            await Groups.SetMemberRoleAsync(_user!, Id, member.Username, role);
+            await LoadAsync();
+        });
+    }
+
+    private async Task RemoveMemberAsync(GroupMember member)
+    {
+        await Guarded(async () =>
+        {
+            await Groups.RemoveMemberAsync(_user!, Id, member.Username);
+            await LoadAsync();
+        });
+    }
+
+    private async Task DeleteGroupAsync()
+    {
+        await Guarded(async () =>
+        {
+            await Groups.DeleteGroupAsync(_user!, Id);
+            Navigation.NavigateTo("/groups");
+        });
+    }
+
+    private async Task Guarded(Func<Task> action)
+    {
+        try
+        {
+            _error = null;
+            await action();
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _error = ex.Message;
+        }
+    }
+}

@@ -1,0 +1,51 @@
+# Single-site Harpo against your Active Directory.
+#
+# Before starting:
+#   1. Generate a master key:        openssl rand -base64 32
+#   2. Fill in the Auth__Ldap__* settings for your domain.
+#   3. Put TLS in front (reverse proxy) — the container itself serves plain HTTP.
+#
+# docker compose up -d --build
+
+services:
+  harpo:
+    build: .
+    image: harpo:latest
+    container_name: harpo
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      Harpo__SiteId: "main"
+      # REQUIRED — same value on every replicated site. Generate: openssl rand -base64 32
+      Harpo__MasterKey: "${HARPO_MASTER_KEY:?Set HARPO_MASTER_KEY in .env}"
+
+      # --- Active Directory ---
+      Auth__Mode: "Ldap"
+      Auth__Ldap__Server: "dc01.corp.example.com"
+      Auth__Ldap__Port: "636"
+      Auth__Ldap__UseSsl: "true"
+      Auth__Ldap__UpnSuffix: "corp.example.com"
+      Auth__Ldap__SearchBase: "DC=corp,DC=example,DC=com"
+      # Members of this AD group become Harpo site admins:
+      Auth__Ldap__AdminGroup: "Harpo Admins"
+
+      # --- Offline access (PWA) ---
+      # Lets signed-in users keep an encrypted, passphrase-protected, READ-ONLY
+      # copy of their passwords on their device for offline use. Set Enabled to
+      # "false" to forbid offline password storage org-wide: new snapshots stop
+      # immediately and devices wipe their local copy at next contact.
+      Harpo__Offline__Enabled: "true"
+      # How long a device may keep using its copy without refreshing from the server:
+      Harpo__Offline__SnapshotMaxAgeDays: "7"
+
+      # --- Cross-site replication (optional) ---
+      # Uncomment on every site, same key everywhere, and point peers at each other.
+      # Replication__Key: "${HARPO_REPLICATION_KEY}"
+      # Replication__Peers__0__Name: "branch"
+      # Replication__Peers__0__Url: "https://harpo.branch.example.com"
+    volumes:
+      - harpo-data:/data
+
+volumes:
+  harpo-data:

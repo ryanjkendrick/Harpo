@@ -1,0 +1,113 @@
+@page "/groups"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GroupService Groups
+
+<PageTitle>Groups · Harpo</PageTitle>
+
+<div class="page-narrow">
+    <div class="page-header">
+        <h1>Groups</h1>
+        <button class="btn btn-primary" @onclick="() => _showCreate = true">＋ New group</button>
+    </div>
+    <p class="muted">
+        Passwords live inside groups. Only members of a group can see its passwords;
+        group admins decide who is a member.
+    </p>
+
+    @if (_groups is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else if (_groups.Count == 0)
+    {
+        <div class="empty-state">
+            <span class="empty-icon">👥</span>
+            <p class="muted">You are not a member of any group yet. Create one — you'll be its admin.</p>
+        </div>
+    }
+    else
+    {
+        <div class="card-list">
+            @foreach (var g in _groups)
+            {
+                <a class="card group-card" href="/groups/@g.Group.Id">
+                    <div class="group-card-main">
+                        <span class="group-card-name">@g.Group.Name</span>
+                        @if (!string.IsNullOrEmpty(g.Group.Description))
+                        {
+                            <span class="muted">@g.Group.Description</span>
+                        }
+                    </div>
+                    <div class="group-card-meta">
+                        <span>@g.MemberCount @(g.MemberCount == 1 ? "member" : "members")</span>
+                        <span>@g.EntryCount @(g.EntryCount == 1 ? "password" : "passwords")</span>
+                        @if (g.MyRole == GroupRole.Admin)
+                        {
+                            <span class="badge badge-admin">admin</span>
+                        }
+                        else if (g.MyRole is null)
+                        {
+                            <span class="badge">site admin</span>
+                        }
+                    </div>
+                </a>
+            }
+        </div>
+    }
+</div>
+
+<Modal Visible="_showCreate" Title="New group" OnClose="() => _showCreate = false">
+    <div class="form-grid">
+        <label class="field">
+            <span class="field-label">Name</span>
+            <input @bind="_newName" placeholder="e.g. Infrastructure" />
+        </label>
+        <label class="field">
+            <span class="field-label">Description</span>
+            <input @bind="_newDescription" placeholder="What lives in this group?" />
+        </label>
+        @if (_error is not null)
+        {
+            <div class="alert alert-error">@_error</div>
+        }
+        <div class="modal-actions">
+            <button class="btn btn-ghost" @onclick="() => _showCreate = false">Cancel</button>
+            <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
+        </div>
+    </div>
+</Modal>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private UserContext? _user;
+    private List<GroupSummary>? _groups;
+    private bool _showCreate;
+    private string _newName = "";
+    private string _newDescription = "";
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _user = UserContext.FromPrincipal((await AuthState).User);
+        _groups = await Groups.GetMyGroupsAsync(_user);
+    }
+
+    private async Task CreateAsync()
+    {
+        try
+        {
+            _error = null;
+            await Groups.CreateGroupAsync(_user!, _newName, _newDescription);
+            _showCreate = false;
+            _newName = "";
+            _newDescription = "";
+            _groups = await Groups.GetMyGroupsAsync(_user!);
+        }
+        catch (VaultValidationException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

@@ -1,0 +1,562 @@
+@page "/"
+@page "/vault/{GroupId:guid}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject GroupService Groups
+@inject VaultService Passwords
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Vault · Harpo</PageTitle>
+
+<div class="vault">
+    <div class="vault-groups">
+        <div class="vault-groups-header">
+            <h2>Groups</h2>
+            <a class="btn btn-ghost btn-sm" href="/groups" title="Manage groups">Manage</a>
+        </div>
+        @if (_groups is null)
+        {
+            <p class="muted">Loading…</p>
+        }
+        else if (_groups.Count == 0)
+        {
+            <p class="muted">You are not a member of any group yet.</p>
+            <a class="btn btn-primary btn-sm" href="/groups">Create a group</a>
+        }
+        else
+        {
+            <ul class="group-list">
+                @foreach (var g in _groups)
+                {
+                    <li>
+                        <a class="group-item @(g.Group.Id == SelectedGroupId ? "selected" : "")"
+                           href="/vault/@g.Group.Id">
+                            <span class="group-item-name">@g.Group.Name</span>
+                            <span class="group-item-meta">
+                                @g.EntryCount @(g.EntryCount == 1 ? "password" : "passwords")
+                                @if (g.MyRole == GroupRole.Admin)
+                                {
+                                    <span class="badge badge-admin" title="You administer this group">admin</span>
+                                }
+                                else if (g.MyRole is null)
+                                {
+                                    <span class="badge" title="Visible because you are a site admin">site admin</span>
+                                }
+                            </span>
+                        </a>
+                    </li>
+                }
+            </ul>
+        }
+    </div>
+
+    <div class="vault-entries">
+        @if (SelectedGroupId is null)
+        {
+            <div class="empty-state">
+                <span class="empty-icon">🤫</span>
+                <h2>Nothing to see here</h2>
+                <p class="muted">Select a group on the left to browse its passwords.</p>
+            </div>
+        }
+        else
+        {
+            <div class="vault-toolbar">
+                <h1>@_selectedGroupName</h1>
+                <input class="search" type="search" placeholder="Search name, URL, username…"
+                       @bind="_search" @bind:event="oninput" />
+                <button class="btn btn-primary" @onclick="OpenNewEntry">＋ New password</button>
+            </div>
+
+            @if (_entries is null)
+            {
+                <p class="muted">Loading…</p>
+            }
+            else if (FilteredEntries.Count == 0)
+            {
+                <div class="empty-state">
+                    <span class="empty-icon">🗝️</span>
+                    <p class="muted">@(_entries.Count == 0 ? "No passwords in this group yet." : "Nothing matches your search.")</p>
+                </div>
+            }
+            else
+            {
+                <div class="table-scroll">
+                    <table class="entries-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Username</th>
+                                <th>URL</th>
+                                <th>Password</th>
+                                <th>Last updated</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var view in FilteredEntries)
+                            {
+                                var entry = view.Entry;
+                                <tr>
+                                    <td class="cell-name" title="@entry.Notes">
+                                        <span class="entry-icon">@(string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon)</span>
+                                        <span class="entry-name">@entry.Name</span>
+                                    </td>
+                                    <td class="cell-username">
+                                        @if (!string.IsNullOrEmpty(entry.Username))
+                                        {
+                                            <span class="mono">@entry.Username</span>
+                                            <button class="btn btn-icon" title="Copy username"
+                                                    @onclick='() => CopyTextAsync(entry.Username, "Username copied")'>📋</button>
+                                        }
+                                    </td>
+                                    <td class="cell-url">
+                                        @if (!string.IsNullOrEmpty(entry.Url))
+                                        {
+                                            <a href="@entry.Url" target="_blank" rel="noopener noreferrer" title="@entry.Url">@DisplayUrl(entry.Url)</a>
+                                        }
+                                    </td>
+                                    <td class="cell-password">
+                                        @if (_revealed.TryGetValue(entry.Id, out var plain))
+                                        {
+                                            <code class="mono revealed">@plain</code>
+                                            <button class="btn btn-icon" title="Hide" @onclick="() => Hide(entry.Id)">🙈</button>
+                                        }
+                                        else
+                                        {
+                                            <span class="mask">••••••••</span>
+                                            <button class="btn btn-icon" title="Reveal" @onclick="() => RevealAsync(entry.Id)">👁️</button>
+                                        }
+                                        <button class="btn btn-icon" title="Copy password"
+                                                @onclick="() => CopyPasswordAsync(entry.Id)">📋</button>
+                                    </td>
+                                    <td class="cell-updated" title="@FullTime(view.PasswordUpdatedAtUtc)">
+                                        <span class="mono">@view.PasswordUpdatedBy</span>
+                                        @if (view.PasswordUpdatedAtUtc is not null)
+                                        {
+                                            <span class="muted"> · @Relative(view.PasswordUpdatedAtUtc.Value)</span>
+                                        }
+                                    </td>
+                                    <td class="cell-actions">
+                                        <button class="btn btn-icon" title="Edit" @onclick="() => OpenEditEntry(entry)">✏️</button>
+                                        <button class="btn btn-icon" title="Password history" @onclick="() => OpenHistoryAsync(entry)">🕘</button>
+                                        <button class="btn btn-icon" title="Delete" @onclick="() => DeleteEntryAsync(entry)">🗑️</button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+<Modal Visible="_editor is not null" Title="@(_editorIsNew ? "New password" : "Edit password")" OnClose="CloseEditor">
+    @if (_editor is not null)
+    {
+        <div class="form-grid">
+            <label class="field">
+                <span class="field-label">Name</span>
+                <input @bind="_editor.Name" placeholder="e.g. Corporate Twitter" />
+            </label>
+            <label class="field">
+                <span class="field-label">Icon</span>
+                <IconPicker @bind-Value="_editor.Icon" />
+            </label>
+            <label class="field">
+                <span class="field-label">URL</span>
+                <input @bind="_editor.Url" placeholder="https://…" />
+            </label>
+            <label class="field">
+                <span class="field-label">Username</span>
+                <input @bind="_editor.Username" placeholder="Account this password belongs to" />
+            </label>
+            <label class="field">
+                <span class="field-label">@(_editorIsNew ? "Password" : "New password (leave blank to keep current)")</span>
+                <span class="password-row">
+                    <input class="mono" @bind="_editor.Password" @bind:event="oninput" />
+                    <button type="button" class="btn btn-ghost btn-sm" @onclick="GeneratePassword">🎲 Generate</button>
+                </span>
+            </label>
+            <label class="field">
+                <span class="field-label">Notes</span>
+                <textarea rows="2" @bind="_editor.Notes"></textarea>
+            </label>
+            @if (_editorError is not null)
+            {
+                <div class="alert alert-error">@_editorError</div>
+            }
+            <div class="modal-actions">
+                <button class="btn btn-ghost" @onclick="CloseEditor">Cancel</button>
+                <button class="btn btn-primary" @onclick="SaveEntryAsync">@(_editorIsNew ? "Create" : "Save")</button>
+            </div>
+        </div>
+    }
+</Modal>
+
+<Modal Visible="_historyEntry is not null" Title="@($"History · {_historyEntry?.Name}")" OnClose="CloseHistory">
+    @if (_history is not null)
+    {
+        <p class="muted history-caption">Every password this entry has ever had, newest first, with who set it.</p>
+        <div class="table-scroll">
+            <table class="history-table">
+                <thead>
+                    <tr><th>#</th><th>Set by</th><th>When</th><th>Password</th></tr>
+                </thead>
+                <tbody>
+                    @{ var number = _history.Count; }
+                    @foreach (var rev in _history)
+                    {
+                        var revisionId = rev.RevisionId;
+                        <tr>
+                            <td>
+                                @number
+                                @if (rev.IsCurrent)
+                                {
+                                    <span class="badge badge-current">current</span>
+                                }
+                            </td>
+                            <td class="mono">@rev.CreatedBy</td>
+                            <td title="@FullTime(rev.CreatedAtUtc)">@Relative(rev.CreatedAtUtc)</td>
+                            <td class="cell-password">
+                                @if (_revealedRevisions.TryGetValue(revisionId, out var plain))
+                                {
+                                    <code class="mono revealed">@plain</code>
+                                    <button class="btn btn-icon" title="Hide" @onclick="() => _revealedRevisions.Remove(revisionId)">🙈</button>
+                                }
+                                else
+                                {
+                                    <span class="mask">••••••••</span>
+                                    <button class="btn btn-icon" title="Reveal" @onclick="() => RevealRevisionAsync(revisionId)">👁️</button>
+                                }
+                            </td>
+                        </tr>
+                        number--;
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</Modal>
+
+@if (_toast is not null)
+{
+    <div class="toast @(_toastIsError ? "toast-error" : "")">@_toast</div>
+}
+
+@code {
+    [Parameter] public Guid? GroupId { get; set; }
+
+    [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private UserContext? _user;
+    private List<GroupSummary>? _groups;
+    private List<EntryView>? _entries;
+    private string _selectedGroupName = "";
+    private string _search = "";
+    private readonly Dictionary<Guid, string> _revealed = new();
+
+    private EntryEditModel? _editor;
+    private bool _editorIsNew;
+    private Guid _editorEntryId;
+    private string? _editorError;
+
+    private PasswordEntry? _historyEntry;
+    private List<RevisionView>? _history;
+    private readonly Dictionary<Guid, string> _revealedRevisions = new();
+
+    private string? _toast;
+    private bool _toastIsError;
+    private CancellationTokenSource? _toastCts;
+
+    private Guid? SelectedGroupId => GroupId ?? _groups?.FirstOrDefault()?.Group.Id;
+
+    private List<EntryView> FilteredEntries
+    {
+        get
+        {
+            if (_entries is null)
+            {
+                return new List<EntryView>();
+            }
+            var term = _search.Trim();
+            if (term.Length == 0)
+            {
+                return _entries;
+            }
+            return _entries
+                .Where(v => v.Entry.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                            || v.Entry.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
+                            || v.Entry.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _user = UserContext.FromPrincipal((await AuthState).User);
+        _groups = await Groups.GetMyGroupsAsync(_user);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadEntriesAsync();
+    }
+
+    private async Task LoadEntriesAsync()
+    {
+        if (_user is null || _groups is null)
+        {
+            return;
+        }
+        var groupId = SelectedGroupId;
+        if (groupId is null)
+        {
+            _entries = null;
+            return;
+        }
+        try
+        {
+            _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
+            _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
+            _revealed.Clear();
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _entries = new List<EntryView>();
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    // ---- reveal / copy ----
+
+    private async Task RevealAsync(Guid entryId)
+    {
+        try
+        {
+            _revealed[entryId] = await Passwords.RevealPasswordAsync(_user!, entryId);
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    private void Hide(Guid entryId) => _revealed.Remove(entryId);
+
+    private async Task CopyPasswordAsync(Guid entryId)
+    {
+        try
+        {
+            var plain = await Passwords.RevealPasswordAsync(_user!, entryId);
+            await CopyTextAsync(plain, "Password copied");
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    private async Task CopyTextAsync(string text, string message)
+    {
+        var ok = await JS.InvokeAsync<bool>("harpoCopy", text);
+        ShowToast(ok ? message : "Copy failed — your browser may require HTTPS for clipboard access.", isError: !ok);
+    }
+
+    private async Task RevealRevisionAsync(Guid revisionId)
+    {
+        if (_historyEntry is null)
+        {
+            return;
+        }
+        try
+        {
+            _revealedRevisions[revisionId] = await Passwords.RevealRevisionAsync(_user!, _historyEntry.Id, revisionId);
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    // ---- editor ----
+
+    private void OpenNewEntry()
+    {
+        _editorIsNew = true;
+        _editorError = null;
+        _editor = new EntryEditModel { Icon = "🔐" };
+    }
+
+    private void OpenEditEntry(PasswordEntry entry)
+    {
+        _editorIsNew = false;
+        _editorEntryId = entry.Id;
+        _editorError = null;
+        _editor = new EntryEditModel
+        {
+            Name = entry.Name,
+            Icon = string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon,
+            Url = entry.Url,
+            Username = entry.Username,
+            Notes = entry.Notes,
+        };
+    }
+
+    private void CloseEditor() => _editor = null;
+
+    private void GeneratePassword()
+    {
+        if (_editor is not null)
+        {
+            _editor.Password = PasswordGenerator.Generate();
+        }
+    }
+
+    private async Task SaveEntryAsync()
+    {
+        if (_editor is null || SelectedGroupId is null)
+        {
+            return;
+        }
+        try
+        {
+            if (_editorIsNew)
+            {
+                await Passwords.CreateEntryAsync(_user!, SelectedGroupId.Value,
+                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes, _editor.Password);
+                ShowToast("Password created");
+            }
+            else
+            {
+                await Passwords.UpdateEntryAsync(_user!, _editorEntryId,
+                    _editor.Name, _editor.Icon, _editor.Url, _editor.Username, _editor.Notes);
+                if (_editor.Password.Length > 0)
+                {
+                    await Passwords.ChangePasswordAsync(_user!, _editorEntryId, _editor.Password);
+                }
+                ShowToast("Saved");
+            }
+            _editor = null;
+            await ReloadAsync();
+        }
+        catch (VaultValidationException ex)
+        {
+            _editorError = ex.Message;
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _editorError = ex.Message;
+        }
+    }
+
+    private async Task DeleteEntryAsync(PasswordEntry entry)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete \"{entry.Name}\"? Its history is kept, but it disappears from the vault on every site.");
+        if (!confirmed)
+        {
+            return;
+        }
+        try
+        {
+            await Passwords.DeleteEntryAsync(_user!, entry.Id);
+            ShowToast("Deleted");
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    // ---- history ----
+
+    private async Task OpenHistoryAsync(PasswordEntry entry)
+    {
+        _historyEntry = entry;
+        _history = null;
+        _revealedRevisions.Clear();
+        try
+        {
+            _history = await Passwords.GetHistoryAsync(_user!, entry.Id);
+        }
+        catch (Exception ex)
+        {
+            _historyEntry = null;
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
+    private void CloseHistory()
+    {
+        _historyEntry = null;
+        _history = null;
+        _revealedRevisions.Clear();
+    }
+
+    // ---- helpers ----
+
+    private async Task ReloadAsync()
+    {
+        _groups = await Groups.GetMyGroupsAsync(_user!);
+        await LoadEntriesAsync();
+    }
+
+    private void ShowToast(string message, bool isError = false)
+    {
+        _toastCts?.Cancel();
+        _toastCts = new CancellationTokenSource();
+        _toast = message;
+        _toastIsError = isError;
+        var token = _toastCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(3000, token);
+                await InvokeAsync(() =>
+                {
+                    _toast = null;
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+    }
+
+    private static string DisplayUrl(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return uri.Host;
+        }
+        return url.Length > 30 ? url[..30] + "…" : url;
+    }
+
+    private static string FullTime(DateTime? utc) =>
+        utc is null ? "" : $"{utc:yyyy-MM-dd HH:mm:ss} UTC";
+
+    private static string Relative(DateTime utc)
+    {
+        var span = DateTime.UtcNow - utc;
+        return span.TotalSeconds < 90 ? "just now"
+            : span.TotalMinutes < 90 ? $"{Math.Round(span.TotalMinutes)}m ago"
+            : span.TotalHours < 36 ? $"{Math.Round(span.TotalHours)}h ago"
+            : $"{Math.Round(span.TotalDays)}d ago";
+    }
+
+    public sealed class EntryEditModel
+    {
+        public string Name { get; set; } = "";
+        public string Icon { get; set; } = "🔐";
+        public string Url { get; set; } = "";
+        public string Username { get; set; } = "";
+        public string Notes { get; set; } = "";
+        public string Password { get; set; } = "";
+    }
+}

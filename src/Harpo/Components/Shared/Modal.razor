@@ -1,0 +1,24 @@
+@* Minimal modal: shown while Visible, closes on backdrop click or ✕. *@
+@if (Visible)
+{
+    <div class="modal-backdrop" @onclick="CloseAsync">
+        <div class="modal-panel" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h2>@Title</h2>
+                <button type="button" class="btn btn-ghost modal-close" @onclick="CloseAsync" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                @ChildContent
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

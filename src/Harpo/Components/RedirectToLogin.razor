@@ -1,0 +1,21 @@
+@inject NavigationManager Navigation
+
+@code {
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = AuthenticationState is null ? null : (await AuthenticationState).User;
+        if (user?.Identity?.IsAuthenticated == true)
+        {
+            // Authenticated but not allowed (e.g. non-admin hitting /admin).
+            Navigation.NavigateTo("/denied", forceLoad: true);
+        }
+        else
+        {
+            var returnUrl = Uri.EscapeDataString(new Uri(Navigation.Uri).PathAndQuery);
+            Navigation.NavigateTo($"/login?returnUrl={returnUrl}", forceLoad: true);
+        }
+    }
+}

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Harpo/Harpo.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Harpo.Tests/Harpo.Tests.csproj" />
+  </Folder>
+</Solution>
