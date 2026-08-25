@@ -27,6 +27,7 @@ builder.Services.Configure<Harpo.Offline.OfflineOptions>(builder.Configuration.G
 builder.Services.Configure<ReplicationOptions>(builder.Configuration.GetSection("Replication"));
 builder.Services.Configure<LdapOptions>(builder.Configuration.GetSection("Auth:Ldap"));
 builder.Services.Configure<DevAuthOptions>(builder.Configuration.GetSection("Auth"));
+builder.Services.Configure<LoginThrottleOptions>(builder.Configuration.GetSection("Auth:Lockout"));
 
 // ---- Data ----
 var rawConnectionString = builder.Configuration.GetConnectionString("Harpo") ?? "Data Source=harpo.db";
@@ -52,6 +53,8 @@ else
 {
     builder.Services.AddSingleton<IAuthenticator, LdapAuthenticator>();
 }
+
+builder.Services.AddSingleton<LoginThrottle>();
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>

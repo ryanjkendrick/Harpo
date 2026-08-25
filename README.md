@@ -255,6 +255,11 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`) |
+| `Auth__Lockout__Enabled` | `true` | Brute-force lockout on the sign-in form |
+| `Auth__Lockout__MaxFailuresPerAccount` | `5` | Failures against one account before it is blocked |
+| `Auth__Lockout__MaxFailuresPerIp` | `20` | Failures from one address (any accounts) before it is blocked |
+| `Auth__Lockout__WindowMinutes` | `15` | How long failures keep counting |
+| `Auth__Lockout__LockoutMinutes` | `5` | How long a block lasts |
 | `Replication__Key` | *(empty = replication off)* | Shared secret between sites |
 | `Replication__IntervalSeconds` | `15` | How often to pull from peers |
 | `Replication__BatchSize` | `2000` | Max rows per origin per pull |
@@ -276,6 +281,16 @@ All settings can be given as environment variables (`Section__Key` form).
 - All access control is enforced in the service layer, not the UI.
 - The AD bind sends the user's password to the DC — use LDAPS (`UseSsl=true`).
   Failed logins are logged; invalid and unreachable-DC cases are distinguished.
+- **Brute-force lockout** is on by default: 5 failures against an account (or 20
+  from one address across any accounts) within 15 minutes blocks further
+  attempts for 5 minutes — tune via `Auth__Lockout__*`. Only *failures* count;
+  an unreachable DC does not. While blocked, attempts never reach the
+  authenticator, so a password spray also stops generating LDAP binds against
+  your domain controllers (and stops feeding AD's own account-lockout counter).
+  Inherent trade-off of any lockout: someone who knows a username can
+  nuisance-block that account's Harpo sign-in for the lockout period. Behind a
+  reverse proxy, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` so the
+  per-address limit sees real client IPs rather than the proxy's.
 - `Auth__Mode=Development` is for demos and local hacking only. The app logs a
   loud warning at startup while it's active.
 - Run the web UI behind HTTPS. The clipboard API also requires a secure context,

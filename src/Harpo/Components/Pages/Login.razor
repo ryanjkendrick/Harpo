@@ -2,6 +2,7 @@
 @attribute [AllowAnonymous]
 @layout Harpo.Components.Layout.AuthLayout
 @inject IAuthenticator Authenticator
+@inject LoginThrottle Throttle
 @inject NavigationManager Navigation
 @inject ILogger<Login> Logger
 @using Microsoft.AspNetCore.Authentication
@@ -66,15 +67,27 @@
             return; // Only reachable during static server-side rendering.
         }
 
+        // Brute-force gate: while an account or address is blocked, nothing
+        // reaches the authenticator (and therefore nothing reaches the DC).
+        var address = LoginThrottle.NormalizeAddress(HttpContext.Connection.RemoteIpAddress);
+        var gate = Throttle.Check(Model!.Username, address);
+        if (!gate.Allowed)
+        {
+            _error = $"Too many failed sign-in attempts. Try again in about {FormatRetry(gate.RetryAfter)}.";
+            return;
+        }
+
         try
         {
             var result = await Authenticator.AuthenticateAsync(
-                Model!.Username, Model.Password, HttpContext.RequestAborted);
+                Model.Username, Model.Password, HttpContext.RequestAborted);
             if (result is null)
             {
+                Throttle.RecordFailure(Model.Username, address);
                 _error = "Invalid username or password.";
                 return;
             }
+            Throttle.RecordSuccess(Model.Username);
 
             var principal = HarpoClaims.CreatePrincipal(result);
             await HttpContext.SignInAsync(
@@ -89,6 +102,11 @@
             _error = ex.Message;
         }
     }
+
+    private static string FormatRetry(TimeSpan retryAfter) =>
+        retryAfter.TotalMinutes >= 1.5
+            ? $"{Math.Ceiling(retryAfter.TotalMinutes):0} minutes"
+            : "a minute";
 
     private string SafeReturnUrl()
     {
