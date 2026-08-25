@@ -7,6 +7,8 @@ Built with **ASP.NET Core + Blazor** (interactive server rendering), authenticat
 against **Active Directory**, shipped as a **Docker** container, with built-in
 **cross-site replication**.
 
+![The vault](docs/screenshot-vault.png)
+
 ## Features
 
 - **Active Directory sign-in** — users log in with their AD credentials via a
@@ -265,6 +267,8 @@ SQLCipher community build, which behaves identically to stock SQLite when no
 key is configured.)
 
 ## Audit log
+
+![Administration page with audit log](docs/screenshot-admin.png)
 
 Harpo records the events that matter for a password manager — the ones no other
 record captures:

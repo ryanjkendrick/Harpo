@@ -24,12 +24,12 @@
         }
         <label class="field">
             <span class="field-label">Username</span>
-            <InputText @bind-Value="Model.Username" autocomplete="username" autofocus
+            <InputText @bind-Value="Model!.Username" autocomplete="username" autofocus
                        placeholder="AD account, e.g. jsmith" />
         </label>
         <label class="field">
             <span class="field-label">Password</span>
-            <InputText type="password" @bind-Value="Model.Password" autocomplete="current-password" />
+            <InputText type="password" @bind-Value="Model!.Password" autocomplete="current-password" />
         </label>
         <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         <p class="login-hint">Sign in with your Active Directory account.</p>
