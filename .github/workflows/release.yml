@@ -1,0 +1,73 @@
+# Builds and publishes the Harpo image to Docker Hub.
+#
+# Triggers on version tags (v0.1.0 → tags 0.1.0, 0.1 and latest) and can be run
+# manually from the Actions tab (publishes a `main` tag for testing).
+#
+# Requires two repository secrets (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USERNAME — Docker Hub account name
+#   DOCKERHUB_TOKEN    — a Docker Hub access token with Read & Write scope
+#     (hub.docker.com → Account settings → Personal access tokens)
+#
+# Forks: also change IMAGE below to your own namespace.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ryanjkendrick/harpo
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: dotnet test
+        run: dotnet test Harpo.slnx --configuration Release
+
+  publish:
+    name: Build & push image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU lets the runner assemble the arm64 variant; the .NET compile itself
+      # runs natively on the runner (the Dockerfile build stage is pinned to
+      # $BUILDPLATFORM and produces architecture-neutral output).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,5 +1,8 @@
 # ---- build ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Pinned to the build host's own architecture: the publish output is portable
+# (framework-dependent, no RID), so multi-arch builds compile once natively
+# instead of once per target under QEMU emulation.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY src/Harpo/Harpo.csproj src/Harpo/
 RUN dotnet restore src/Harpo/Harpo.csproj
@@ -8,6 +11,9 @@ RUN dotnet publish src/Harpo/Harpo.csproj -c Release -o /app /p:UseAppHost=false
 
 # ---- runtime ----
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+LABEL org.opencontainers.image.source="https://github.com/ryanjkendrick/Harpo" \
+      org.opencontainers.image.description="Harpo — self-hosted team password manager: AD login, group-gated vaults, cross-site replication, offline PWA" \
+      org.opencontainers.image.licenses="MIT"
 # libldap is the native library System.DirectoryServices.Protocols uses to talk
 # to Active Directory from Linux. (Package name differs across Debian releases.)
 RUN apt-get update \

@@ -102,6 +102,11 @@ docker exec harpo-samba-ad samba-tool user create casey 'Passw0rd!' --given-name
 
 ## Production deployment (single site, Active Directory)
 
+Releases are published to Docker Hub as
+[`ryanjkendrick/harpo`](https://hub.docker.com/r/ryanjkendrick/harpo)
+(multi-arch: amd64 + arm64), so a production install only needs
+`docker-compose.yml` — no clone, no build.
+
 1. Generate a master key and put it in `.env` next to `docker-compose.yml`:
 
    ```bash
@@ -113,7 +118,7 @@ docker exec harpo-samba-ad samba-tool user create casey 'Passw0rd!' --given-name
 3. Start it:
 
    ```bash
-   docker compose up -d --build
+   docker compose up -d
    ```
 
 4. Put a TLS-terminating reverse proxy (Caddy, nginx, Traefik, IIS ARR) in front
@@ -470,11 +475,27 @@ All settings can be given as environment variables (`Section__Key` form).
 
 ```bash
 dotnet run --project src/Harpo    # dev profile: dev users alice/alice, bob/bob
-dotnet test                       # 31 tests: crypto, authz, replication
+dotnet test                       # unit suite: crypto, authz, replication, TOTP, …
 ```
 
 The dev profile (`appsettings.Development.json`) uses a local SQLite file, dev
 auth, and a throwaway master key.
+
+### Releasing
+
+Pushing a version tag publishes the image — the `Release` workflow runs the
+test suite, then builds linux/amd64 + linux/arm64 and pushes semver tags plus
+`latest` to Docker Hub:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow needs two repository secrets: `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` (a Docker Hub access token with Read & Write scope). It can
+also be dispatched manually from the Actions tab, which publishes a `main` tag
+for testing. Forks: change the `IMAGE` name in
+`.github/workflows/release.yml` and in `docker-compose.yml`.
 
 ## Design notes & limitations
 
