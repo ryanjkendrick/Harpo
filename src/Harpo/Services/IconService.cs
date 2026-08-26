@@ -188,25 +188,55 @@ public class IconService
         return imported;
     }
 
-    /// <summary>Sets the URLs an icon represents (site admins). Free-form input is normalized to hostnames.</summary>
-    public async Task SetMatchUrlsAsync(UserContext user, Guid id, string matchUrls, CancellationToken ct = default)
+    /// <summary>
+    /// Edits a catalogue icon (site admins): rename, re-attribute, or both.
+    /// Null parameters keep the current value; free-form URL input is
+    /// normalized to hostnames. No-op edits record nothing.
+    /// </summary>
+    public async Task UpdateAsync(
+        UserContext user, Guid id, string? name = null, string? matchUrls = null, CancellationToken ct = default)
     {
         if (!user.IsSiteAdmin)
         {
-            throw new VaultAccessDeniedException("Only site admins can edit icon attributions.");
+            throw new VaultAccessDeniedException("Only site admins can edit catalogue icons.");
         }
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var icon = await db.CustomIcons.SingleOrDefaultAsync(i => i.Id == id && !i.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Icon not found.");
-        var normalized = IconUrlMatcher.NormalizeHostList(matchUrls);
-        if (icon.MatchUrls == normalized)
+
+        var changes = new List<string>();
+        if (name is not null)
+        {
+            name = name.Trim();
+            if (name.Length == 0)
+            {
+                throw new VaultValidationException("The icon needs a name.");
+            }
+            if (name.Length > 50)
+            {
+                name = name[..50];
+            }
+            if (icon.Name != name)
+            {
+                changes.Add($"renamed \"{icon.Name}\" → \"{name}\"");
+                icon.Name = name;
+            }
+        }
+        if (matchUrls is not null)
+        {
+            var normalized = IconUrlMatcher.NormalizeHostList(matchUrls);
+            if (icon.MatchUrls != normalized)
+            {
+                changes.Add(normalized.Length == 0 ? "URL attribution cleared" : $"matches: {normalized}");
+                icon.MatchUrls = normalized;
+            }
+        }
+        if (changes.Count == 0)
         {
             return;
         }
-        icon.MatchUrls = normalized;
         await db.SaveChangesAsync(ct);
-        await _audit.RecordAsync(user, AuditActions.IconUpdate, icon.Name,
-            detail: normalized.Length == 0 ? "URL attribution cleared" : $"matches: {normalized}");
+        await _audit.RecordAsync(user, AuditActions.IconUpdate, icon.Name, detail: string.Join("; ", changes));
     }
 
     /// <summary>Site admins curate the catalogue. Entries referencing a deleted icon fall back to the default glyph.</summary>

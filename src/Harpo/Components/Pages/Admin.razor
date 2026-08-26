@@ -191,27 +191,56 @@
         }
     </section>
 
-    @if (_icons is { Count: > 0 } || Icons.ImportPath.Length > 0)
-    {
-        <section class="panel">
-            <h2>Icon catalogue</h2>
-            <p class="muted">
-                Custom icons anyone has uploaded for password entries. Deleting one leaves
-                entries using it on the default glyph.
-            </p>
-            @if (Icons.ImportPath.Length > 0)
-            {
-                <p class="muted small">
+    <section class="panel">
+        <h2>Icon catalogue</h2>
+        <p class="muted">
+            Custom icons available for password entries. Deleting one leaves
+            entries using it on the default glyph.
+        </p>
+
+        <div class="form-row icon-add-row">
+            <label class="field">
+                <span class="field-label">Image (≤64 KB)</span>
+                <InputFile OnChange="StageIconAsync"
+                           accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" />
+            </label>
+            <label class="field">
+                <span class="field-label">Name</span>
+                <input @bind="_newIconName" placeholder="e.g. GitLab" />
+            </label>
+            <label class="field field-grow">
+                <span class="field-label">Matched URLs (optional)</span>
+                <input class="mono" @bind="_newIconUrls" placeholder="e.g. gitlab.com, git.corp.io" />
+            </label>
+            <button class="btn btn-primary" disabled="@(_stagedIconData is null)" @onclick="AddIconAsync">Add icon</button>
+        </div>
+        @if (_iconError is not null)
+        {
+            <div class="alert alert-error">@_iconError</div>
+        }
+        @if (Icons.ImportPath.Length > 0)
+        {
+            <p class="muted small">
                     Server folder: <span class="mono">@Icons.ImportPath</span> — images placed
                     there are imported at startup (a hostname filename like
                     <span class="mono">gitlab.com.png</span> auto-attributes the icon).
-                    <button class="btn btn-ghost btn-sm" @onclick="ImportIconsAsync">Import now</button>
-                    @if (_importResult is not null)
-                    {
-                        <span class="badge badge-ok">@_importResult</span>
-                    }
-                </p>
-            }
+                <button class="btn btn-ghost btn-sm" @onclick="ImportIconsAsync">Import now</button>
+                @if (_importResult is not null)
+                {
+                    <span class="badge badge-ok">@_importResult</span>
+                }
+            </p>
+        }
+        @if (_icons is null)
+        {
+            <p class="muted">Loading…</p>
+        }
+        else if (_icons.Count == 0)
+        {
+            <p class="muted">The catalogue is empty — add an image above.</p>
+        }
+        else
+        {
             <div class="table-scroll">
                 <table>
                     <thead><tr><th>Icon</th><th>Name</th><th>Matched URLs</th><th>Uploaded by</th><th>Size</th><th>Used by</th><th></th></tr></thead>
@@ -220,16 +249,20 @@
                         {
                             <tr>
                                 <td><img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" /></td>
-                                <td>@icon.Name</td>
+                                <td>
+                                    <input class="icon-name-input"
+                                           value="@(_iconNameEdits.GetValueOrDefault(icon.Id, icon.Name))"
+                                           @onchange='e => _iconNameEdits[icon.Id] = e.Value?.ToString() ?? ""' />
+                                </td>
                                 <td>
                                     <input class="mono icon-urls-input"
                                            value="@(_iconUrlEdits.GetValueOrDefault(icon.Id, icon.MatchUrls))"
                                            placeholder="e.g. gitlab.com"
                                            title="Hostnames this icon represents — entries with matching URLs pick it up automatically."
                                            @onchange='e => _iconUrlEdits[icon.Id] = e.Value?.ToString() ?? ""' />
-                                    @if (_iconUrlEdits.TryGetValue(icon.Id, out var edited) && edited != icon.MatchUrls)
+                                    @if (IconRowDirty(icon))
                                     {
-                                        <button class="btn btn-ghost btn-sm" @onclick="() => SaveIconUrlsAsync(icon)">Save</button>
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => SaveIconAsync(icon)">Save</button>
                                     }
                                 </td>
                                 <td class="mono muted">@icon.CreatedBy</td>
@@ -244,8 +277,8 @@
                     </tbody>
                 </table>
             </div>
-        </section>
-    }
+        }
+    </section>
 
     @if (_deletedGroups is { Count: > 0 })
     {
@@ -307,7 +340,92 @@
     private List<IconSummary>? _icons;
     private Dictionary<Guid, int> _iconUsage = new();
     private readonly Dictionary<Guid, string> _iconUrlEdits = new();
+    private readonly Dictionary<Guid, string> _iconNameEdits = new();
     private string? _importResult;
+    private string? _iconError;
+    private string _newIconName = "";
+    private string _newIconUrls = "";
+    private byte[]? _stagedIconData;
+    private string _stagedIconType = "";
+
+    private bool IconRowDirty(IconSummary icon) =>
+        _iconNameEdits.GetValueOrDefault(icon.Id, icon.Name) != icon.Name
+        || _iconUrlEdits.GetValueOrDefault(icon.Id, icon.MatchUrls) != icon.MatchUrls;
+
+    private async Task StageIconAsync(InputFileChangeEventArgs e)
+    {
+        _iconError = null;
+        try
+        {
+            var file = e.File;
+            if (file.Size > CustomIcon.MaxBytes)
+            {
+                _iconError = $"Icons are capped at {CustomIcon.MaxBytes / 1024} KB — resize the image first.";
+                _stagedIconData = null;
+                return;
+            }
+            await using var stream = file.OpenReadStream(CustomIcon.MaxBytes);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+            _stagedIconData = buffer.ToArray();
+            _stagedIconType = file.ContentType;
+            if (string.IsNullOrWhiteSpace(_newIconName))
+            {
+                _newIconName = Path.GetFileNameWithoutExtension(file.Name);
+            }
+        }
+        catch (Exception)
+        {
+            _iconError = "Could not read that file — try a different image.";
+            _stagedIconData = null;
+        }
+    }
+
+    private async Task AddIconAsync()
+    {
+        if (_stagedIconData is null)
+        {
+            return;
+        }
+        try
+        {
+            _iconError = null;
+            await Icons.AddAsync(_user!, _newIconName, _stagedIconType, _stagedIconData, _newIconUrls);
+            _stagedIconData = null;
+            _newIconName = "";
+            _newIconUrls = "";
+            await RefreshIconsAsync();
+        }
+        catch (VaultValidationException ex)
+        {
+            _iconError = ex.Message;
+        }
+    }
+
+    private async Task SaveIconAsync(IconSummary icon)
+    {
+        try
+        {
+            _iconError = null;
+            await Icons.UpdateAsync(_user!, icon.Id,
+                name: _iconNameEdits.GetValueOrDefault(icon.Id, icon.Name),
+                matchUrls: _iconUrlEdits.GetValueOrDefault(icon.Id, icon.MatchUrls));
+            _iconNameEdits.Remove(icon.Id);
+            _iconUrlEdits.Remove(icon.Id);
+            await RefreshIconsAsync();
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException)
+        {
+            _iconError = ex.Message;
+        }
+    }
+
+    private async Task RefreshIconsAsync()
+    {
+        _icons = await Icons.GetAllAsync();
+        _iconUsage = await Icons.GetUsageAsync();
+        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
+    }
     private bool _auditHasMore;
     private string _auditFilter = "";
     private Timer? _refreshTimer;
@@ -393,24 +511,13 @@
     {
         var imported = await Icons.ImportFromDirectoryAsync();
         _importResult = imported == 0 ? "nothing new" : $"imported {imported}";
-        _icons = await Icons.GetAllAsync();
-        _iconUsage = await Icons.GetUsageAsync();
-    }
-
-    private async Task SaveIconUrlsAsync(IconSummary icon)
-    {
-        await Icons.SetMatchUrlsAsync(_user!, icon.Id, _iconUrlEdits.GetValueOrDefault(icon.Id, ""));
-        _iconUrlEdits.Remove(icon.Id);
-        _icons = await Icons.GetAllAsync();
-        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
+        await RefreshIconsAsync();
     }
 
     private async Task DeleteIconAsync(IconSummary icon)
     {
         await Icons.DeleteAsync(_user!, icon.Id);
-        _icons = await Icons.GetAllAsync();
-        _iconUsage = await Icons.GetUsageAsync();
-        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
+        await RefreshIconsAsync();
     }
 
     private async Task RestoreGroupAsync(Group group)

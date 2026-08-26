@@ -106,19 +106,29 @@ public class IconTests : IDisposable
     }
 
     [Fact]
-    public async Task Attributions_are_stored_normalized_and_editable_by_admins_only()
+    public async Task Admins_can_rename_and_reattribute_icons_from_one_edit()
     {
         var icon = await _site.Icons.AddAsync(_alice, "GitLab", "image/png", TinyPng,
             matchUrls: "https://gitlab.com/some/path");
         Assert.Equal("gitlab.com", Assert.Single(await _site.Icons.GetAllAsync()).MatchUrls);
 
         await Assert.ThrowsAsync<VaultAccessDeniedException>(
-            () => _site.Icons.SetMatchUrlsAsync(_alice, icon.Id, "corp.io"));
+            () => _site.Icons.UpdateAsync(_alice, icon.Id, matchUrls: "corp.io"));
+        await Assert.ThrowsAsync<VaultValidationException>(
+            () => _site.Icons.UpdateAsync(_admin, icon.Id, name: "   "));
 
-        await _site.Icons.SetMatchUrlsAsync(_admin, icon.Id, "GIT.corp.io, gitlab.com");
-        Assert.Equal("git.corp.io gitlab.com", Assert.Single(await _site.Icons.GetAllAsync()).MatchUrls);
+        await _site.Icons.UpdateAsync(_admin, icon.Id, name: "Corp Git", matchUrls: "GIT.corp.io, gitlab.com");
+        var updated = Assert.Single(await _site.Icons.GetAllAsync());
+        Assert.Equal("Corp Git", updated.Name);
+        Assert.Equal("git.corp.io gitlab.com", updated.MatchUrls);
         Assert.Contains(await _site.Audit.GetEventsAsync(_admin),
-            e => e.Action == AuditActions.IconUpdate && e.Detail.Contains("git.corp.io"));
+            e => e.Action == AuditActions.IconUpdate
+                 && e.Detail.Contains("renamed") && e.Detail.Contains("git.corp.io"));
+
+        // Null parameters keep values; a no-op edit records no audit event.
+        var auditCount = (await _site.Audit.GetEventsAsync(_admin)).Count;
+        await _site.Icons.UpdateAsync(_admin, icon.Id, name: "Corp Git");
+        Assert.Equal(auditCount, (await _site.Audit.GetEventsAsync(_admin)).Count);
     }
 
     private static IconService ImportingIconService(TestSite site, string path) => new(

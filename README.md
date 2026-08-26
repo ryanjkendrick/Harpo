@@ -21,8 +21,9 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   belongs to, an account username, and free-text notes. Icons come from emoji
   or an org-wide **custom icon catalogue**: anyone can upload small images
   (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
-  picker, they replicate to every site, and site admins curate the catalogue
-  from the Administration page. Icons can be **attributed to URLs** (hostnames,
+  picker, they replicate to every site, and site admins fully manage the
+  catalogue from the Administration page — upload, rename, attribute, delete,
+  with per-icon usage counts. Icons can be **attributed to URLs** (hostnames,
   subdomains included): typing a matching URL on an entry selects the icon
   automatically, picking an attributed icon fills an empty URL field, and
   uploading while the URL field is set attributes the new icon to that host. The built-in generator

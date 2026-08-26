@@ -577,6 +577,8 @@ tbody tr:hover { background: var(--bg); }
 .icon-upload:hover { border-color: var(--accent); color: var(--accent); }
 .icon-upload input[type=file] { display: none; }
 .icon-urls-input { width: 14rem; font-size: .85rem; padding: .3rem .5rem; }
+.icon-name-input { width: 9rem; font-size: .9rem; padding: .3rem .5rem; }
+.icon-add-row { margin-bottom: .6rem; }
 
 /* ---------- misc ---------- */
 
