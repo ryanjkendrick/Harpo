@@ -356,12 +356,12 @@ function renderEntry(entry) {
     const reveal = document.createElement("button");
     reveal.className = "btn-icon";
     reveal.title = "Reveal";
-    reveal.textContent = "👁️";
+    reveal.innerHTML = lucide("eye");
     const setShown = (value) => {
         shown = value;
         pw.textContent = shown ? (entry.password ?? "(no password)") : "••••••••";
         pw.classList.toggle("shown", shown);
-        reveal.textContent = shown ? "🙈" : "👁️";
+        reveal.innerHTML = lucide(shown ? "eye-off" : "eye");
         clearTimeout(hideTimer);
         if (shown) {
             hideTimer = setTimeout(() => setShown(false), 30000); // auto-hide
@@ -374,7 +374,7 @@ function renderEntry(entry) {
         const totpBtn = document.createElement("button");
         totpBtn.className = "btn-icon";
         totpBtn.title = "Show 2FA code";
-        totpBtn.textContent = "🕐";
+        totpBtn.innerHTML = lucide("timer");
         const codeEl = document.createElement("span");
         codeEl.className = "pw shown";
         codeEl.style.display = "none";
@@ -383,7 +383,7 @@ function renderEntry(entry) {
             clearInterval(totpTimer);
             totpTimer = null;
             codeEl.style.display = "none";
-            totpBtn.textContent = "🕐";
+            totpBtn.innerHTML = lucide("timer");
         };
         const renderCode = async () => {
             try {
@@ -400,7 +400,7 @@ function renderEntry(entry) {
                 return;
             }
             codeEl.style.display = "";
-            totpBtn.textContent = "🙈";
+            totpBtn.innerHTML = lucide("eye-off");
             await renderCode();
             const startedAt = Date.now();
             totpTimer = setInterval(() => {
@@ -418,7 +418,7 @@ function renderEntry(entry) {
     const copy = document.createElement("button");
     copy.className = "btn-icon";
     copy.title = "Copy password";
-    copy.textContent = "📋";
+    copy.innerHTML = lucide("copy");
     copy.addEventListener("click", async () => {
         if (entry.password == null) {
             toast("This entry has no password");
@@ -434,6 +434,21 @@ function renderEntry(entry) {
 }
 
 let clipboardTimer = null;
+// ---------- icons (vendored Lucide subset, ISC license — matches the app chrome) ----------
+
+const LUCIDE = {
+    "eye": '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/>',
+    "eye-off": '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" x2="23" y1="1" y2="23"/>',
+    "copy": '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    "timer": '<line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/>',
+};
+
+function lucide(name, size = 16) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24"`
+        + ` fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"`
+        + ` stroke-linejoin="round" aria-hidden="true">${LUCIDE[name]}</svg>`;
+}
+
 // ---------- TOTP (RFC 6238 via WebCrypto) ----------
 
 function base32Decode(input) {

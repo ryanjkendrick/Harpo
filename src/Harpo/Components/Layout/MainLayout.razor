@@ -11,26 +11,26 @@
         </a>
         <nav class="side-nav">
             <NavLink class="side-link" href="/" Match="NavLinkMatch.All">
-                <span class="side-link-icon">🔐</span> Vault
+                <span class="side-link-icon"><Lucide Name="lock" /></span> Vault
             </NavLink>
             <NavLink class="side-link" href="/groups">
-                <span class="side-link-icon">👥</span> Groups
+                <span class="side-link-icon"><Lucide Name="users" /></span> Groups
             </NavLink>
             @if (Health.Value.Enabled)
             {
                 <NavLink class="side-link" href="/health">
-                    <span class="side-link-icon">🩺</span> Vault health
+                    <span class="side-link-icon"><Lucide Name="heart-pulse" /></span> Vault health
                 </NavLink>
             }
             @if (Offline.Value.Enabled)
             {
                 <a class="side-link" href="/offline.html">
-                    <span class="side-link-icon">📴</span> Offline vault
+                    <span class="side-link-icon"><Lucide Name="cloud-off" /></span> Offline vault
                 </a>
             }
             <AuthorizeView Roles="@HarpoClaims.SiteAdminRole">
                 <NavLink class="side-link" href="/admin">
-                    <span class="side-link-icon">🛠️</span> Administration
+                    <span class="side-link-icon"><Lucide Name="wrench" /></span> Administration
                 </NavLink>
             </AuthorizeView>
         </nav>

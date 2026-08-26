@@ -191,6 +191,11 @@ a:hover { text-decoration: underline; }
 
 .btn-icon:hover { background: var(--accent-soft); }
 
+.lucide { vertical-align: -0.18em; }
+.btn-icon .lucide { display: block; }
+.side-link-icon .lucide { display: block; margin: 0 auto; }
+.btn .lucide { flex-shrink: 0; }
+
 .btn-block { width: 100%; }
 
 .field { display: flex; flex-direction: column; gap: .3rem; }

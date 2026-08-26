@@ -270,7 +270,7 @@
                                 <td>@(_iconUsage.GetValueOrDefault(icon.Id)) @(_iconUsage.GetValueOrDefault(icon.Id) == 1 ? "entry" : "entries")</td>
                                 <td class="cell-actions">
                                     <button class="btn btn-icon" title="Delete from catalogue"
-                                            @onclick="() => DeleteIconAsync(icon)">🗑️</button>
+                                            @onclick="() => DeleteIconAsync(icon)"><Lucide Name="trash" Size="16" /></button>
                                 </td>
                             </tr>
                         }

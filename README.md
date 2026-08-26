@@ -495,4 +495,5 @@ auth, and a throwaway master key.
 
 ## License
 
-[MIT](LICENSE) — © 2026 Ryan Kendrick.
+[MIT](LICENSE) — © 2026 Ryan Kendrick. UI chrome icons are a vendored subset
+of [Lucide](https://lucide.dev) (ISC license), inlined as SVG.
