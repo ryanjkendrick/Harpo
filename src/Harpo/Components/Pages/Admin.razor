@@ -10,6 +10,7 @@
 @inject GroupService Groups
 @inject AuditService Audit
 @inject IconService Icons
+@inject Harpo.Security.CryptoService Crypto
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -37,6 +38,15 @@
                 <span class="stat-label">offline access</span>
             </div>
         </div>
+        @if (Crypto.HasPreviousKeys)
+        {
+            <div class="alert alert-warning" style="margin-top: .8rem;">
+                <strong>Master key rotation in progress</strong> — @Crypto.PreviousKeyCount previous
+                key@(Crypto.PreviousKeyCount == 1 ? "" : "s") configured. Local data has been re-encrypted
+                under the active key. Once every replicated site runs the new key and replication has
+                caught up, remove <code>Harpo__PreviousMasterKeys</code> and restart.
+            </div>
+        }
     </section>
 
     <section class="panel">

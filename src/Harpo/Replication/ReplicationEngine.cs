@@ -1,4 +1,5 @@
 using Harpo.Data;
+using Harpo.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -21,17 +22,44 @@ public class ReplicationEngine
     private readonly ReplicationOptions _options;
     private readonly string _siteId;
     private readonly ILogger<ReplicationEngine> _logger;
+    private readonly CryptoService _crypto;
 
     public ReplicationEngine(
         IDbContextFactory<HarpoDbContext> dbFactory,
         IOptions<ReplicationOptions> options,
         IOptions<SiteOptions> site,
-        ILogger<ReplicationEngine> logger)
+        ILogger<ReplicationEngine> logger,
+        CryptoService crypto)
     {
         _dbFactory = dbFactory;
         _options = options.Value;
         _siteId = site.Value.SiteId;
         _logger = logger;
+        _crypto = crypto;
+    }
+
+    /// <summary>
+    /// During a master key rotation, rows from not-yet-rotated peers arrive
+    /// encrypted under a previous key. Re-encrypt them under the active key on
+    /// the way in (stamps are untouched, so this never re-replicates as an
+    /// edit) — that way the store converges to active-key-only ciphertext
+    /// without waiting for the next restart's sweep. Blobs matching no
+    /// configured key are stored as received.
+    /// </summary>
+    private bool TryHeal(string encrypted, out string healed, out string plaintext)
+    {
+        healed = encrypted;
+        plaintext = "";
+        if (!_crypto.HasPreviousKeys)
+        {
+            return false;
+        }
+        if (!_crypto.TryDecrypt(encrypted, out plaintext, out var underActiveKey) || underActiveKey)
+        {
+            return false;
+        }
+        healed = _crypto.Encrypt(plaintext);
+        return true;
     }
 
     public string SiteId => _siteId;
@@ -178,6 +206,10 @@ public class ReplicationEngine
         foreach (var incoming in response.Entries)
         {
             Track(highWater, incoming);
+            if (incoming.EncryptedTotpSecret is { } totpBlob && TryHeal(totpBlob, out var healedTotp, out _))
+            {
+                incoming.EncryptedTotpSecret = healedTotp;
+            }
             var local = await db.PasswordEntries.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
             if (local is null)
             {
@@ -208,6 +240,11 @@ public class ReplicationEngine
             var exists = await db.PasswordRevisions.AnyAsync(x => x.Id == incoming.Id, ct);
             if (!exists)
             {
+                if (TryHeal(incoming.EncryptedPassword, out var healedPassword, out var plaintext))
+                {
+                    incoming.EncryptedPassword = healedPassword;
+                    incoming.Fingerprint = _crypto.Fingerprint(plaintext);
+                }
                 db.PasswordRevisions.Add(incoming);
                 accepted++;
             }

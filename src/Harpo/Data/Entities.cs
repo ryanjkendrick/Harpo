@@ -130,6 +130,17 @@ public class PasswordRevision : IReplicatedRow
     public bool IsDeleted { get; set; }
 }
 
+/// <summary>
+/// Site-local key/value settings; never replicated. Holds the master-key canary
+/// (an encrypted known value that turns a misconfigured key into a loud startup
+/// failure instead of a silently unreadable vault).
+/// </summary>
+public class SiteSetting
+{
+    public string Id { get; set; } = "";
+    public string Value { get; set; } = "";
+}
+
 /// <summary>Single-row table holding this site's next replication sequence number.</summary>
 public class SiteCounter
 {

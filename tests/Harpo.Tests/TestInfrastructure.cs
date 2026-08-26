@@ -57,7 +57,8 @@ public sealed class TestSite : IDisposable
 
     private readonly SqliteConnection _connection;
 
-    public TestSite(string siteId, ManualTime? time = null)
+    public TestSite(string siteId, ManualTime? time = null,
+        string masterKey = MasterKey, string[]? previousMasterKeys = null)
     {
         SiteId = siteId;
         Time = time ?? new ManualTime();
@@ -72,7 +73,7 @@ public sealed class TestSite : IDisposable
             context.Database.EnsureCreated();
         }
 
-        Crypto = new CryptoService(MasterKey);
+        Crypto = new CryptoService(masterKey, previousMasterKeys);
         Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance);
         Groups = new GroupService(Db, Time, Audit);
         Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
@@ -85,7 +86,8 @@ public sealed class TestSite : IDisposable
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),
             Options.Create(new SiteOptions { SiteId = siteId }),
-            NullLogger<ReplicationEngine>.Instance);
+            NullLogger<ReplicationEngine>.Instance,
+            Crypto);
     }
 
     /// <summary>Pulls everything this site is missing from <paramref name="source"/> (loops through HasMore batches).</summary>

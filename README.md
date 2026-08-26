@@ -289,6 +289,55 @@ depth, not a new trust boundary. (Implementation: the bundled SQLite is the
 SQLCipher community build, which behaves identically to stock SQLite when no
 key is configured.)
 
+## Rotating the master key
+
+If the master key is ever suspected compromised (or policy demands periodic
+rotation), Harpo re-encrypts every stored secret under a new key without
+downtime. The mechanism: `Harpo__MasterKey` is always the **active** key — all
+encryption and fingerprints use it — while `Harpo__PreviousMasterKeys__0..N`
+holds old keys that are still accepted for **decryption only**. Whenever
+previous keys are configured, each site re-encrypts its local data under the
+active key at startup, and rows arriving from not-yet-rotated peers are
+re-encrypted as they arrive.
+
+Single site:
+
+1. Set `Harpo__MasterKey` to the new key, put the old key in
+   `Harpo__PreviousMasterKeys__0`, restart. The log reports how many values
+   were re-encrypted, and the admin page shows a rotation banner.
+2. Remove `Harpo__PreviousMasterKeys__0`, restart. Done.
+
+Replicated sites — same idea, staged so reveals never fail anywhere:
+
+1. **Stage:** on every site, add the *new* key to `Harpo__PreviousMasterKeys`
+   (keeping the old `Harpo__MasterKey`) and restart. Every site can now read
+   both generations.
+2. **Flip:** site by site, swap — new key becomes `Harpo__MasterKey`, old key
+   moves to `Harpo__PreviousMasterKeys__0` — and restart. Each flipped site
+   re-encrypts its local copy; mixed old/new sites keep working together.
+3. **Finish:** once all sites are flipped and replication has caught up
+   (admin page → peers all green), remove `Harpo__PreviousMasterKeys`
+   everywhere and restart. The admin banner disappears.
+
+Details worth knowing:
+
+- **Wrong keys fail loudly.** Each site keeps an encrypted canary value and
+  validates the configured key against stored data at startup; a key that
+  matches nothing refuses to start rather than serve an unreadable vault.
+- Password history is append-only and never replicates updates, so each site
+  re-encrypts **its own copy** — ciphertext bytes differ per site after
+  rotation (GCM nonces are random), but plaintexts and fingerprints are
+  identical everywhere. Reuse-detection fingerprints are recomputed under the
+  new key during the sweep.
+- The sweep never touches replication stamps: rotation generates **zero
+  replication traffic** (just one `key.rotate` audit event per site).
+- Offline devices are unaffected — snapshots are protected by each user's
+  offline passphrase, not the master key, and refresh on their normal schedule.
+- The rotation is audited (`key.rotate`, with counts — never key material).
+- This rotates the **master key** (what encrypts passwords). The database
+  *file* key has its own, separate rotation — see `Harpo__PreviousDatabaseKey`
+  above.
+
 ## Audit log
 
 ![Administration page with audit log](docs/screenshot-admin.png)
@@ -416,6 +465,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `ConnectionStrings__Harpo` | `Data Source=harpo.db` (image: `/data/harpo.db`) | SQLite database location |
 | `Harpo__SiteId` | `default` | Unique, stable id of this site |
 | `Harpo__MasterKey` | *(required)* | Base64 32-byte key or passphrase; encrypts passwords at rest; identical on all sites |
+| `Harpo__PreviousMasterKeys__N` | — | Old master keys still accepted for decryption during a rotation — see "Rotating the master key" |
 | `<AnyKey>__File` | — | Read the value of `<AnyKey>` from this file (Docker/K8s secrets) |
 | `Harpo__DatabaseKey` | *(empty = off)* | Optional SQLCipher key encrypting the whole database file; per-site |
 | `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
@@ -448,7 +498,7 @@ All settings can be given as environment variables (`Section__Key` form).
   password (Docker secrets, a vault, or locked-down env files). Optionally the
   whole database file can be SQLCipher-encrypted too (`Harpo__DatabaseKey`) so
   copied files and backups expose no metadata either — see "Encrypting the
-  database file".
+  database file". Both keys can be rotated — see "Rotating the master key".
 - Decryption happens **server-side, on explicit reveal/copy actions only**, and
   every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
@@ -480,6 +530,14 @@ dotnet test                       # unit suite: crypto, authz, replication, TOTP
 
 The dev profile (`appsettings.Development.json`) uses a local SQLite file, dev
 auth, and a throwaway master key.
+
+### Branching (Gitflow)
+
+`main` holds released code only — every commit on it corresponds to a
+published version. Day-to-day work happens on `develop`; features branch off
+it as `feature/<name>` and merge back with `--no-ff`. A release is `develop`
+merged into `main` and tagged (which publishes the image — see below); an
+urgent fix branches from `main` as `hotfix/<name>` and merges into both.
 
 ### Releasing
 
