@@ -14,9 +14,9 @@
         @foreach (var icon in _catalogue)
         {
             <button type="button"
-                    class="icon-option @(Reference(icon) == Value ? "selected" : "")"
-                    title="@icon.Name"
-                    @onclick="() => SelectAsync(Reference(icon))">
+                    class="icon-option @(icon.Reference == Value ? "selected" : "")"
+                    title="@(icon.MatchUrls.Length == 0 ? icon.Name : $"{icon.Name} · {icon.MatchUrls}")"
+                    @onclick="() => SelectAsync(icon.Reference)">
                 <img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" loading="lazy" />
             </button>
         }
@@ -49,14 +49,14 @@
     /// <summary>Enables uploading when the host page provides the caller's identity.</summary>
     [Parameter] public UserContext? User { get; set; }
 
+    /// <summary>The entry's URL field, if any — uploads get attributed to its host automatically.</summary>
+    [Parameter] public string? SuggestedUrl { get; set; }
+
     private List<IconSummary>? _catalogue;
     private string? _uploadError;
 
     protected override async Task OnInitializedAsync() =>
         _catalogue = await Icons.GetAllAsync();
-
-    private static string Reference(IconSummary icon) =>
-        CustomIcon.ReferencePrefix + icon.Id.ToString("N");
 
     private async Task SelectAsync(string icon)
     {
@@ -83,7 +83,10 @@
             using var buffer = new MemoryStream();
             await stream.CopyToAsync(buffer);
             var name = Path.GetFileNameWithoutExtension(file.Name);
-            var icon = await Icons.AddAsync(User, name, file.ContentType, buffer.ToArray());
+            // If the entry already has a URL, attribute the new icon to its host
+            // so future entries for the same site pick it up automatically.
+            var icon = await Icons.AddAsync(User, name, file.ContentType, buffer.ToArray(),
+                matchUrls: IconUrlMatcher.ExtractHost(SuggestedUrl) ?? "");
             _catalogue = await Icons.GetAllAsync();
             await SelectAsync(icon.Reference);
         }

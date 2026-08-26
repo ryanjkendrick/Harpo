@@ -201,13 +201,24 @@
             </p>
             <div class="table-scroll">
                 <table>
-                    <thead><tr><th>Icon</th><th>Name</th><th>Uploaded by</th><th>Size</th><th>Used by</th><th></th></tr></thead>
+                    <thead><tr><th>Icon</th><th>Name</th><th>Matched URLs</th><th>Uploaded by</th><th>Size</th><th>Used by</th><th></th></tr></thead>
                     <tbody>
                         @foreach (var icon in _icons)
                         {
                             <tr>
                                 <td><img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" /></td>
                                 <td>@icon.Name</td>
+                                <td>
+                                    <input class="mono icon-urls-input"
+                                           value="@(_iconUrlEdits.GetValueOrDefault(icon.Id, icon.MatchUrls))"
+                                           placeholder="e.g. gitlab.com"
+                                           title="Hostnames this icon represents — entries with matching URLs pick it up automatically."
+                                           @onchange='e => _iconUrlEdits[icon.Id] = e.Value?.ToString() ?? ""' />
+                                    @if (_iconUrlEdits.TryGetValue(icon.Id, out var edited) && edited != icon.MatchUrls)
+                                    {
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => SaveIconUrlsAsync(icon)">Save</button>
+                                    }
+                                </td>
                                 <td class="mono muted">@icon.CreatedBy</td>
                                 <td class="muted">@($"{icon.SizeBytes / 1024.0:0.#} KB")</td>
                                 <td>@(_iconUsage.GetValueOrDefault(icon.Id)) @(_iconUsage.GetValueOrDefault(icon.Id) == 1 ? "entry" : "entries")</td>
@@ -282,6 +293,7 @@
     private List<Group>? _deletedGroups;
     private List<IconSummary>? _icons;
     private Dictionary<Guid, int> _iconUsage = new();
+    private readonly Dictionary<Guid, string> _iconUrlEdits = new();
     private bool _auditHasMore;
     private string _auditFilter = "";
     private Timer? _refreshTimer;
@@ -361,6 +373,14 @@
         catch (ObjectDisposedException)
         {
         }
+    }
+
+    private async Task SaveIconUrlsAsync(IconSummary icon)
+    {
+        await Icons.SetMatchUrlsAsync(_user!, icon.Id, _iconUrlEdits.GetValueOrDefault(icon.Id, ""));
+        _iconUrlEdits.Remove(icon.Id);
+        _icons = await Icons.GetAllAsync();
+        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
     }
 
     private async Task DeleteIconAsync(IconSummary icon)

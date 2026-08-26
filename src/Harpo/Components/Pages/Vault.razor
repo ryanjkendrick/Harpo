@@ -4,6 +4,7 @@
 @rendermode InteractiveServer
 @inject GroupService Groups
 @inject VaultService Passwords
+@inject IconService IconCatalogue
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @implements IDisposable
@@ -220,11 +221,11 @@
             </label>
             <label class="field">
                 <span class="field-label">Icon</span>
-                <IconPicker @bind-Value="_editor.Icon" User="_user" />
+                <IconPicker Value="@_editor.Icon" ValueChanged="OnIconPicked" User="_user" SuggestedUrl="@_editor.Url" />
             </label>
             <label class="field">
                 <span class="field-label">URL</span>
-                <input @bind="_editor.Url" placeholder="https://…" />
+                <input @bind="_editor.Url" @bind:event="oninput" @bind:after="OnUrlChanged" placeholder="https://…" />
             </label>
             <label class="field">
                 <span class="field-label">Username</span>
@@ -371,6 +372,8 @@
     private const int ClipboardClearMs = 60_000;
 
     private EntryEditModel? _editor;
+    private List<IconSummary> _iconCatalogue = [];
+    private bool _iconAutoSet;
     private bool _editorIsNew;
     private Guid _editorEntryId;
     private string? _editorError;
@@ -558,7 +561,51 @@
     {
         _editorIsNew = true;
         _editorError = null;
+        _iconAutoSet = false;
         _editor = new EntryEditModel { Icon = "🔐" };
+        _ = LoadIconCatalogueAsync();
+    }
+
+    private async Task LoadIconCatalogueAsync()
+    {
+        _iconCatalogue = await IconCatalogue.GetAllAsync();
+    }
+
+    /// <summary>URL typed → suggest the attributed icon (never overriding a manual choice).</summary>
+    private void OnUrlChanged()
+    {
+        if (_editor is null)
+        {
+            return;
+        }
+        var match = IconUrlMatcher.FindBestMatch(_editor.Url, _iconCatalogue);
+        if (match is not null && (_editor.Icon == "🔐" || _iconAutoSet))
+        {
+            _editor.Icon = match.Reference;
+            _iconAutoSet = true;
+        }
+        else if (match is null && _iconAutoSet)
+        {
+            _editor.Icon = "🔐";
+            _iconAutoSet = false;
+        }
+    }
+
+    /// <summary>Icon picked → the choice is the user's now; an attributed icon also fills an empty URL.</summary>
+    private void OnIconPicked(string icon)
+    {
+        if (_editor is null)
+        {
+            return;
+        }
+        _editor.Icon = icon;
+        _iconAutoSet = false;
+        if (string.IsNullOrWhiteSpace(_editor.Url)
+            && CustomIcon.ParseReference(icon) is { } id
+            && _iconCatalogue.FirstOrDefault(i => i.Id == id) is { MatchUrls.Length: > 0 } summary)
+        {
+            _editor.Url = "https://" + summary.MatchUrls.Split(' ')[0];
+        }
     }
 
     private void OpenEditEntry(PasswordEntry entry)
@@ -566,7 +613,9 @@
         _editorIsNew = false;
         _editorEntryId = entry.Id;
         _editorError = null;
+        _iconAutoSet = false;
         _editorHasTotp = entry.EncryptedTotpSecret is not null;
+        _ = LoadIconCatalogueAsync();
         _editor = new EntryEditModel
         {
             Name = entry.Name,

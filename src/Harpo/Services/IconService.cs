@@ -3,7 +3,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Harpo.Services;
 
-public sealed record IconSummary(Guid Id, string Name, string CreatedBy, int SizeBytes, string ContentType);
+public sealed record IconSummary(Guid Id, string Name, string CreatedBy, int SizeBytes, string ContentType, string MatchUrls)
+{
+    public string Reference => CustomIcon.ReferencePrefix + Id.ToString("N");
+}
 
 /// <summary>
 /// The custom icon catalogue. Any authenticated user may add icons (like
@@ -40,7 +43,7 @@ public class IconService
         return await db.CustomIcons
             .Where(i => !i.IsDeleted)
             .OrderBy(i => i.Name)
-            .Select(i => new IconSummary(i.Id, i.Name, i.CreatedBy, i.Data.Length, i.ContentType))
+            .Select(i => new IconSummary(i.Id, i.Name, i.CreatedBy, i.Data.Length, i.ContentType, i.MatchUrls))
             .ToListAsync(ct);
     }
 
@@ -51,7 +54,8 @@ public class IconService
         return icon is null ? null : (icon.Data, icon.ContentType);
     }
 
-    public async Task<CustomIcon> AddAsync(UserContext user, string name, string contentType, byte[] data, CancellationToken ct = default)
+    public async Task<CustomIcon> AddAsync(
+        UserContext user, string name, string contentType, byte[] data, string matchUrls = "", CancellationToken ct = default)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -80,6 +84,7 @@ public class IconService
             Name = name,
             ContentType = contentType.ToLowerInvariant(),
             Data = data,
+            MatchUrls = IconUrlMatcher.NormalizeHostList(matchUrls),
             CreatedBy = user.Username,
             CreatedAtUtc = _time.GetUtcNow().UtcDateTime,
         };
@@ -87,6 +92,27 @@ public class IconService
         await db.SaveChangesAsync(ct);
         await _audit.RecordAsync(user, AuditActions.IconAdd, name, detail: $"{data.Length / 1024.0:0.#} KB {contentType}");
         return icon;
+    }
+
+    /// <summary>Sets the URLs an icon represents (site admins). Free-form input is normalized to hostnames.</summary>
+    public async Task SetMatchUrlsAsync(UserContext user, Guid id, string matchUrls, CancellationToken ct = default)
+    {
+        if (!user.IsSiteAdmin)
+        {
+            throw new VaultAccessDeniedException("Only site admins can edit icon attributions.");
+        }
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var icon = await db.CustomIcons.SingleOrDefaultAsync(i => i.Id == id && !i.IsDeleted, ct)
+            ?? throw new VaultNotFoundException("Icon not found.");
+        var normalized = IconUrlMatcher.NormalizeHostList(matchUrls);
+        if (icon.MatchUrls == normalized)
+        {
+            return;
+        }
+        icon.MatchUrls = normalized;
+        await db.SaveChangesAsync(ct);
+        await _audit.RecordAsync(user, AuditActions.IconUpdate, icon.Name,
+            detail: normalized.Length == 0 ? "URL attribution cleared" : $"matches: {normalized}");
     }
 
     /// <summary>Site admins curate the catalogue. Entries referencing a deleted icon fall back to the default glyph.</summary>

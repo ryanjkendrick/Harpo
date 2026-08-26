@@ -22,7 +22,10 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   or an org-wide **custom icon catalogue**: anyone can upload small images
   (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
   picker, they replicate to every site, and site admins curate the catalogue
-  from the Administration page. The built-in generator
+  from the Administration page. Icons can be **attributed to URLs** (hostnames,
+  subdomains included): typing a matching URL on an entry selects the icon
+  automatically, picking an attributed icon fills an empty URL field, and
+  uploading while the URL field is set attributes the new icon to that host. The built-in generator
   is configurable (length 8–64, character classes, ambiguous-character
   avoidance; preferences remembered per browser) and the editor shows a live
   strength rating as you type.

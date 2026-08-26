@@ -16,6 +16,12 @@ public class CustomIcon : IReplicatedRow
     /// <summary>One of the allow-listed image types (validated with magic bytes on upload).</summary>
     public string ContentType { get; set; } = "";
     public byte[] Data { get; set; } = [];
+    /// <summary>
+    /// Space-separated, normalized hostnames this icon represents (e.g.
+    /// "gitlab.com git.corp.example.com"). When a user types a matching URL on
+    /// an entry, the icon is suggested automatically. Empty = no attribution.
+    /// </summary>
+    public string MatchUrls { get; set; } = "";
     public string CreatedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
 

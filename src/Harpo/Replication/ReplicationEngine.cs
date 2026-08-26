@@ -239,6 +239,7 @@ public class ReplicationEngine
                 local.Name = incoming.Name;
                 local.ContentType = incoming.ContentType;
                 local.Data = incoming.Data;
+                local.MatchUrls = incoming.MatchUrls;
                 local.CreatedBy = incoming.CreatedBy;
                 local.CreatedAtUtc = incoming.CreatedAtUtc;
                 CopyStamps(incoming, local);
