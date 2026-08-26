@@ -230,6 +230,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .alert-error { background: var(--danger-soft); color: var(--danger); }
+.alert-warning { background: rgba(224, 176, 84, .12); color: #e0b054; }
 
 .badge {
     display: inline-block;

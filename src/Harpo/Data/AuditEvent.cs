@@ -48,4 +48,5 @@ public static class AuditActions
     public const string IconAdd = "icon.add";
     public const string IconUpdate = "icon.update";
     public const string IconDelete = "icon.delete";
+    public const string KeyRotate = "key.rotate";
 }
