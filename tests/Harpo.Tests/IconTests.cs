@@ -121,6 +121,75 @@ public class IconTests : IDisposable
             e => e.Action == AuditActions.IconUpdate && e.Detail.Contains("git.corp.io"));
     }
 
+    private static IconService ImportingIconService(TestSite site, string path) => new(
+        site.Db, site.Time, site.Audit,
+        Microsoft.Extensions.Options.Options.Create(new IconOptions { ImportPath = path }),
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<IconService>.Instance);
+
+    [Fact]
+    public async Task Server_folder_import_is_idempotent_and_respects_curation()
+    {
+        var dir = Directory.CreateTempSubdirectory("harpo-icons-").FullName;
+        try
+        {
+            await File.WriteAllBytesAsync(Path.Combine(dir, "gitlab.example.com.png"), TinyPng);
+            await File.WriteAllTextAsync(Path.Combine(dir, "Plain.svg"),
+                """<svg xmlns="http://www.w3.org/2000/svg"><rect width="8" height="8"/></svg>""");
+            await File.WriteAllTextAsync(Path.Combine(dir, "README.txt"), "not an image");
+            await File.WriteAllBytesAsync(Path.Combine(dir, "corrupt.png"), "not a png"u8.ToArray());
+
+            var icons = ImportingIconService(_site, dir);
+            Assert.Equal(2, await icons.ImportFromDirectoryAsync()); // txt skipped, corrupt skipped with a warning
+
+            var catalogue = await icons.GetAllAsync();
+            var attributed = Assert.Single(catalogue, i => i.Name == "gitlab.example.com");
+            Assert.Equal("gitlab.example.com", attributed.MatchUrls); // hostname filename → attribution
+            var plain = Assert.Single(catalogue, i => i.Name == "Plain");
+            Assert.Equal("", plain.MatchUrls);
+            Assert.All(catalogue, i => Assert.Equal("server", i.CreatedBy));
+
+            // Restart (re-run): nothing new.
+            Assert.Equal(0, await icons.ImportFromDirectoryAsync());
+            Assert.Equal(2, (await icons.GetAllAsync()).Count);
+
+            // An admin deleting a server icon wins over the next import.
+            await icons.DeleteAsync(_admin, attributed.Id);
+            Assert.Equal(0, await icons.ImportFromDirectoryAsync());
+            Assert.Single(await icons.GetAllAsync());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Same_folder_on_two_sites_merges_instead_of_duplicating()
+    {
+        var dir = Directory.CreateTempSubdirectory("harpo-icons-").FullName;
+        try
+        {
+            await File.WriteAllBytesAsync(Path.Combine(dir, "shared.png"), TinyPng);
+
+            var clock = new ManualTime();
+            using var alpha = new TestSite("alpha", clock);
+            using var beta = new TestSite("beta", clock);
+            Assert.Equal(1, await ImportingIconService(alpha, dir).ImportFromDirectoryAsync());
+            Assert.Equal(1, await ImportingIconService(beta, dir).ImportFromDirectoryAsync());
+
+            // Content-hash-derived ids: both sites minted the SAME row, so
+            // replication merges rather than duplicating.
+            await beta.PullFromAsync(alpha, viaJson: true);
+            await alpha.PullFromAsync(beta);
+            Assert.Single(await alpha.Icons.GetAllAsync());
+            Assert.Single(await beta.Icons.GetAllAsync());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Icons_replicate_between_sites_bytes_intact()
     {

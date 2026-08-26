@@ -79,7 +79,8 @@ public sealed class TestSite : IDisposable
             Options.Create(new HealthOptions()));
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
             NullLogger<HealthService>.Instance);
-        Icons = new IconService(Db, Time, Audit);
+        Icons = new IconService(Db, Time, Audit, Options.Create(new IconOptions()),
+            NullLogger<IconService>.Instance);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),

@@ -346,6 +346,31 @@ the group. For shared accounts the realistic alternative is seeds in
 spreadsheets and screenshots — unencrypted, unaudited, unmanaged — so Harpo is
 the better home for them. Keep personal high-value 2FA on a separate device.
 
+## Server-level icon catalogue
+
+Beyond in-app uploads, admins can manage the catalogue from the deployment
+itself: mount a folder of images at the path in `Harpo__Icons__ImportPath`
+(the container defaults to `/data/icons`) and Harpo imports them at startup —
+or on demand via the **Import now** button on the Administration page:
+
+```yaml
+    volumes:
+      - ./icons:/data/icons:ro
+```
+
+- A filename that looks like a hostname (`gitlab.com.png`) both names the icon
+  and **attributes it to that host**, so URL matching works out of the box.
+- Icon identity derives from the file's content hash, which makes the import
+  fully idempotent: restarts add nothing, the same folder mounted on several
+  sites **merges into one icon** under replication instead of duplicating, and
+  an icon an admin deleted in the UI **stays deleted** across restarts (the
+  tombstone carries the same identity).
+- Imported icons show `server` as their uploader, are audited like any other
+  catalogue change, and replicate org-wide — so in practice one site carries
+  the folder and every site gets the catalogue.
+- Non-image files are ignored; invalid or oversized images are skipped with a
+  logged warning, never a failed startup.
+
 ## Vault health report
 
 ![Vault health report](docs/screenshot-health.png)
@@ -393,6 +418,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Audit__Enabled` | `true` | Record audit events (reveals, copies, deletions, membership changes) on this site |
 | `Harpo__Health__Enabled` | `true` | Compute password fingerprints/strength and offer the vault health report |
 | `Harpo__Health__StalePasswordDays` | `365` | Age at which an unchanged password counts as stale |
+| `Harpo__Icons__ImportPath` | *(image: `/data/icons`)* | Folder of images imported into the icon catalogue at startup |
 | `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |

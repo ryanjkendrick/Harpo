@@ -191,7 +191,7 @@
         }
     </section>
 
-    @if (_icons is { Count: > 0 })
+    @if (_icons is { Count: > 0 } || Icons.ImportPath.Length > 0)
     {
         <section class="panel">
             <h2>Icon catalogue</h2>
@@ -199,6 +199,19 @@
                 Custom icons anyone has uploaded for password entries. Deleting one leaves
                 entries using it on the default glyph.
             </p>
+            @if (Icons.ImportPath.Length > 0)
+            {
+                <p class="muted small">
+                    Server folder: <span class="mono">@Icons.ImportPath</span> — images placed
+                    there are imported at startup (a hostname filename like
+                    <span class="mono">gitlab.com.png</span> auto-attributes the icon).
+                    <button class="btn btn-ghost btn-sm" @onclick="ImportIconsAsync">Import now</button>
+                    @if (_importResult is not null)
+                    {
+                        <span class="badge badge-ok">@_importResult</span>
+                    }
+                </p>
+            }
             <div class="table-scroll">
                 <table>
                     <thead><tr><th>Icon</th><th>Name</th><th>Matched URLs</th><th>Uploaded by</th><th>Size</th><th>Used by</th><th></th></tr></thead>
@@ -294,6 +307,7 @@
     private List<IconSummary>? _icons;
     private Dictionary<Guid, int> _iconUsage = new();
     private readonly Dictionary<Guid, string> _iconUrlEdits = new();
+    private string? _importResult;
     private bool _auditHasMore;
     private string _auditFilter = "";
     private Timer? _refreshTimer;
@@ -373,6 +387,14 @@
         catch (ObjectDisposedException)
         {
         }
+    }
+
+    private async Task ImportIconsAsync()
+    {
+        var imported = await Icons.ImportFromDirectoryAsync();
+        _importResult = imported == 0 ? "nothing new" : $"imported {imported}";
+        _icons = await Icons.GetAllAsync();
+        _iconUsage = await Icons.GetUsageAsync();
     }
 
     private async Task SaveIconUrlsAsync(IconSummary icon)

@@ -49,6 +49,11 @@ services:
       Replication__Peers__0__Url: "http://harpo-beta:8080"
     volumes:
       - harpo-alpha-data:/data
+      # Server-level icon catalogue: images in this folder are imported at
+      # startup. A hostname filename ("harpo.example.com.png") also attributes
+      # the icon to that host. Deterministic ids mean restarts and replication
+      # never create duplicates, and icons an admin deleted stay deleted.
+      - ./dev/icons:/data/icons:ro
 
   harpo-beta:
     <<: *harpo-common

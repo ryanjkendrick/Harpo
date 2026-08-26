@@ -58,6 +58,10 @@ services:
       # Replication__Peers__0__Url: "https://harpo.branch.example.com"
     volumes:
       - harpo-data:/data
+      # Optional server-level icon catalogue: mount a folder of small images
+      # (≤64 KB; "gitlab.com.png" auto-attributes to that host) and Harpo
+      # imports them into the org-wide catalogue at startup.
+      # - ./icons:/data/icons:ro
 
 volumes:
   harpo-data:

@@ -31,6 +31,7 @@ builder.Services.Configure<SiteOptions>(builder.Configuration.GetSection("Harpo"
 builder.Services.Configure<Harpo.Offline.OfflineOptions>(builder.Configuration.GetSection("Harpo:Offline"));
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Harpo:Audit"));
 builder.Services.Configure<HealthOptions>(builder.Configuration.GetSection("Harpo:Health"));
+builder.Services.Configure<IconOptions>(builder.Configuration.GetSection("Harpo:Icons"));
 builder.Services.Configure<ReplicationOptions>(builder.Configuration.GetSection("Replication"));
 builder.Services.Configure<LdapOptions>(builder.Configuration.GetSection("Auth:Ldap"));
 builder.Services.Configure<DevAuthOptions>(builder.Configuration.GetSection("Auth"));
@@ -113,6 +114,9 @@ if (devAuth)
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
+
+// Server-level icon catalogue: import whatever the admin mounted into the icons folder.
+await app.Services.GetRequiredService<IconService>().ImportFromDirectoryAsync();
 
 if (!app.Environment.IsDevelopment())
 {

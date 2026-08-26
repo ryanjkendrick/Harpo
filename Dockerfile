@@ -24,7 +24,8 @@ VOLUME /data
 
 ENV ASPNETCORE_URLS=http://+:8080 \
     ConnectionStrings__Harpo="Data Source=/data/harpo.db" \
-    Harpo__DataProtectionKeysPath=/data/keys
+    Harpo__DataProtectionKeysPath=/data/keys \
+    Harpo__Icons__ImportPath=/data/icons
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
