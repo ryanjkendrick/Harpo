@@ -655,8 +655,9 @@ tbody tr:hover { background: var(--bg); }
 
 @media (max-width: 900px) {
     .shell { flex-direction: column; }
-    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; gap: .6rem; }
-    .side-nav { flex-direction: row; }
+    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; gap: .6rem; flex-wrap: wrap; }
+    .side-nav { flex-direction: row; flex-wrap: wrap; gap: .25rem; min-width: 0; }
+    .side-link { padding: .4rem .55rem; }
     .sidebar-footer { margin-top: 0; margin-left: auto; }
     .vault { flex-direction: column; }
     .vault-groups { width: 100%; }
@@ -702,3 +703,52 @@ tbody tr:hover { background: var(--bg); }
 .modal-panel:focus { outline: none; }
 
 input[type="range"] { accent-color: var(--accent); }
+
+/* ---------- phone layout ---------- */
+
+/* The document must never grow past the viewport — overflowing content
+   scrolls inside its own container (.table-scroll) instead of zooming the
+   whole page out. */
+html, body { overflow-x: clip; }
+
+@media (max-width: 640px) {
+    .content { padding: .9rem; }
+    .topbar { padding: .6rem .9rem; flex-wrap: wrap; }
+    .page-header { flex-wrap: wrap; }
+
+    /* Entries become stacked cards: name + actions up top, then username,
+       URL, password controls, and the update line — same shape as the
+       offline vault's rows. */
+    .entries-table thead { display: none; }
+    .entries-table, .entries-table tbody { display: block; }
+    .entries-table tbody tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: .2rem .5rem;
+        padding: .7rem .8rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-bottom: .6rem;
+        background: var(--panel);
+    }
+    .entries-table tbody tr:hover { background: var(--panel); }
+    .entries-table td { display: block; padding: 0; border-bottom: none; min-width: 0; }
+    .entries-table td.cell-name { grid-column: 1; grid-row: 1; font-weight: 650; }
+    .entries-table td.cell-actions {
+        grid-column: 2;
+        grid-row: 1;
+        position: static;
+        box-shadow: none;
+        background: transparent;
+        white-space: nowrap;
+    }
+    .entries-table tbody tr:hover td.cell-actions { background: transparent; }
+    .entries-table td.cell-username,
+    .entries-table td.cell-url,
+    .entries-table td.cell-password,
+    .entries-table td.cell-updated { grid-column: 1 / -1; }
+    .entries-table td.cell-url { overflow-wrap: anywhere; }
+    .entries-table td.cell-updated { font-size: .8rem; }
+    .cell-name { min-width: 0; }
+}
