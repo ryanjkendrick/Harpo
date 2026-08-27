@@ -8,7 +8,7 @@
     <meta name="theme-color" content="#191d2b" />
     <title>Offline vault · Harpo</title>
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤫</text></svg>" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns%3D%22http://www.w3.org/2000/svg%22 viewBox%3D%220 0 64 64%22%3E%3Crect width%3D%2264%22 height%3D%2264%22 rx%3D%2214.5%22 fill%3D%22%236d67f0%22/%3E%3Cpath d%3D%22M11 17.5 Q30 8.5 49 17.5%22 fill%3D%22none%22 stroke%3D%22%23fff%22 stroke-width%3D%224.6%22 stroke-linecap%3D%22round%22/%3E%3Cpath d%3D%22M7 31 Q19 20 30 20 Q41 20 53 31 Q41 42 30 42 Q19 42 7 31 Z%22 fill%3D%22%23fff%22/%3E%3Cpath d%3D%22M50.5 31 L57 29.2%22 fill%3D%22none%22 stroke%3D%22%23fff%22 stroke-width%3D%224%22 stroke-linecap%3D%22round%22/%3E%3Ccircle cx%3D%2230%22 cy%3D%2228.8%22 r%3D%226%22 fill%3D%22%236d67f0%22/%3E%3Cpath d%3D%22M27.3 32.2 L26.9 37.6 a3.1 3.1 0 0 0 6.2 0 L32.7 32.2 Z%22 fill%3D%22%236d67f0%22/%3E%3Cpath d%3D%22M21.5 40.5 L21.5 49.5 Q21.5 54 16.5 54.6%22 fill%3D%22none%22 stroke%3D%22%23fff%22 stroke-width%3D%224%22 stroke-linecap%3D%22round%22/%3E%3Cpath d%3D%22M38 39 Q43.5 47 49.8 49 Q54.9 50.6 55 47 Q55.1 44.2 52.3 44.4%22 fill%3D%22none%22 stroke%3D%22%23fff%22 stroke-width%3D%224%22 stroke-linecap%3D%22round%22/%3E%3C/svg%3E" />
     <style>
         :root {
             --bg: #141722; --panel: #1d2130; --panel2: #252a3d; --ink: #e6e8f0; --muted: #9aa1b5;
@@ -23,7 +23,7 @@
             display: flex; flex-direction: column; align-items: center; padding: 1.2rem;
         }
         header { text-align: center; margin: 1.2rem 0 .8rem; }
-        header .logo { font-size: 2.4rem; display: block; }
+        header .logo { display: block; margin: 0 auto; }
         header h1 { font-size: 1.3rem; margin: .2rem 0 0; letter-spacing: .04em; }
         header .sub { color: var(--muted); font-size: .85rem; margin-top: .2rem; }
         .badge-net {
@@ -97,7 +97,7 @@
 </head>
 <body>
     <header>
-        <span class="logo">🤫</span>
+        <svg class="logo" width="46" height="46" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Harpo"><rect width="64" height="64" rx="14.5" fill="#6d67f0"/><path d="M11 17.5 Q30 8.5 49 17.5" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round"/><path d="M7 31 Q19 20 30 20 Q41 20 53 31 Q41 42 30 42 Q19 42 7 31 Z" fill="#fff"/><path d="M50.5 31 L57 29.2" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/><circle cx="30" cy="28.8" r="6" fill="#6d67f0"/><path d="M27.3 32.2 L26.9 37.6 a3.1 3.1 0 0 0 6.2 0 L32.7 32.2 Z" fill="#6d67f0"/><path d="M21.5 40.5 L21.5 49.5 Q21.5 54 16.5 54.6" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/><path d="M38 39 Q43.5 47 49.8 49 Q54.9 50.6 55 47 Q55.1 44.2 52.3 44.4" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/></svg>
         <h1>Harpo · Offline vault</h1>
         <div class="sub">A read-only copy of your passwords, encrypted on this device.</div>
         <span id="netBadge" class="badge-net">…</span>

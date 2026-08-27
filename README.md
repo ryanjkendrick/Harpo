@@ -1,7 +1,11 @@
-# 🤫 Harpo
+<p align="center"><img src="src/Harpo/wwwroot/icons/harpo.svg" alt="Harpo — the Eye of Horus with a keyhole pupil" width="104"></p>
+
+# Harpo
 
 A simple self-hosted team password manager, named after **Harpocrates** — the god
-of silence and secrets.
+of silence and secrets. The mark is his own emblem: Harpocrates is Horus the
+child, and the **wedjat** — the Eye of Horus — was worn as an amulet of
+protection. Harpo's pupil is a keyhole.
 
 Built with **ASP.NET Core + Blazor** (interactive server rendering), authenticated
 against **Active Directory**, shipped as a **Docker** container, with built-in

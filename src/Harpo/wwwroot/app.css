@@ -76,7 +76,8 @@ a:hover { text-decoration: underline; }
     text-decoration: none !important;
 }
 
-.brand-icon { font-size: 1.6rem; }
+.brand-icon { font-size: 1.6rem; display: flex; }
+.brand-icon svg, .login-logo svg { display: block; margin: 0 auto; }
 
 .brand-name {
     color: #fff;

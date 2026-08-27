@@ -7,7 +7,7 @@
 // vault page instead.
 // Bump this version whenever offline.html/offline.js or the PWA assets change —
 // it is what makes installed service workers refresh their cached shell.
-const CACHE = "harpo-v7";
+const CACHE = "harpo-v8";
 const PRECACHE = [
     "/offline.html",
     "/offline.js",

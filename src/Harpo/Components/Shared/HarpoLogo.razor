@@ -1,0 +1,19 @@
+@* The Harpo mark: the Eye of Horus (wedjat) — the amulet worn for protection —
+   with a keyhole as its pupil. Harpocrates is Horus the child, so the god of
+   silence guards the vault through his own eye. Inline SVG so it renders
+   identically everywhere with no extra request; keep in sync with
+   wwwroot/icons/harpo.svg (the canonical asset used for PWA icons and README). *@
+<svg class="harpo-logo" width="@Size" height="@Size" viewBox="0 0 64 64" role="img" aria-label="Harpo">
+    <rect width="64" height="64" rx="14.5" fill="#6d67f0" />
+    <path d="M11 17.5 Q30 8.5 49 17.5" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" />
+    <path d="M7 31 Q19 20 30 20 Q41 20 53 31 Q41 42 30 42 Q19 42 7 31 Z" fill="#fff" />
+    <path d="M50.5 31 L57 29.2" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+    <circle cx="30" cy="28.8" r="6" fill="#6d67f0" />
+    <path d="M27.3 32.2 L26.9 37.6 a3.1 3.1 0 0 0 6.2 0 L32.7 32.2 Z" fill="#6d67f0" />
+    <path d="M21.5 40.5 L21.5 49.5 Q21.5 54 16.5 54.6" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+    <path d="M38 39 Q43.5 47 49.8 49 Q54.9 50.6 55 47 Q55.1 44.2 52.3 44.4" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+</svg>
+
+@code {
+    [Parameter] public int Size { get; set; } = 28;
+}
