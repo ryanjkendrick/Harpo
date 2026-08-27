@@ -360,12 +360,15 @@ function renderEntry(entry) {
     const reveal = document.createElement("button");
     reveal.className = "btn-icon";
     reveal.title = "Reveal";
+    reveal.setAttribute("aria-label", "Reveal password");
     reveal.innerHTML = lucide("eye");
     const setShown = (value) => {
         shown = value;
         pw.textContent = shown ? (entry.password ?? "(no password)") : "••••••••";
         pw.classList.toggle("shown", shown);
         reveal.innerHTML = lucide(shown ? "eye-off" : "eye");
+        reveal.title = shown ? "Hide" : "Reveal";
+        reveal.setAttribute("aria-label", shown ? "Hide password" : "Reveal password");
         clearTimeout(hideTimer);
         if (shown) {
             hideTimer = setTimeout(() => setShown(false), 30000); // auto-hide
@@ -378,6 +381,7 @@ function renderEntry(entry) {
         const totpBtn = document.createElement("button");
         totpBtn.className = "btn-icon";
         totpBtn.title = "Show 2FA code";
+        totpBtn.setAttribute("aria-label", "Show 2FA code");
         totpBtn.innerHTML = lucide("timer");
         const codeEl = document.createElement("span");
         codeEl.className = "pw shown";

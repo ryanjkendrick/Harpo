@@ -97,7 +97,7 @@ public class VaultService
             GroupId = groupId,
             Name = name,
             Icon = icon.Trim(),
-            Url = url.Trim(),
+            Url = NormalizeUrl(url),
             Username = username.Trim(),
             Notes = notes.Trim(),
             EncryptedTotpSecret = encryptedTotp,
@@ -132,7 +132,7 @@ public class VaultService
         var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
         entry.Name = name;
         entry.Icon = icon.Trim();
-        entry.Url = url.Trim();
+        entry.Url = NormalizeUrl(url);
         entry.Username = username.Trim();
         entry.Notes = notes.Trim();
         var totpChanged = false;
@@ -423,6 +423,22 @@ public class VaultService
         {
             throw new VaultAccessDeniedException("Viewers can see passwords but not change them.");
         }
+    }
+
+
+    /// <summary>
+    /// A URL typed without a scheme ("router.local", "example.com:8443") would
+    /// otherwise render as a relative link into Harpo itself. Assume https for
+    /// anything schemeless; leave real absolute URIs (and mailto:) alone.
+    /// </summary>
+    internal static string NormalizeUrl(string url)
+    {
+        url = url.Trim();
+        if (url.Length == 0 || url.Contains("://") || url.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+        return "https://" + url;
     }
 
     private static async Task<PasswordEntry> RequireEntryAsync(
