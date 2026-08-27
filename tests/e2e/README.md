@@ -19,7 +19,7 @@ npm install
 npm test
 ```
 
-Expect `14/14 checks passed`. Environment overrides: `HARPO_BASE_URL`,
+Expect `17/17 checks passed`. Environment overrides: `HARPO_BASE_URL`,
 `HARPO_CONTAINER`, `HARPO_USER`, `HARPO_PASSWORD`.
 
 Implementation note: interactions with Blazor pages use synthetic DOM events

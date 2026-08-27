@@ -94,6 +94,10 @@ function updateNetBadge() {
         el.textContent = "online";
         el.classList.add("online");
     }
+    // The way back to the main app — crucial in the installed PWA, which has no
+    // address bar. Shown only while Harpo is reachable; while it isn't, the
+    // link would just bounce off the service worker back to this page.
+    $("backLink").classList.toggle("hidden", !navigator.onLine || serverReachable === false);
 }
 
 // ---------- IndexedDB ----------
