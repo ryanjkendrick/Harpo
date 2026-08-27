@@ -21,6 +21,9 @@ services:
       Harpo__SiteId: "main"
       # REQUIRED — same value on every replicated site. Generate: openssl rand -base64 32
       Harpo__MasterKey: "${HARPO_MASTER_KEY:?Set HARPO_MASTER_KEY in .env}"
+      # Rotating the master key? Set the NEW key above and keep the old one here
+      # until every site has rotated (see README → "Rotating the master key"):
+      # Harpo__PreviousMasterKeys__0: "${HARPO_PREVIOUS_MASTER_KEY}"
       # Prefer Docker secrets over env vars? Any key accepts a __File variant:
       #   Harpo__MasterKey__File: /run/secrets/harpo_master_key
       # with a top-level `secrets:` block mounting the file. Works for

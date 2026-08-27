@@ -35,6 +35,7 @@ public class HarpoDbContext : DbContext
     public DbSet<CustomIcon> CustomIcons => Set<CustomIcon>();
     public DbSet<SiteCounter> SiteCounters => Set<SiteCounter>();
     public DbSet<PeerCursor> PeerCursors => Set<PeerCursor>();
+    public DbSet<SiteSetting> SiteSettings => Set<SiteSetting>();
 
     /// <summary>
     /// Set by the replication engine while applying rows received from a peer, so
@@ -87,6 +88,11 @@ public class HarpoDbContext : DbContext
         modelBuilder.Entity<PeerCursor>(b =>
         {
             b.HasKey(x => x.OriginSiteId);
+        });
+
+        modelBuilder.Entity<SiteSetting>(b =>
+        {
+            b.HasKey(x => x.Id);
         });
     }
 

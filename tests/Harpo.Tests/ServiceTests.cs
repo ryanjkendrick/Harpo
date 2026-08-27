@@ -12,6 +12,31 @@ public class ServiceTests : IDisposable
 
     public void Dispose() => _site.Dispose();
 
+    [Theory]
+    [InlineData("example.com", "https://example.com")]
+    [InlineData("router.local:8443/admin", "https://router.local:8443/admin")]
+    [InlineData("https://example.com", "https://example.com")]
+    [InlineData("http://example.com", "http://example.com")]
+    [InlineData("mailto:it@example.com", "mailto:it@example.com")]
+    [InlineData("  example.com  ", "https://example.com")]
+    [InlineData("", "")]
+    public void Schemeless_urls_are_normalized_to_https(string input, string expected)
+    {
+        Assert.Equal(expected, VaultService.NormalizeUrl(input));
+    }
+
+    [Fact]
+    public async Task Entry_urls_are_normalized_on_create_and_update()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "router.corp", "admin", "", "pw1");
+        Assert.Equal("https://router.corp", entry.Url);
+
+        await _site.Vault.UpdateEntryAsync(_alice, entry.Id, "Router", "🌐", "gitlab.com/admin", "admin", "");
+        var views = await _site.Vault.GetEntriesAsync(_alice, group.Id);
+        Assert.Equal("https://gitlab.com/admin", Assert.Single(views).Entry.Url);
+    }
+
     [Fact]
     public async Task Creator_becomes_group_admin_and_sees_group()
     {

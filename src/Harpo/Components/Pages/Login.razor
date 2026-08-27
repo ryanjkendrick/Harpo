@@ -12,7 +12,7 @@
 
 <div class="login-card">
     <div class="login-brand">
-        <span class="login-logo">🤫</span>
+        <span class="login-logo"><HarpoLogo Size="60" /></span>
         <h1>Harpo</h1>
         <p class="login-tagline">The god of silence keeps your secrets.</p>
     </div>
@@ -24,12 +24,12 @@
         }
         <label class="field">
             <span class="field-label">Username</span>
-            <InputText @bind-Value="Model!.Username" autocomplete="username" autofocus
+            <InputText @bind-Value="Model!.Username" autocomplete="username" autofocus required
                        placeholder="AD account, e.g. jsmith" />
         </label>
         <label class="field">
             <span class="field-label">Password</span>
-            <InputText type="password" @bind-Value="Model!.Password" autocomplete="current-password" />
+            <InputText type="password" @bind-Value="Model!.Password" autocomplete="current-password" required />
         </label>
         <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         <p class="login-hint">Sign in with your Active Directory account.</p>
@@ -85,6 +85,7 @@
             {
                 Throttle.RecordFailure(Model.Username, address);
                 _error = "Invalid username or password.";
+                Model.Password = ""; // never echo a failed password back into the form
                 return;
             }
             Throttle.RecordSuccess(Model.Username);

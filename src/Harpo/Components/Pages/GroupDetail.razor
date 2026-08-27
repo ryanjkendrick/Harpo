@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inject GroupService Groups
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
 
 <PageTitle>@(_group?.Name ?? "Group") · Harpo</PageTitle>
 
@@ -10,6 +11,7 @@
     @if (_loadError is not null)
     {
         <div class="alert alert-error">@_loadError</div>
+        <p style="margin-top: .8rem;"><a class="btn btn-primary" href="/groups">Back to groups</a></p>
     }
     else if (_group is null)
     {
@@ -93,7 +95,7 @@
                                     @if (CanAdmin)
                                     {
                                         <td class="cell-actions">
-                                            <button class="btn btn-icon" title="Remove from group"
+                                            <button class="btn btn-icon" title="Remove from group" aria-label="Remove from group"
                                                     @onclick="() => RemoveMemberAsync(member)"><Lucide Name="trash" Size="16" /></button>
                                         </td>
                                     }
@@ -232,6 +234,12 @@
 
     private async Task RemoveMemberAsync(GroupMember member)
     {
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Remove {member.DisplayName} ({member.Username}) from this group? They lose access to its passwords immediately.");
+        if (!confirmed)
+        {
+            return;
+        }
         await Guarded(async () =>
         {
             await Groups.RemoveMemberAsync(_user!, Id, member.Username);
@@ -241,6 +249,13 @@
 
     private async Task DeleteGroupAsync()
     {
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete the group \"{_group?.Name}\" and hide all of its passwords on every site? " +
+            "Only a site administrator can restore it (Administration → Deleted groups).");
+        if (!confirmed)
+        {
+            return;
+        }
         await Guarded(async () =>
         {
             await Groups.DeleteGroupAsync(_user!, Id);

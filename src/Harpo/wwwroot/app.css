@@ -76,7 +76,8 @@ a:hover { text-decoration: underline; }
     text-decoration: none !important;
 }
 
-.brand-icon { font-size: 1.6rem; }
+.brand-icon { font-size: 1.6rem; display: flex; }
+.brand-icon svg, .login-logo svg { display: block; margin: 0 auto; }
 
 .brand-name {
     color: #fff;
@@ -230,6 +231,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .alert-error { background: var(--danger-soft); color: var(--danger); }
+.alert-warning { background: rgba(224, 176, 84, .12); color: #e0b054; }
 
 .badge {
     display: inline-block;
@@ -653,9 +655,100 @@ tbody tr:hover { background: var(--bg); }
 
 @media (max-width: 900px) {
     .shell { flex-direction: column; }
-    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; gap: .6rem; }
-    .side-nav { flex-direction: row; }
+    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; align-items: center; gap: .6rem; flex-wrap: wrap; }
+    .side-nav { flex-direction: row; flex-wrap: wrap; gap: .25rem; min-width: 0; }
+    .side-link { padding: .4rem .55rem; }
     .sidebar-footer { margin-top: 0; margin-left: auto; }
     .vault { flex-direction: column; }
     .vault-groups { width: 100%; }
+}
+
+/* ---------- UX audit fixes ---------- */
+
+/* Row actions stay reachable no matter how wide the table content gets. */
+.entries-table th:last-child,
+.entries-table td.cell-actions {
+    position: sticky;
+    right: 0;
+    background: var(--panel);
+    box-shadow: -10px 0 10px -10px rgba(20, 23, 34, .22);
+}
+
+.entries-table tbody tr:hover td.cell-actions { background: var(--bg); }
+
+/* A revealed password grows its row downward, never sideways. */
+.cell-password .revealed {
+    display: inline-block;
+    max-width: 20ch;
+    word-break: break-all;
+    vertical-align: middle;
+}
+
+.cell-name { min-width: 11rem; }
+
+/* The editor's footer (validation + Save/Cancel) stays visible while the body scrolls. */
+.modal-footer {
+    position: sticky;
+    bottom: -1.2rem;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    padding: .7rem 0 1.2rem;
+    margin-top: .5rem;
+}
+
+.modal-footer .alert { margin-bottom: .6rem; }
+.modal-footer .modal-actions { margin-top: 0; }
+
+/* The dialog panel takes programmatic focus for Escape handling; no ring needed. */
+.modal-panel:focus { outline: none; }
+
+input[type="range"] { accent-color: var(--accent); }
+
+/* ---------- phone layout ---------- */
+
+/* The document must never grow past the viewport — overflowing content
+   scrolls inside its own container (.table-scroll) instead of zooming the
+   whole page out. */
+html, body { overflow-x: clip; }
+
+@media (max-width: 640px) {
+    .content { padding: .9rem; }
+    .topbar { padding: .6rem .9rem; flex-wrap: wrap; }
+    .page-header { flex-wrap: wrap; }
+
+    /* Entries become stacked cards: name + actions up top, then username,
+       URL, password controls, and the update line — same shape as the
+       offline vault's rows. */
+    .entries-table thead { display: none; }
+    .entries-table, .entries-table tbody { display: block; }
+    .entries-table tbody tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: .2rem .5rem;
+        padding: .7rem .8rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-bottom: .6rem;
+        background: var(--panel);
+    }
+    .entries-table tbody tr:hover { background: var(--panel); }
+    .entries-table td { display: block; padding: 0; border-bottom: none; min-width: 0; }
+    .entries-table td.cell-name { grid-column: 1; grid-row: 1; font-weight: 650; }
+    .entries-table td.cell-actions {
+        grid-column: 2;
+        grid-row: 1;
+        position: static;
+        box-shadow: none;
+        background: transparent;
+        white-space: nowrap;
+    }
+    .entries-table tbody tr:hover td.cell-actions { background: transparent; }
+    .entries-table td.cell-username,
+    .entries-table td.cell-url,
+    .entries-table td.cell-password,
+    .entries-table td.cell-updated { grid-column: 1 / -1; }
+    .entries-table td.cell-url { overflow-wrap: anywhere; }
+    .entries-table td.cell-updated { font-size: .8rem; }
+    .cell-name { min-width: 0; }
 }

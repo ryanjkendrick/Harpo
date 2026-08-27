@@ -19,7 +19,12 @@ npm install
 npm test
 ```
 
-Expect `14/14 checks passed`. Environment overrides: `HARPO_BASE_URL`,
+Expect `17/17 checks passed`.
+
+One more headless gotcha: native `confirm()` dialogs opened without user
+activation (all our clicks are synthetic) are auto-cancelled by headless
+Chrome before a CDP dialog handler can answer them — stub `window.confirm`
+via `evaluateOnNewDocument` instead of using `page.on("dialog")`. Environment overrides: `HARPO_BASE_URL`,
 `HARPO_CONTAINER`, `HARPO_USER`, `HARPO_PASSWORD`.
 
 Implementation note: interactions with Blazor pages use synthetic DOM events

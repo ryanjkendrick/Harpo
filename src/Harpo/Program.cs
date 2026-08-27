@@ -115,6 +115,14 @@ await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption,
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
 
+// Validate the master key against the stored data (fail fast on a wrong key),
+// and re-encrypt local data when a key rotation is in progress.
+await KeyRotation.EnsureMasterKeyStateAsync(
+    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(),
+    app.Services.GetRequiredService<CryptoService>(),
+    app.Services.GetRequiredService<AuditService>(),
+    app.Logger);
+
 // Server-level icon catalogue: import whatever the admin mounted into the icons folder.
 await app.Services.GetRequiredService<IconService>().ImportFromDirectoryAsync();
 
