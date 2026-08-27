@@ -32,6 +32,12 @@
         }
         .badge-net.online { color: var(--ok); }
         .badge-net.warn { color: #e0b054; }
+        .back-link {
+            display: inline-block; margin-top: .5rem; margin-left: .4rem; font-size: .75rem; font-weight: 700;
+            padding: .15rem .6rem; border-radius: 999px; background: var(--accent-soft); color: #9b96ff;
+            text-decoration: none;
+        }
+        .back-link:hover { background: var(--accent); color: #fff; }
         .card {
             width: 100%; max-width: 560px; background: var(--panel); border: 1px solid var(--line);
             border-radius: var(--radius); padding: 1.3rem; margin-top: .8rem;
@@ -95,6 +101,7 @@
         <h1>Harpo · Offline vault</h1>
         <div class="sub">A read-only copy of your passwords, encrypted on this device.</div>
         <span id="netBadge" class="badge-net">…</span>
+        <a id="backLink" class="back-link hidden" href="/">← Back to Harpo</a>
     </header>
 
     <section id="state-loading" class="card">

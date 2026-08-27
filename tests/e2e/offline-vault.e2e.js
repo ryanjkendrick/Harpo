@@ -191,6 +191,11 @@ async function retryUntil(action, probe, tries = 15) {
         const synced = await page.$eval("#entryList", (el) => el.textContent);
         check("sync contains test entry", synced.includes(ENTRY_NAME));
 
+        await page.waitForFunction(
+            () => !document.getElementById("backLink").classList.contains("hidden"),
+            { timeout: 10000 });
+        check("back-to-Harpo link shown while reachable", true);
+
         // ---- 5. Take the server down ----
         execSync(`docker stop ${CONTAINER}`, { stdio: "ignore" });
         let serverDown = false;
@@ -210,6 +215,8 @@ async function retryUntil(action, probe, tries = 15) {
             () => document.getElementById("netBadge").textContent === "server unreachable",
             { timeout: 10000 });
         check("badge shows server unreachable", true);
+        check("back-to-Harpo link hidden while unreachable",
+            await page.$eval("#backLink", (el) => el.classList.contains("hidden")));
 
         await typeInto(page, "#unlockPass", "totally-wrong-pass");
         await jsClick(page, "#unlockBtn");
@@ -236,10 +243,31 @@ async function retryUntil(action, probe, tries = 15) {
 
         await page.goto(`${BASE}/`, { waitUntil: "load" });
         check("navigation fallback to offline vault", (await page.title()) === "Offline vault · Harpo");
+
+        // ---- 7. Server returns: the offline page must offer a way back ----
+        execSync(`docker start ${CONTAINER}`, { stdio: "ignore" });
+        for (let i = 0; i < 60; i++) {
+            try {
+                const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(1000) });
+                if (res.ok) {
+                    break;
+                }
+            } catch { }
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+        await page.goto(`${BASE}/offline.html`, { waitUntil: "networkidle2" });
+        await page.waitForFunction(
+            () => !document.getElementById("backLink").classList.contains("hidden"),
+            { timeout: 15000 });
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: "networkidle2" }),
+            jsClick(page, "#backLink"),
+        ]);
+        check("back link returns to the main app", page.url() === `${BASE}/`, page.url());
     } catch (e) {
         check("script completed", false, e.message.slice(0, 200));
     } finally {
-        // ---- 7. Restore the server and clean up the test data ----
+        // ---- 8. Restore the server (if a failure skipped 7) and clean up ----
         try {
             execSync(`docker start ${CONTAINER}`, { stdio: "ignore" });
             for (let i = 0; i < 60; i++) {
