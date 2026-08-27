@@ -661,3 +661,44 @@ tbody tr:hover { background: var(--bg); }
     .vault { flex-direction: column; }
     .vault-groups { width: 100%; }
 }
+
+/* ---------- UX audit fixes ---------- */
+
+/* Row actions stay reachable no matter how wide the table content gets. */
+.entries-table th:last-child,
+.entries-table td.cell-actions {
+    position: sticky;
+    right: 0;
+    background: var(--panel);
+    box-shadow: -10px 0 10px -10px rgba(20, 23, 34, .22);
+}
+
+.entries-table tbody tr:hover td.cell-actions { background: var(--bg); }
+
+/* A revealed password grows its row downward, never sideways. */
+.cell-password .revealed {
+    display: inline-block;
+    max-width: 20ch;
+    word-break: break-all;
+    vertical-align: middle;
+}
+
+.cell-name { min-width: 11rem; }
+
+/* The editor's footer (validation + Save/Cancel) stays visible while the body scrolls. */
+.modal-footer {
+    position: sticky;
+    bottom: -1.2rem;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    padding: .7rem 0 1.2rem;
+    margin-top: .5rem;
+}
+
+.modal-footer .alert { margin-bottom: .6rem; }
+.modal-footer .modal-actions { margin-top: 0; }
+
+/* The dialog panel takes programmatic focus for Escape handling; no ring needed. */
+.modal-panel:focus { outline: none; }
+
+input[type="range"] { accent-color: var(--accent); }

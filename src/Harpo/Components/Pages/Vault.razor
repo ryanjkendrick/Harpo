@@ -116,28 +116,35 @@
                                         @if (!string.IsNullOrEmpty(entry.Username))
                                         {
                                             <span class="mono">@entry.Username</span>
-                                            <button class="btn btn-icon" title="Copy username"
+                                            <button class="btn btn-icon" title="Copy username" aria-label="Copy username"
                                                     @onclick='() => CopyTextAsync(entry.Username, "Username copied")'><Lucide Name="copy" Size="15" /></button>
                                         }
                                     </td>
                                     <td class="cell-url">
                                         @if (!string.IsNullOrEmpty(entry.Url))
                                         {
-                                            <a href="@entry.Url" target="_blank" rel="noopener noreferrer" title="@entry.Url">@DisplayUrl(entry.Url)</a>
+                                            @if (IsLinkable(entry.Url))
+                                            {
+                                                <a href="@entry.Url" target="_blank" rel="noopener noreferrer" title="@entry.Url">@DisplayUrl(entry.Url)</a>
+                                            }
+                                            else
+                                            {
+                                                <span class="muted" title="@entry.Url">@DisplayUrl(entry.Url)</span>
+                                            }
                                         }
                                     </td>
                                     <td class="cell-password">
                                         @if (_revealed.TryGetValue(entry.Id, out var plain))
                                         {
                                             <code class="mono revealed">@plain</code>
-                                            <button class="btn btn-icon" title="Hide" @onclick="() => Hide(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
+                                            <button class="btn btn-icon" title="Hide" aria-label="Hide" @onclick="() => Hide(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
                                         }
                                         else
                                         {
                                             <span class="mask">••••••••</span>
-                                            <button class="btn btn-icon" title="Reveal" @onclick="() => RevealAsync(entry.Id)"><Lucide Name="eye" Size="16" /></button>
+                                            <button class="btn btn-icon" title="Reveal" aria-label="Reveal" @onclick="() => RevealAsync(entry.Id)"><Lucide Name="eye" Size="16" /></button>
                                         }
-                                        <button class="btn btn-icon" title="Copy password"
+                                        <button class="btn btn-icon" title="Copy password" aria-label="Copy password"
                                                 @onclick="() => CopyPasswordAsync(entry.Id)"><Lucide Name="copy" Size="15" /></button>
                                         @if (entry.EncryptedTotpSecret is not null)
                                         {
@@ -147,13 +154,13 @@
                                                     <code class="mono revealed">@FormatTotp(totp.Code)</code>
                                                     <span class="muted totp-remaining">@(totp.Remaining)s</span>
                                                 </span>
-                                                <button class="btn btn-icon" title="Copy 2FA code"
+                                                <button class="btn btn-icon" title="Copy 2FA code" aria-label="Copy 2FA code"
                                                         @onclick='() => CopyTextAsync(totp.Code, "2FA code copied")'><Lucide Name="copy" Size="15" /></button>
-                                                <button class="btn btn-icon" title="Hide 2FA code" @onclick="() => HideTotp(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
+                                                <button class="btn btn-icon" title="Hide 2FA code" aria-label="Hide 2FA code" @onclick="() => HideTotp(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
                                             }
                                             else
                                             {
-                                                <button class="btn btn-icon totp-chip" title="Show 2FA code"
+                                                <button class="btn btn-icon totp-chip" title="Show 2FA code" aria-label="Show 2FA code"
                                                         @onclick="() => ShowTotpAsync(entry.Id)"><Lucide Name="timer" Size="16" /></button>
                                             }
                                         }
@@ -168,12 +175,12 @@
                                     <td class="cell-actions">
                                         @if (CanEdit)
                                         {
-                                            <button class="btn btn-icon" title="Edit" @onclick="() => OpenEditEntry(entry)"><Lucide Name="pencil" Size="16" /></button>
+                                            <button class="btn btn-icon" title="Edit" aria-label="Edit" @onclick="() => OpenEditEntry(entry)"><Lucide Name="pencil" Size="16" /></button>
                                         }
-                                        <button class="btn btn-icon" title="Password history" @onclick="() => OpenHistoryAsync(entry)"><Lucide Name="history" Size="16" /></button>
+                                        <button class="btn btn-icon" title="Password history" aria-label="Password history" @onclick="() => OpenHistoryAsync(entry)"><Lucide Name="history" Size="16" /></button>
                                         @if (CanEdit)
                                         {
-                                            <button class="btn btn-icon" title="Delete" @onclick="() => DeleteEntryAsync(entry)"><Lucide Name="trash" Size="16" /></button>
+                                            <button class="btn btn-icon" title="Delete" aria-label="Delete" @onclick="() => DeleteEntryAsync(entry)"><Lucide Name="trash" Size="16" /></button>
                                         }
                                     </td>
                                 </tr>
@@ -211,7 +218,7 @@
     </div>
 </div>
 
-<Modal Visible="_editor is not null" Title="@(_editorIsNew ? "New password" : "Edit password")" OnClose="CloseEditor">
+<Modal Visible="_editor is not null" Title="@(_editorIsNew ? "New password" : "Edit password")" OnClose="CloseEditor" CloseOnBackdrop="false">
     @if (_editor is not null)
     {
         <div class="form-grid">
@@ -283,13 +290,15 @@
                 <span class="field-label">Notes</span>
                 <textarea rows="2" @bind="_editor.Notes"></textarea>
             </label>
-            @if (_editorError is not null)
-            {
-                <div class="alert alert-error">@_editorError</div>
-            }
-            <div class="modal-actions">
-                <button class="btn btn-ghost" @onclick="CloseEditor">Cancel</button>
-                <button class="btn btn-primary" @onclick="SaveEntryAsync">@(_editorIsNew ? "Create" : "Save")</button>
+            <div class="modal-footer">
+                @if (_editorError is not null)
+                {
+                    <div class="alert alert-error">@_editorError</div>
+                }
+                <div class="modal-actions">
+                    <button class="btn btn-ghost" @onclick="CloseEditor">Cancel</button>
+                    <button class="btn btn-primary" @onclick="SaveEntryAsync">@(_editorIsNew ? "Create" : "Save")</button>
+                </div>
             </div>
         </div>
     }
@@ -323,12 +332,12 @@
                                 @if (_revealedRevisions.TryGetValue(revisionId, out var plain))
                                 {
                                     <code class="mono revealed">@plain</code>
-                                    <button class="btn btn-icon" title="Hide" @onclick="() => _revealedRevisions.Remove(revisionId)"><Lucide Name="eye-off" Size="16" /></button>
+                                    <button class="btn btn-icon" title="Hide" aria-label="Hide" @onclick="() => _revealedRevisions.Remove(revisionId)"><Lucide Name="eye-off" Size="16" /></button>
                                 }
                                 else
                                 {
                                     <span class="mask">••••••••</span>
-                                    <button class="btn btn-icon" title="Reveal" @onclick="() => RevealRevisionAsync(revisionId)"><Lucide Name="eye" Size="16" /></button>
+                                    <button class="btn btn-icon" title="Reveal" aria-label="Reveal" @onclick="() => RevealRevisionAsync(revisionId)"><Lucide Name="eye" Size="16" /></button>
                                 }
                             </td>
                         </tr>
@@ -340,10 +349,12 @@
     }
 </Modal>
 
-@if (_toast is not null)
-{
-    <div class="toast @(_toastIsError ? "toast-error" : "")">@_toast</div>
-}
+<div class="toast-region" role="status" aria-live="polite">
+    @if (_toast is not null)
+    {
+        <div class="toast @(_toastIsError ? "toast-error" : "")">@_toast</div>
+    }
+</div>
 
 @code {
     [Parameter] public Guid? GroupId { get; set; }
@@ -766,7 +777,8 @@
     private async Task DeleteEntryAsync(PasswordEntry entry)
     {
         var confirmed = await JS.InvokeAsync<bool>("confirm",
-            $"Delete \"{entry.Name}\"? Its history is kept, but it disappears from the vault on every site.");
+            $"Delete \"{entry.Name}\"? It disappears from the vault on every site, but you can restore it " +
+            "from \"Recently deleted\" at the bottom of this page.");
         if (!confirmed)
         {
             return;
@@ -839,6 +851,10 @@
             }
         });
     }
+
+    private static bool IsLinkable(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     private static string DisplayUrl(string url)
     {

@@ -1,8 +1,12 @@
-@* Minimal modal: shown while Visible, closes on backdrop click or ✕. *@
+@* Minimal modal: closes on ✕ or Escape, and on backdrop click unless the host
+   opts out (editors do, so a stray click can't discard typed data). The panel
+   takes focus on open so Escape works immediately and screen readers land in
+   the dialog. *@
 @if (Visible)
 {
-    <div class="modal-backdrop" @onclick="CloseAsync">
-        <div class="modal-panel" @onclick:stopPropagation="true">
+    <div class="modal-backdrop" @onclick="BackdropClickAsync">
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="@Title" tabindex="-1"
+             @ref="_panel" @onclick:stopPropagation="true" @onkeydown="KeyDownAsync">
             <div class="modal-header">
                 <h2>@Title</h2>
                 <button type="button" class="btn btn-ghost modal-close" @onclick="CloseAsync" aria-label="Close">✕</button>
@@ -19,6 +23,23 @@
     [Parameter] public string Title { get; set; } = "";
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public bool CloseOnBackdrop { get; set; } = true;
+
+    private ElementReference _panel;
+    private bool _wasVisible;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Visible && !_wasVisible)
+        {
+            try { await _panel.FocusAsync(); } catch { /* element may be gone already */ }
+        }
+        _wasVisible = Visible;
+    }
 
     private Task CloseAsync() => OnClose.InvokeAsync();
+
+    private Task BackdropClickAsync() => CloseOnBackdrop ? CloseAsync() : Task.CompletedTask;
+
+    private Task KeyDownAsync(KeyboardEventArgs e) => e.Key == "Escape" ? CloseAsync() : Task.CompletedTask;
 }

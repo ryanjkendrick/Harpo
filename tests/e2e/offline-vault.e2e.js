@@ -112,6 +112,10 @@ async function retryUntil(action, probe, tries = 15) {
 (async () => {
     const browser = await puppeteer.launch({ headless: "new", args: ["--no-first-run"] });
     const page = await browser.newPage();
+    // Destructive actions use native confirm() dialogs. Headless Chrome
+    // auto-cancels dialogs opened without user activation (our clicks are
+    // synthetic), so stub confirm to accept instead of relying on CDP dialogs.
+    await page.evaluateOnNewDocument(() => { window.confirm = () => true; });
     await page.setViewport({ width: 1100, height: 750 });
 
     try {
