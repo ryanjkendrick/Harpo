@@ -49,6 +49,14 @@
         <section class="panel">
             <h2>Members</h2>
             <p class="muted">Only these people can see the passwords in this group.</p>
+            @if (_members is { Count: > 0 } && _members.All(m => m.Role != GroupRole.Admin))
+            {
+                <div class="alert alert-warning">
+                    <strong>This group has no admin.</strong> That can happen when admins on two sites change
+                    each other's roles at the same moment. Members keep their access, but only a site
+                    administrator can manage the group until one of them appoints a new admin.
+                </div>
+            }
             @if (_members is not null)
             {
                 <div class="table-scroll">

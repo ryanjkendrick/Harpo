@@ -10,6 +10,9 @@
 //      unreachable", wrong passphrase is rejected, the vault decrypts offline,
 //      the revealed password matches, and navigation falls back to the vault
 //   5. restarts the container and deletes the throwaway group
+// Along the way it also proves two things that were once broken: signing in
+// as someone else in the same browser cannot replace the vault's contents, and
+// a refresh still in flight when the vault is locked cannot undo the lock.
 //
 // Prerequisites: `docker compose -f docker-compose.multisite.yml up -d` and the
 // docker CLI on PATH. Run with: npm test (see README.md in this directory).
@@ -20,6 +23,9 @@ const BASE = process.env.HARPO_BASE_URL || "http://localhost:8081";
 const CONTAINER = process.env.HARPO_CONTAINER || "harpo-alpha";
 const USER = process.env.HARPO_USER || "alice";
 const USER_PASSWORD = process.env.HARPO_PASSWORD || "alice";
+// A second account, to prove one user's offline vault can't be taken over by another.
+const OTHER_USER = process.env.HARPO_OTHER_USER || "bob";
+const OTHER_PASSWORD = process.env.HARPO_OTHER_PASSWORD || "bob";
 
 const RUN_ID = Date.now();
 const GROUP_NAME = `E2E Offline ${RUN_ID}`;
@@ -80,6 +86,32 @@ async function waitForText(page, selector, text, timeout = 15000) {
     await page.waitForFunction(
         (sel, needle) => [...document.querySelectorAll(sel)].some((e) => e.textContent.includes(needle)),
         { timeout }, selector, text);
+}
+
+// Signs in on a page of its own. Fully synthetic, because by the time a second
+// sign-in is needed a Blazor circuit has attached and trusted input is dead.
+async function signIn(page, user, password) {
+    await page.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
+    await typeInto(page, 'input[name="Model.Username"]', user);
+    await typeInto(page, 'input[name="Model.Password"]', password);
+    await Promise.all([
+        page.waitForNavigation({ waitUntil: "networkidle2" }),
+        jsClick(page, 'button[type="submit"]'),
+    ]);
+    if (page.url() !== `${BASE}/`) {
+        throw new Error(`sign-in as ${user} failed: ${page.url()}`);
+    }
+}
+
+// What the device actually has stored — independent of what the page shows.
+function storedVaultOwner(page) {
+    return page.evaluate(() => new Promise((resolve) => {
+        const open = indexedDB.open("harpo-offline", 1);
+        open.onsuccess = () => {
+            const req = open.result.transaction("vault").objectStore("vault").get("current");
+            req.onsuccess = () => resolve(req.result ? req.result.username : null);
+        };
+    }));
 }
 
 // Outcome-first retry: succeed fast if `probe` already holds, otherwise run the
@@ -200,6 +232,35 @@ async function retryUntil(action, probe, tries = 15) {
             { timeout: 10000 });
         check("back-to-Harpo link shown while reachable", true);
 
+        // ---- 4b. Someone else signs in to Harpo in this browser ----
+        // The vault tab is still unlocked. A refresh now would be answered for the
+        // OTHER account and re-encrypted under this vault's key — it must be refused.
+        const other = await browser.newPage();
+        const cookies = await other.createCDPSession();
+        try {
+            await cookies.send("Network.clearBrowserCookies");
+            await signIn(other, OTHER_USER, OTHER_PASSWORD);
+            // Back to the vault tab: a background tab gets no animation frames,
+            // which is what waitForFunction polls on.
+            await page.bringToFront();
+            await jsClick(page, "#refreshBtn");
+            await page.waitForFunction(
+                () => !document.getElementById("vaultError").classList.contains("hidden"),
+                { timeout: 15000 });
+            const refusal = await page.$eval("#vaultError", (el) => el.textContent);
+            const stillShown = await page.$eval("#entryList", (el) => el.textContent);
+            check("refresh as another account is refused",
+                refusal.includes(`belongs to "${USER}"`) && stillShown.includes(ENTRY_NAME)
+                    && (await storedVaultOwner(page)) === USER,
+                refusal.slice(0, 80));
+        } finally {
+            // Put the original session back for the rest of the run.
+            await cookies.send("Network.clearBrowserCookies");
+            await signIn(other, USER, USER_PASSWORD);
+            await other.close();
+            await page.bringToFront();
+        }
+
         // ---- 5. Take the server down ----
         execSync(`docker stop ${CONTAINER}`, { stdio: "ignore" });
         let serverDown = false;
@@ -263,6 +324,53 @@ async function retryUntil(action, probe, tries = 15) {
         await page.waitForFunction(
             () => !document.getElementById("backLink").classList.contains("hidden"),
             { timeout: 15000 });
+
+        // ---- 7b. Lock the vault while a refresh is still in flight ----
+        // (The restart reset the per-user snapshot throttle, so a refresh is allowed.)
+        const unlockWith = async (passphrase) => {
+            await page.waitForSelector("#state-unlock:not(.hidden)", { timeout: 10000 });
+            await typeInto(page, "#unlockPass", passphrase);
+            await jsClick(page, "#unlockBtn");
+            await page.waitForFunction(() => !document.getElementById("unlockBtn").disabled, { timeout: 60000 });
+            return page.evaluate(() => !document.getElementById("state-vault").classList.contains("hidden"));
+        };
+        check("unlocks online after the outage", await unlockWith(PASSPHRASE));
+        let held = null;
+        const hold = (req) => {
+            if (held === null && req.url().includes("/api/offline/snapshot")) {
+                held = req; // keep the response from arriving until after the lock
+                return;
+            }
+            req.continue();
+        };
+        await page.setRequestInterception(true);
+        page.on("request", hold);
+        await jsClick(page, "#refreshBtn");
+        for (let i = 0; i < 100 && held === null; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+        }
+        if (held === null) {
+            throw new Error("the refresh request was never issued");
+        }
+        await jsClick(page, "#lockBtn");
+        await held.continue();
+        await new Promise((r) => setTimeout(r, 3000));
+        const lockHeld = await page.evaluate(() =>
+            !document.getElementById("state-unlock").classList.contains("hidden")
+            && document.getElementById("state-vault").classList.contains("hidden")
+            && document.getElementById("entryList").children.length === 0);
+        check("in-flight refresh cannot undo a lock", lockHeld);
+        page.off("request", hold);
+        await page.setRequestInterception(false);
+
+        // The same race used to re-encrypt the stored vault under the passphrase
+        // "null"; after a reload the real passphrase must still be the only key.
+        await page.reload({ waitUntil: "networkidle2" });
+        const nullOpens = await unlockWith("null");
+        const realOpens = !nullOpens && await unlockWith(PASSPHRASE);
+        check("stored vault still opens only with the real passphrase", realOpens && !nullOpens,
+            `real=${realOpens} null=${nullOpens}`);
+
         await Promise.all([
             page.waitForNavigation({ waitUntil: "networkidle2" }),
             jsClick(page, "#backLink"),
@@ -283,6 +391,9 @@ async function retryUntil(action, probe, tries = 15) {
                 } catch { }
                 await new Promise((r) => setTimeout(r, 1000));
             }
+            // Whatever happened above, clean up as the user who owns the test data.
+            await (await page.createCDPSession()).send("Network.clearBrowserCookies");
+            await signIn(page, USER, USER_PASSWORD);
             await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
             await waitForText(page, ".group-card", GROUP_NAME);
             await clickByText(page, ".group-card", GROUP_NAME);

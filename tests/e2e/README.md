@@ -19,13 +19,15 @@ npm install
 npm test
 ```
 
-Expect `17/17 checks passed`.
+Expect `21/21 checks passed`. Environment overrides: `HARPO_BASE_URL`,
+`HARPO_CONTAINER`, `HARPO_USER`, `HARPO_PASSWORD`, and `HARPO_OTHER_USER` /
+`HARPO_OTHER_PASSWORD` (a second account, used to prove one user's offline
+vault can't be taken over by another signing in to the same browser).
 
 One more headless gotcha: native `confirm()` dialogs opened without user
 activation (all our clicks are synthetic) are auto-cancelled by headless
 Chrome before a CDP dialog handler can answer them — stub `window.confirm`
-via `evaluateOnNewDocument` instead of using `page.on("dialog")`. Environment overrides: `HARPO_BASE_URL`,
-`HARPO_CONTAINER`, `HARPO_USER`, `HARPO_PASSWORD`.
+via `evaluateOnNewDocument` instead of using `page.on("dialog")`.
 
 Implementation note: interactions with Blazor pages use synthetic DOM events
 (`el.click()`, value-set + `input`/`change` dispatch) rather than trusted CDP
