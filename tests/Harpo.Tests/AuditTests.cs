@@ -52,6 +52,9 @@ public class AuditTests : IDisposable
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
         var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        // The test clock only moves when told to; two revisions at the same
+        // instant are ordered by their random ids, so "the older one" is a coin flip.
+        _site.Time.Advance(TimeSpan.FromMinutes(1));
         await _site.Vault.ChangePasswordAsync(_alice, entry.Id, "pw2");
         var old = (await _site.Vault.GetHistoryAsync(_alice, entry.Id))[1].RevisionId;
 
