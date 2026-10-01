@@ -26,6 +26,25 @@ public class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Validation_errors_name_the_field_they_concern()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+
+        async Task<string?> FieldOfAsync(Func<Task> action) =>
+            (await Assert.ThrowsAsync<VaultValidationException>(action)).Field;
+
+        Assert.Equal("name", await FieldOfAsync(() =>
+            _site.Vault.CreateEntryAsync(_alice, group.Id, "  ", "🌐", "", "", "", "pw")));
+        Assert.Equal("password", await FieldOfAsync(() =>
+            _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "")));
+        Assert.Equal("totp", await FieldOfAsync(() =>
+            _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw", totpSecret: "not base32!")));
+        Assert.Equal("name", await FieldOfAsync(() => _site.Groups.CreateGroupAsync(_alice, " ", "")));
+        // A rule about the group as a whole belongs to no single input.
+        Assert.Null(await FieldOfAsync(() => _site.Groups.RemoveMemberAsync(_alice, group.Id, "alice")));
+    }
+
+    [Fact]
     public async Task Entry_urls_are_normalized_on_create_and_update()
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");

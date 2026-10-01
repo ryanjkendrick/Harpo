@@ -33,7 +33,15 @@ public sealed class VaultNotFoundException : Exception
 
 public sealed class VaultValidationException : Exception
 {
-    public VaultValidationException(string message) : base(message)
+    public VaultValidationException(string message, string? field = null) : base(message)
     {
+        Field = field;
     }
+
+    /// <summary>
+    /// The input the problem belongs to ("name", "password", "totp"), when there
+    /// is one — lets a form show the message at that field instead of in a
+    /// summary far from it.
+    /// </summary>
+    public string? Field { get; }
 }

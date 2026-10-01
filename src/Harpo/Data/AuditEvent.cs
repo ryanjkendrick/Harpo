@@ -34,6 +34,7 @@ public static class AuditActions
     public const string PasswordReveal = "password.reveal";
     public const string PasswordCopy = "password.copy";
     public const string RevisionReveal = "revision.reveal";
+    public const string RevisionCopy = "revision.copy";
     public const string OfflineSync = "offline.sync";
     public const string EntryDelete = "entry.delete";
     public const string EntryRestore = "entry.restore";
@@ -49,4 +50,33 @@ public static class AuditActions
     public const string IconUpdate = "icon.update";
     public const string IconDelete = "icon.delete";
     public const string KeyRotate = "key.rotate";
+
+    /// <summary>A secret left the vault: shown on screen or put on a clipboard.</summary>
+    public static readonly string[] Reveals =
+        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal];
+
+    public static readonly string[] Deletions = [EntryDelete, GroupDelete, MemberRemove, IconDelete];
+
+    /// <summary>
+    /// Recorded for completeness but routine and frequent: a device syncing its
+    /// offline copy, someone opening the health report. They would otherwise
+    /// bury the events an auditor is looking for.
+    /// </summary>
+    public static readonly string[] Background = [OfflineSync, HealthReport];
+
+    public static AuditCategory CategoryOf(string action) =>
+        Reveals.Contains(action) ? AuditCategory.Reveals
+        : Deletions.Contains(action) ? AuditCategory.Deletions
+        : Background.Contains(action) ? AuditCategory.Background
+        : AuditCategory.Changes;
+}
+
+/// <summary>Coarse grouping of audit actions. "Changes" is everything not named in another category.</summary>
+public enum AuditCategory
+{
+    All,
+    Reveals,
+    Changes,
+    Deletions,
+    Background,
 }
