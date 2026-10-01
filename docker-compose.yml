@@ -19,6 +19,13 @@ services:
       - "8080:8080"
     environment:
       Harpo__SiteId: "main"
+      # This container serves plain HTTP and expects the reverse proxy above to
+      # terminate TLS. This flag makes Harpo honour the proxy's X-Forwarded-*
+      # headers, so the auth cookie is marked Secure, the per-address login
+      # limit and the audit log see the real client IP (not the proxy's), and
+      # HTTPS redirects work. Keep it set whenever a proxy fronts Harpo; drop it
+      # only if the container is exposed directly (not recommended).
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       # REQUIRED — same value on every replicated site. Generate: openssl rand -base64 32
       Harpo__MasterKey: "${HARPO_MASTER_KEY:?Set HARPO_MASTER_KEY in .env}"
       # Rotating the master key? Set the NEW key above and keep the old one here
