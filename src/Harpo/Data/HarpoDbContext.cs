@@ -43,6 +43,45 @@ public class HarpoDbContext : DbContext
     /// </summary>
     public bool SuppressReplicationStamping { get; set; }
 
+    private bool _holdsWriteGate;
+
+    /// <summary>
+    /// Takes the write gate for a whole read-check-write sequence instead of just
+    /// the final save. Until the returned handle is disposed no other writer in
+    /// this process can commit, so what this context reads cannot change before
+    /// it saves — which is what makes "check an invariant, then write" atomic
+    /// (the last-admin rule, a replication merge deciding which row wins).
+    /// <see cref="SaveChangesAsync"/> on this context does not re-take the gate.
+    /// Don't save through a different context while holding it: that would wait
+    /// on the gate forever.
+    /// </summary>
+    public async Task<IDisposable> BeginExclusiveWriteAsync(CancellationToken cancellationToken = default)
+    {
+        if (_holdsWriteGate)
+        {
+            throw new InvalidOperationException("This context already holds the write gate.");
+        }
+        await WriteGate.WaitAsync(cancellationToken);
+        _holdsWriteGate = true;
+        return new WriteGateHandle(this);
+    }
+
+    private sealed class WriteGateHandle(HarpoDbContext owner) : IDisposable
+    {
+        private bool _released;
+
+        public void Dispose()
+        {
+            if (_released)
+            {
+                return;
+            }
+            _released = true;
+            owner._holdsWriteGate = false;
+            WriteGate.Release();
+        }
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // Relationships are deliberately not modeled: replication delivers rows in
@@ -98,7 +137,11 @@ public class HarpoDbContext : DbContext
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
-        await WriteGate.WaitAsync(cancellationToken);
+        var acquired = !_holdsWriteGate;
+        if (acquired)
+        {
+            await WriteGate.WaitAsync(cancellationToken);
+        }
         try
         {
             if (!SuppressReplicationStamping)
@@ -109,13 +152,20 @@ public class HarpoDbContext : DbContext
         }
         finally
         {
-            WriteGate.Release();
+            if (acquired)
+            {
+                WriteGate.Release();
+            }
         }
     }
 
     public override int SaveChanges()
     {
-        WriteGate.Wait();
+        var acquired = !_holdsWriteGate;
+        if (acquired)
+        {
+            WriteGate.Wait();
+        }
         try
         {
             if (!SuppressReplicationStamping)
@@ -126,7 +176,10 @@ public class HarpoDbContext : DbContext
         }
         finally
         {
-            WriteGate.Release();
+            if (acquired)
+            {
+                WriteGate.Release();
+            }
         }
     }
 

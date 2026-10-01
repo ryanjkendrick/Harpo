@@ -25,6 +25,15 @@ let vaultData = null;    // decrypted snapshot while unlocked
 let record = null;       // encrypted record from IndexedDB
 let idleTimer = null;
 
+// Bumped every time the vault is locked or wiped. Each flow that awaits
+// something (the network, key derivation, storage) remembers the value it
+// started under and stops — touching neither state nor the screen — if it has
+// changed by the time the await returns. Without this, work that began before
+// a lock could finish after it and put the passwords back on screen.
+let epoch = 0;
+
+const sameUser = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+
 // ---------- tiny helpers ----------
 
 const $ = (id) => document.getElementById(id);
@@ -162,27 +171,14 @@ async function decryptWithKey(key, ivB64, ctB64) {
     return crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(ivB64) }, key, unb64(ctB64));
 }
 
-async function encryptVaultRecord(passphraseOrNull, snapshot) {
-    // Reuse the unlocked DEK when we have one; otherwise mint everything fresh.
-    let salt, iterations, wrapped;
-    if (dek === null) {
-        salt = crypto.getRandomValues(new Uint8Array(16));
-        iterations = PBKDF2_ITERATIONS;
-        const kek = await deriveKek(passphraseOrNull, salt, iterations);
-        dek = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-        const rawDek = await crypto.subtle.exportKey("raw", dek);
-        wrapped = await encryptWithKey(kek, rawDek);
-    } else {
-        salt = unb64(record.salt);
-        iterations = record.iterations;
-        wrapped = { iv: record.wrapIv, ct: record.wrappedDek };
-    }
-    const blob = await encryptWithKey(dek, utf8(JSON.stringify(snapshot)));
+// Setup and refresh are deliberately two functions that take their key material
+// as arguments. They used to be one function that looked at the module-level
+// key and minted a new one when it was null — so a refresh finishing after a
+// lock (key already cleared) re-encrypted the vault under a key derived from
+// the passphrase `null`.
+
+function contentsOf(blob, snapshot) {
     return {
-        salt: b64(salt.buffer ? salt : new Uint8Array(salt)),
-        iterations,
-        wrapIv: wrapped.iv,
-        wrappedDek: wrapped.ct,
         vaultIv: blob.iv,
         vaultCt: blob.ct,
         syncedAt: Date.now(),
@@ -193,13 +189,63 @@ async function encryptVaultRecord(passphraseOrNull, snapshot) {
     };
 }
 
+// First-time setup: a fresh random data key, wrapped by a key derived from the passphrase.
+async function createVaultRecord(passphrase, snapshot) {
+    if (typeof passphrase !== "string" || passphrase.length === 0) {
+        throw new Error("A passphrase is required.");
+    }
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const kek = await deriveKek(passphrase, salt, PBKDF2_ITERATIONS);
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const wrapped = await encryptWithKey(kek, await crypto.subtle.exportKey("raw", key));
+    const blob = await encryptWithKey(key, utf8(JSON.stringify(snapshot)));
+    return {
+        key,
+        record: {
+            salt: b64(salt),
+            iterations: PBKDF2_ITERATIONS,
+            wrapIv: wrapped.iv,
+            wrappedDek: wrapped.ct,
+            ...contentsOf(blob, snapshot),
+        },
+    };
+}
+
+// Refresh: new contents under the SAME data key and the same passphrase wrapping.
+async function reencryptVaultRecord(key, base, snapshot) {
+    const blob = await encryptWithKey(key, utf8(JSON.stringify(snapshot)));
+    return {
+        salt: base.salt,
+        iterations: base.iterations,
+        wrapIv: base.wrapIv,
+        wrappedDek: base.wrappedDek,
+        ...contentsOf(blob, snapshot),
+    };
+}
+
 // ---------- server ----------
 
-async function fetchSnapshot() {
+function wrongUser(actualUser) {
+    const err = new Error("WRONG_USER");
+    err.actualUser = actualUser || "";
+    return err;
+}
+
+// `expectedUser` is the account an existing vault belongs to (null for first-time
+// setup). The snapshot endpoint answers for whoever is signed in to this browser
+// right now, which is not necessarily that account — and a refresh re-encrypts
+// under the vault's existing key, so accepting someone else's snapshot would put
+// their passwords under this vault's passphrase.
+async function fetchSnapshot(expectedUser = null) {
+    const headers = { "X-Harpo-Offline": "1" };
+    if (expectedUser) {
+        // Lets the server refuse before it decrypts anything.
+        headers["X-Harpo-Offline-User"] = encodeURIComponent(expectedUser);
+    }
     let res;
     try {
         res = await fetch("/api/offline/snapshot", {
-            headers: { "X-Harpo-Offline": "1" },
+            headers,
             credentials: "same-origin",
             cache: "no-store",
         });
@@ -211,6 +257,13 @@ async function fetchSnapshot() {
     if (res.redirected || res.status === 401) {
         throw new Error("SIGN_IN");
     }
+    if (res.status === 409) {
+        let actual = "";
+        try {
+            actual = (await res.json()).username;
+        } catch { /* body is optional */ }
+        throw wrongUser(actual);
+    }
     if (res.status === 404) {
         throw new Error("DISABLED");
     }
@@ -220,7 +273,12 @@ async function fetchSnapshot() {
     if (!res.ok) {
         throw new Error("The server rejected the request (" + res.status + ").");
     }
-    return res.json();
+    const snapshot = await res.json();
+    // Checked here as well: a server that predates the header ignores it.
+    if (expectedUser && !sameUser(snapshot.username, expectedUser)) {
+        throw wrongUser(snapshot.username);
+    }
+    return snapshot;
 }
 
 async function probeEnabled() {
@@ -252,6 +310,7 @@ function expiresText(rec) {
 }
 
 function lock() {
+    epoch++; // anything still in flight must not bring the vault back
     dek = null;
     vaultData = null;
     clearTimeout(idleTimer);
@@ -548,6 +607,7 @@ function enterVaultState() {
     $("syncInfo").textContent =
         `${record.username}@${record.siteId} · synced ${new Date(record.syncedAt).toLocaleString()} · ${expiresText(record)}`;
     $("refreshBtn").disabled = !navigator.onLine;
+    setError("vaultError", null);
     renderVault();
     show("state-vault");
     armAutoLock();
@@ -574,15 +634,24 @@ async function doSetup() {
     }
     setError("setupError", null);
     const btn = $("setupBtn");
+    if (btn.disabled) {
+        return;
+    }
+    const startedAt = epoch;
     btn.disabled = true;
     btn.textContent = "Syncing…";
     try {
         const snapshot = await fetchSnapshot();
-        record = await encryptVaultRecord(pass, snapshot);
-        await idbPut(record);
+        const created = await createVaultRecord(pass, snapshot);
+        if (epoch !== startedAt) {
+            return; // offline access was switched off while this was running
+        }
+        await idbPut(created.record);
         if (navigator.storage?.persist) {
             navigator.storage.persist().catch(() => { });
         }
+        record = created.record;
+        dek = created.key;
         vaultData = snapshot;
         toast(`Synced ${snapshot.entries.length} entries`);
         enterVaultState();
@@ -595,61 +664,128 @@ async function doSetup() {
 }
 
 async function doUnlock() {
+    const base = record;
     const btn = $("unlockBtn");
+    if (base === null || btn.disabled) {
+        return;
+    }
+    const startedAt = epoch;
     btn.disabled = true;
     btn.textContent = "Deriving key…";
     try {
-        const kek = await deriveKek($("unlockPass").value, unb64(record.salt), record.iterations);
-        const rawDek = await decryptWithKey(kek, record.wrapIv, record.wrappedDek);
-        dek = await crypto.subtle.importKey("raw", rawDek, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
-        const json = await decryptWithKey(dek, record.vaultIv, record.vaultCt);
-        vaultData = JSON.parse(new TextDecoder().decode(json));
-    } catch {
-        dek = null;
-        setError("unlockError", "Wrong passphrase.");
-        btn.disabled = false;
-        btn.textContent = "Unlock";
-        return;
-    }
-    btn.disabled = false;
-    btn.textContent = "Unlock";
-
-    if (isExpired(record)) {
-        // Never show stale data: a successful refresh is required to proceed.
-        const refreshed = await doRefresh({ quiet: true });
-        if (!refreshed) {
-            dek = null;
-            vaultData = null;
-            showMessage("Snapshot expired",
-                "This offline copy is older than allowed. Sign in while online, then refresh it.",
-                { loginLink: true, wipe: true });
+        let key, data;
+        try {
+            const kek = await deriveKek($("unlockPass").value, unb64(base.salt), base.iterations);
+            const rawDek = await decryptWithKey(kek, base.wrapIv, base.wrappedDek);
+            key = await crypto.subtle.importKey("raw", rawDek, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+            data = JSON.parse(new TextDecoder().decode(await decryptWithKey(key, base.vaultIv, base.vaultCt)));
+        } catch {
+            if (epoch === startedAt) {
+                setError("unlockError", "Wrong passphrase.");
+            }
             return;
         }
-    }
-    enterVaultState();
-}
+        if (epoch !== startedAt) {
+            return; // wiped (or switched off by the admin) while the key was being derived
+        }
 
-async function doRefresh({ quiet = false } = {}) {
-    const btn = $("refreshBtn");
-    btn.disabled = true;
-    try {
-        const snapshot = await fetchSnapshot();
-        record = await encryptVaultRecord(null, snapshot);
-        await idbPut(record);
-        vaultData = snapshot;
-        if (!quiet) {
-            toast(`Refreshed — ${snapshot.entries.length} entries`);
-            enterVaultState();
+        let current = base;
+        if (isExpired(base)) {
+            // Never show stale data: a successful refresh is required to proceed.
+            // The key stays local until then, so a failure leaves nothing unlocked.
+            let refreshed = null;
+            let failure = null;
+            try {
+                refreshed = await refreshVault(key, base, startedAt);
+            } catch (err) {
+                failure = err;
+            }
+            if (epoch !== startedAt) {
+                return;
+            }
+            if (refreshed === null) {
+                if (failure?.message === "WRONG_USER") {
+                    showMessage("Signed in as someone else", wrongUserText(base, failure), { loginLink: true, wipe: true });
+                } else {
+                    showMessage("Snapshot expired",
+                        "This offline copy is older than allowed. Sign in while online, then refresh it.",
+                        { loginLink: true, wipe: true });
+                }
+                return;
+            }
+            current = refreshed.record;
+            data = refreshed.snapshot;
         }
-        return true;
-    } catch (err) {
-        if (!quiet) {
-            handleFlowError(err, null);
-        }
-        return false;
+
+        record = current;
+        dek = key;
+        vaultData = data;
+        enterVaultState();
     } finally {
         btn.disabled = false;
+        btn.textContent = "Unlock";
     }
+}
+
+// Fetches a fresh snapshot for an unlocked vault and stores it under the same
+// key. Resolves to the new record and snapshot — or to null if the vault was
+// locked or wiped while this was in flight, in which case the caller must leave
+// state and screen alone. Throws on network / server / wrong-account errors.
+async function refreshVault(key, base, startedAt) {
+    const snapshot = await fetchSnapshot(base.username);
+    if (epoch !== startedAt) {
+        return null;
+    }
+    const next = await reencryptVaultRecord(key, base, snapshot);
+    if (epoch !== startedAt) {
+        return null;
+    }
+    await idbPut(next);
+    if (epoch !== startedAt) {
+        // Locked or wiped during the write itself. Keep storage and memory in
+        // step, and above all don't let this write outlive a wipe.
+        if (record === null) {
+            await idbWipe();
+        } else if (record === base) {
+            record = next;
+        } else {
+            await idbPut(record);
+        }
+        return null;
+    }
+    return { record: next, snapshot };
+}
+
+async function doRefresh() {
+    if (dek === null || record === null) {
+        return;
+    }
+    const startedAt = epoch;
+    const btn = $("refreshBtn");
+    btn.disabled = true;
+    setError("vaultError", null);
+    try {
+        const refreshed = await refreshVault(dek, record, startedAt);
+        if (refreshed === null) {
+            return; // locked or wiped meanwhile — the vault stays as the user left it
+        }
+        record = refreshed.record;
+        vaultData = refreshed.snapshot;
+        toast(`Refreshed — ${refreshed.snapshot.entries.length} entries`);
+        enterVaultState();
+    } catch (err) {
+        if (epoch === startedAt) {
+            handleFlowError(err, null);
+        }
+    } finally {
+        btn.disabled = !navigator.onLine;
+    }
+}
+
+function wrongUserText(rec, err) {
+    const who = err.actualUser ? `"${err.actualUser}"` : "a different account";
+    return `This offline copy belongs to "${rec.username}", but ${who} is signed in to Harpo in this browser. ` +
+        "Sign in as its owner to refresh it — or wipe it and set up a new copy.";
 }
 
 function handleFlowError(err, errorElementId) {
@@ -660,6 +796,9 @@ function handleFlowError(err, errorElementId) {
     } else if (err.message === "DISABLED") {
         showMessage("Offline access is disabled",
             "Your administrator has turned off offline password storage for this Harpo.");
+    } else if (err.message === "WRONG_USER" && record !== null) {
+        // The vault on screen is untouched; say why the refresh was refused.
+        setError(errorElementId || "vaultError", wrongUserText(record, err));
     } else if (errorElementId) {
         setError(errorElementId, err.message);
     } else {
@@ -671,10 +810,12 @@ async function doWipe() {
     if (!confirm("Wipe the offline copy from this device? You can re-sync while online.")) {
         return;
     }
-    await idbWipe();
+    epoch++; // a refresh or unlock still in flight must not write the copy back
     dek = null;
     vaultData = null;
     record = null;
+    clearTimeout(idleTimer);
+    await idbWipe();
     toast("Offline data wiped");
     init();
 }
@@ -696,6 +837,9 @@ async function init() {
         if (enabled === false) {
             if (record) {
                 // Admin turned the feature off: honour it on next contact.
+                epoch++;
+                dek = null;
+                vaultData = null;
                 await idbWipe();
                 record = null;
                 showMessage("Offline access is disabled",
@@ -731,7 +875,7 @@ async function init() {
 $("setupBtn").addEventListener("click", doSetup);
 $("unlockBtn").addEventListener("click", doUnlock);
 $("unlockPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doUnlock(); });
-$("refreshBtn").addEventListener("click", () => doRefresh());
+$("refreshBtn").addEventListener("click", doRefresh);
 $("lockBtn").addEventListener("click", () => { lock(); toast("Locked"); });
 $("search").addEventListener("input", renderVault);
 for (const id of ["wipeBtn1", "wipeBtn2", "wipeBtn3"]) {
