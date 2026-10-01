@@ -290,6 +290,32 @@
         }
     </section>
 
+    @if (_adminlessGroups is { Count: > 0 })
+    {
+        <section class="panel">
+            <h2>Groups without an admin</h2>
+            <div class="alert alert-warning">
+                Nobody can manage the membership of these groups. This happens when admins on two sites
+                demote or remove each other while the sites are out of contact — each change was valid
+                where it was made, and replication keeps both. Members keep their access; open the group
+                and appoint an admin.
+            </div>
+            <div class="card-list">
+                @foreach (var g in _adminlessGroups)
+                {
+                    <div class="card group-card">
+                        <div class="group-card-main">
+                            <span class="group-card-name">@g.Name</span>
+                        </div>
+                        <div class="group-card-meta">
+                            <a class="btn btn-ghost btn-sm" href="/groups/@g.Id">Appoint an admin →</a>
+                        </div>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+
     @if (_deletedGroups is { Count: > 0 })
     {
         <section class="panel">
@@ -347,6 +373,7 @@
     private List<GroupSummary>? _groups;
     private List<AuditEvent>? _auditEvents;
     private List<Group>? _deletedGroups;
+    private List<Group>? _adminlessGroups;
     private List<IconSummary>? _icons;
     private Dictionary<Guid, int> _iconUsage = new();
     private readonly Dictionary<Guid, string> _iconUrlEdits = new();
@@ -495,6 +522,7 @@
         _auditEvents = await Audit.GetEventsAsync(_user, take: AuditPageSize);
         _auditHasMore = _auditEvents.Count == AuditPageSize;
         _deletedGroups = await Groups.GetDeletedGroupsAsync(_user);
+        _adminlessGroups = await Groups.GetGroupsWithoutAdminAsync(_user);
         _icons = await Icons.GetAllAsync();
         _iconUsage = await Icons.GetUsageAsync();
         _refreshTimer = new Timer(_ => _ = RefreshAsync(), null,

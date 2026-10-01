@@ -1,5 +1,6 @@
 using Harpo.Data;
 using Harpo.Security;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -77,6 +78,20 @@ public class ReplicationEngine
     public async Task<PullResponse> BuildResponseAsync(PullRequest request, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // Every query below must see the SAME database snapshot. The response is
+        // assembled from one read per table; if a write committed between two of
+        // those reads, the response could carry a row with a higher sequence
+        // (from a table read later) while missing a lower-sequenced sibling (in a
+        // table already read). The peer advances its watermark to the highest
+        // sequence it receives, so the missing row would never be asked for
+        // again — a revoked membership, or an entry whose revision did arrive,
+        // lost for good. A deferred transaction pins one WAL snapshot for all
+        // the reads without blocking writers.
+        await db.Database.OpenConnectionAsync(ct);
+        await using var snapshot = ((SqliteConnection)db.Database.GetDbConnection()).BeginTransaction(deferred: true);
+        await db.Database.UseTransactionAsync(snapshot, ct);
+
         var response = new PullResponse { SiteId = _siteId, UtcNow = DateTime.UtcNow };
         var limit = Math.Max(100, _options.BatchSize);
 
@@ -144,6 +159,7 @@ public class ReplicationEngine
             }
         }
 
+        await snapshot.CommitAsync(ct);
         return response;
     }
 
@@ -157,6 +173,13 @@ public class ReplicationEngine
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         db.SuppressReplicationStamping = true;
+
+        // A merge is read-decide-write per row, so it holds the write gate from
+        // the first read to the save. Otherwise a local edit could commit after
+        // "the incoming row wins" was decided against the OLD local row, and the
+        // save would overwrite that newer edit with the older incoming one —
+        // last-writer-wins silently broken, the user's change gone on every site.
+        using var gate = await db.BeginExclusiveWriteAsync(ct);
 
         var accepted = 0;
         var highWater = new Dictionary<string, long>(StringComparer.Ordinal);

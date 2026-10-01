@@ -195,7 +195,13 @@ How it works, honestly:
   copy. No editing — writes always happen online against the server.
 - Snapshots expire after `SnapshotMaxAgeDays` (default 7) without a refresh;
   expired copies refuse to unlock until the device syncs again. The vault also
-  auto-locks after 10 minutes of inactivity.
+  auto-locks after 10 minutes of inactivity. Locking (or wiping) cancels
+  anything still in flight — a refresh that completes after a lock is
+  discarded rather than shown.
+- The copy belongs to the account that created it. If someone else signs in
+  to Harpo in the same browser, a refresh is refused — on the server and
+  again on the device — instead of storing their passwords under your
+  offline passphrase. Wipe it to set up a copy for the other account.
 
 The admin switch, in any compose file / environment:
 
@@ -261,6 +267,14 @@ Operational notes:
   you first let it fully sync from a peer (it then continues its old sequence
   automatically; the code handles this recovery case).
 - Adding a site later: start it empty with a new id and a peer — done.
+- **Group admins across sites.** Within a site, a group can never lose its
+  last admin. Two sites that are out of contact can, however, each demote or
+  remove the *other's* admin; both changes were valid where they were made,
+  and replication keeps both. Harpo does not promote anyone automatically —
+  in a password manager that would be a privilege nobody granted. Instead the
+  group keeps working for its members, shows a notice, and is listed under
+  **Administration → Groups without an admin**, where a site administrator
+  appoints one (which replicates like any other change).
 
 ## Encrypting the database file
 
@@ -571,6 +585,12 @@ for testing. Forks: change the `IMAGE` name in
   peers that don't yet know about newer tables.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
+- **Replication consistency.** Each pull response is built inside one read
+  transaction, so it is a single snapshot of the database: a peer can never
+  receive a later change while missing an earlier one from the same site
+  (its watermark would otherwise skip the missing row for good). Merging a
+  response and local edits are serialized, so a later local edit is never
+  overwritten by an older replicated row.
 - **Deleting a group** tombstones the group; its entries stop being visible
   everywhere but their ciphertext and history remain in the database.
 - Blazor interactive server rendering keeps secrets and crypto on the server;

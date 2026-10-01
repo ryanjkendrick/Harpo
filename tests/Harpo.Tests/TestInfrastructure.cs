@@ -1,9 +1,11 @@
+using System.Data.Common;
 using Harpo.Data;
 using Harpo.Replication;
 using Harpo.Security;
 using Harpo.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -37,8 +39,68 @@ public sealed class TestDbFactory : IDbContextFactory<HarpoDbContext>
 }
 
 /// <summary>
-/// A complete in-memory Harpo "site": its own SQLite database, clock, and service
-/// instances. Replication tests wire several of these together.
+/// Lets a test run code at the exact moment a chosen SQL statement is about to
+/// execute — to commit a competing write between two reads, or to hold a write
+/// open while another caller races it. One-shot: the hook disarms itself before
+/// running, so the statements it issues are not intercepted again.
+/// </summary>
+public sealed class CommandHook : DbCommandInterceptor
+{
+    private Func<string, bool>? _match;
+    private Func<Task>? _action;
+
+    public void Before(Func<string, bool> match, Func<Task> action)
+    {
+        _match = match;
+        _action = action;
+    }
+
+    public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        await FireAsync(command.CommandText);
+        return result;
+    }
+
+    public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        await FireAsync(command.CommandText);
+        return result;
+    }
+
+    public override async ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<object> result,
+        CancellationToken cancellationToken = default)
+    {
+        await FireAsync(command.CommandText);
+        return result;
+    }
+
+    private async Task FireAsync(string sql)
+    {
+        var match = _match;
+        if (match is null || !match(sql))
+        {
+            return;
+        }
+        _match = null;
+        var action = Interlocked.Exchange(ref _action, null);
+        if (action is not null)
+        {
+            await action();
+        }
+    }
+}
+
+/// <summary>
+/// A complete Harpo "site": its own SQLite database, clock, and service
+/// instances. Replication tests wire several of these together. In-memory by
+/// default; pass <c>databasePath</c> for a real WAL-mode file where every
+/// context gets its own connection, as in production — which concurrency tests
+/// need (the in-memory mode shares one connection between all contexts).
 /// </summary>
 public sealed class TestSite : IDisposable
 {
@@ -55,22 +117,41 @@ public sealed class TestSite : IDisposable
     public IconService Icons { get; }
     public ReplicationEngine Engine { get; }
 
-    private readonly SqliteConnection _connection;
+    private readonly SqliteConnection? _connection;
+    private readonly bool _fileBacked;
 
     public TestSite(string siteId, ManualTime? time = null,
-        string masterKey = MasterKey, string[]? previousMasterKeys = null)
+        string masterKey = MasterKey, string[]? previousMasterKeys = null,
+        string? databasePath = null, params IInterceptor[] interceptors)
     {
         SiteId = siteId;
         Time = time ?? new ManualTime();
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
-        var options = new DbContextOptionsBuilder<HarpoDbContext>()
-            .UseSqlite(_connection)
-            .Options;
-        Db = new TestDbFactory(options, Time, siteId);
+        var builder = new DbContextOptionsBuilder<HarpoDbContext>();
+        if (databasePath is null)
+        {
+            _connection = new SqliteConnection("DataSource=:memory:");
+            _connection.Open();
+            builder.UseSqlite(_connection);
+        }
+        else
+        {
+            _fileBacked = true;
+            builder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
+        }
+        if (interceptors.Length > 0)
+        {
+            builder.AddInterceptors(interceptors);
+        }
+        Db = new TestDbFactory(builder.Options, Time, siteId);
         using (var context = Db.CreateDbContext())
         {
             context.Database.EnsureCreated();
+            if (_fileBacked)
+            {
+                // Same journal mode as production (DbInitializer): readers keep a
+                // stable snapshot while a writer commits.
+                context.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+            }
         }
 
         Crypto = new CryptoService(masterKey, previousMasterKeys);
@@ -118,7 +199,14 @@ public sealed class TestSite : IDisposable
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions =
         new(System.Text.Json.JsonSerializerDefaults.Web);
 
-    public void Dispose() => _connection.Dispose();
+    public void Dispose()
+    {
+        _connection?.Dispose();
+        if (_fileBacked)
+        {
+            SqliteConnection.ClearAllPools(); // release the file so the test can delete it
+        }
+    }
 
     public static UserContext User(string username, bool siteAdmin = false) =>
         new(username, char.ToUpperInvariant(username[0]) + username[1..], siteAdmin);

@@ -222,19 +222,27 @@ public class GroupService
     public async Task SetMemberRoleAsync(UserContext user, Guid groupId, string username, GroupRole role, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
-
-        var member = await db.GroupMembers
-            .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
-            ?? throw new VaultNotFoundException($"'{username}' is not a member of this group.");
-
-        if (member.Role == GroupRole.Admin && role != GroupRole.Admin)
+        Group group;
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
-            await EnsureNotLastAdminAsync(db, groupId, username, ct);
+            // The caller's admin rights, the last-admin rule and the write are one
+            // atomic step. Checked separately, two admins demoting each other at
+            // the same moment would each still see the other in place, and both
+            // would succeed — leaving the group with no admin at all.
+            using var gate = await db.BeginExclusiveWriteAsync(ct);
+            group = await RequireGroupAdminAsync(db, user, groupId, ct);
+
+            var member = await db.GroupMembers
+                .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
+                ?? throw new VaultNotFoundException($"'{username}' is not a member of this group.");
+
+            if (member.Role == GroupRole.Admin && role != GroupRole.Admin)
+            {
+                await EnsureNotLastAdminAsync(db, groupId, username, ct);
+            }
+            member.Role = role;
+            await db.SaveChangesAsync(ct);
         }
-        member.Role = role;
-        await db.SaveChangesAsync(ct);
         await _audit.RecordAsync(user, AuditActions.MemberRole, group.Name,
             detail: $"{username} → {role}", groupId: groupId);
     }
@@ -242,21 +250,52 @@ public class GroupService
     public async Task RemoveMemberAsync(UserContext user, Guid groupId, string username, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
-
-        var member = await db.GroupMembers
-            .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
-            ?? throw new VaultNotFoundException($"'{username}' is not a member of this group.");
-
-        if (member.Role == GroupRole.Admin)
+        Group group;
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
-            await EnsureNotLastAdminAsync(db, groupId, username, ct);
+            // Atomic for the same reason as SetMemberRoleAsync.
+            using var gate = await db.BeginExclusiveWriteAsync(ct);
+            group = await RequireGroupAdminAsync(db, user, groupId, ct);
+
+            var member = await db.GroupMembers
+                .SingleOrDefaultAsync(m => m.GroupId == groupId && m.Username == username && !m.IsDeleted, ct)
+                ?? throw new VaultNotFoundException($"'{username}' is not a member of this group.");
+
+            if (member.Role == GroupRole.Admin)
+            {
+                await EnsureNotLastAdminAsync(db, groupId, username, ct);
+            }
+            member.IsDeleted = true;
+            await db.SaveChangesAsync(ct);
         }
-        member.IsDeleted = true;
-        await db.SaveChangesAsync(ct);
         await _audit.RecordAsync(user, AuditActions.MemberRemove, group.Name,
             detail: username, groupId: groupId);
+    }
+
+    /// <summary>
+    /// Live groups that currently have no admin; site admins only. The last-admin
+    /// rule holds within a site, but two DISCONNECTED sites can each demote (or
+    /// remove) the other's admin, and the merge keeps both changes because they
+    /// touch different membership rows. Harpo deliberately does not pick a new
+    /// admin on its own — silently promoting someone in a password manager is a
+    /// privilege escalation nobody decided on — so the policy is: the group keeps
+    /// working for its members, it is listed here, and a site administrator
+    /// appoints an admin (which then replicates like any other change).
+    /// </summary>
+    public async Task<List<Group>> GetGroupsWithoutAdminAsync(UserContext user, CancellationToken ct = default)
+    {
+        if (!user.IsSiteAdmin)
+        {
+            throw new VaultAccessDeniedException("Only site administrators can do that.");
+        }
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var groupsWithAdmin = db.GroupMembers
+            .Where(m => !m.IsDeleted && m.Role == GroupRole.Admin)
+            .Select(m => m.GroupId);
+        return await db.Groups
+            .Where(g => !g.IsDeleted && !groupsWithAdmin.Contains(g.Id))
+            .OrderBy(g => g.Name)
+            .ToListAsync(ct);
     }
 
     /// <summary>Role of the user in the group, resolved fresh; null when not a member.</summary>
