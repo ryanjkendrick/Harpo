@@ -1,14 +1,16 @@
 @* Minimal modal: closes on ✕ or Escape, and on backdrop click unless the host
-   opts out (editors do, so a stray click can't discard typed data). The panel
-   takes focus on open so Escape works immediately and screen readers land in
-   the dialog. *@
+   opts out (editors do, so a stray click can't discard typed data). Keyboard
+   focus is managed by harpoModal in app.js: it moves into the dialog on open,
+   Tab stays inside it, and it returns to whatever opened the dialog on close. *@
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 @if (Visible)
 {
     <div class="modal-backdrop" @onclick="BackdropClickAsync">
-        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="@Title" tabindex="-1"
-             @ref="_panel" @onclick:stopPropagation="true" @onkeydown="KeyDownAsync">
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="@_titleId" tabindex="-1"
+             @ref="_panel" @onclick:stopPropagation="true">
             <div class="modal-header">
-                <h2>@Title</h2>
+                <h2 id="@_titleId">@Title</h2>
                 <button type="button" class="btn btn-ghost modal-close" @onclick="CloseAsync" aria-label="Close">✕</button>
             </div>
             <div class="modal-body">
@@ -25,21 +27,43 @@
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public bool CloseOnBackdrop { get; set; } = true;
 
+    private readonly string _titleId = "modal-title-" + Guid.NewGuid().ToString("N")[..8];
     private ElementReference _panel;
     private bool _wasVisible;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (Visible && !_wasVisible)
+        if (Visible == _wasVisible)
         {
-            try { await _panel.FocusAsync(); } catch { /* element may be gone already */ }
+            return;
         }
         _wasVisible = Visible;
+        await CallAsync(Visible ? "harpoModal.open" : "harpoModal.close", Visible ? [_panel] : []);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_wasVisible)
+        {
+            // Navigating away with the dialog open: release the key handler and focus.
+            await CallAsync("harpoModal.close", []);
+        }
+    }
+
+    private async Task CallAsync(string function, object?[] args)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(function, args);
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or JSException
+                                       or InvalidOperationException or OperationCanceledException)
+        {
+            // The circuit is going away, or the page is prerendering — nothing to manage.
+        }
     }
 
     private Task CloseAsync() => OnClose.InvokeAsync();
 
     private Task BackdropClickAsync() => CloseOnBackdrop ? CloseAsync() : Task.CompletedTask;
-
-    private Task KeyDownAsync(KeyboardEventArgs e) => e.Key == "Escape" ? CloseAsync() : Task.CompletedTask;
 }

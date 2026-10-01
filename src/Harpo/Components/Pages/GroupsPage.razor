@@ -8,7 +8,7 @@
 <div class="page-narrow">
     <div class="page-header">
         <h1>Groups</h1>
-        <button class="btn btn-primary" @onclick="() => _showCreate = true">＋ New group</button>
+        <button class="btn btn-primary" @onclick="OpenCreate"><Lucide Name="plus" Size="16" /> New group</button>
     </div>
     <p class="muted">
         Passwords live inside groups. Only members of a group can see its passwords;
@@ -58,10 +58,17 @@
 </div>
 
 <Modal Visible="_showCreate" Title="New group" OnClose="() => _showCreate = false">
-    <div class="form-grid">
+    <form class="form-grid" novalidate @onsubmit="CreateAsync">
         <label class="field">
             <span class="field-label">Name</span>
-            <input @bind="_newName" placeholder="e.g. Infrastructure" />
+            <input @ref="_nameInput" @bind="_newName" @bind:after="() => _nameError = null"
+                   placeholder="e.g. Infrastructure"
+                   aria-invalid="@(_nameError is null ? null : "true")"
+                   aria-describedby="@(_nameError is null ? null : "error-group-name")" />
+            @if (_nameError is not null)
+            {
+                <span class="field-error" id="error-group-name">@_nameError</span>
+            }
         </label>
         <label class="field">
             <span class="field-label">Description</span>
@@ -69,13 +76,13 @@
         </label>
         @if (_error is not null)
         {
-            <div class="alert alert-error">@_error</div>
+            <div class="alert alert-error" role="alert">@_error</div>
         }
         <div class="modal-actions">
-            <button class="btn btn-ghost" @onclick="() => _showCreate = false">Cancel</button>
-            <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
+            <button type="button" class="btn btn-ghost" @onclick="() => _showCreate = false">Cancel</button>
+            <button type="submit" class="btn btn-primary">Create</button>
         </div>
-    </div>
+    </form>
 </Modal>
 
 @code {
@@ -87,6 +94,15 @@
     private string _newName = "";
     private string _newDescription = "";
     private string? _error;
+    private string? _nameError;
+    private ElementReference _nameInput;
+
+    private void OpenCreate()
+    {
+        _error = null;
+        _nameError = null;
+        _showCreate = true;
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -96,14 +112,25 @@
 
     private async Task CreateAsync()
     {
+        _error = null;
+        _nameError = string.IsNullOrWhiteSpace(_newName) ? "Give the group a name." : null;
+        if (_nameError is not null)
+        {
+            await _nameInput.FocusAsync();
+            return;
+        }
         try
         {
-            _error = null;
             await Groups.CreateGroupAsync(_user!, _newName, _newDescription);
             _showCreate = false;
             _newName = "";
             _newDescription = "";
             _groups = await Groups.GetMyGroupsAsync(_user!);
+        }
+        catch (VaultValidationException ex) when (ex.Field == "name")
+        {
+            _nameError = ex.Message;
+            await _nameInput.FocusAsync();
         }
         catch (VaultValidationException ex)
         {

@@ -18,7 +18,15 @@
 <div class="page-narrow">
     <h1>Administration</h1>
 
-    <section class="panel">
+    <nav class="section-nav" aria-label="Sections of this page">
+        <a href="/admin#site">This site</a>
+        <a href="/admin#replication">Replication</a>
+        <a href="/admin#audit">Audit log</a>
+        <a href="/admin#icons">Icons</a>
+        <a href="/admin#groups">Groups</a>
+    </nav>
+
+    <section class="panel" id="site">
         <h2>This site</h2>
         <div class="stat-row">
             <div class="stat">
@@ -34,8 +42,12 @@
                 <span class="stat-label">passwords</span>
             </div>
             <div class="stat" title="Set Harpo__Offline__Enabled=false to forbid offline password storage on devices.">
-                <span class="stat-value">@(OfflineConfig.Value.Enabled ? $"on · {OfflineConfig.Value.SnapshotMaxAgeDays}d" : "off")</span>
-                <span class="stat-label">offline access</span>
+                <span class="stat-value">@(OfflineConfig.Value.Enabled ? "Allowed" : "Off")</span>
+                <span class="stat-label">
+                    @(OfflineConfig.Value.Enabled
+                        ? $"offline copies · expire after {OfflineConfig.Value.SnapshotMaxAgeDays} days"
+                        : "offline copies")
+                </span>
             </div>
         </div>
         @if (Crypto.HasPreviousKeys)
@@ -49,7 +61,7 @@
         }
     </section>
 
-    <section class="panel">
+    <section class="panel" id="replication">
         <h2>Cross-site replication</h2>
         @if (!ReplicationConfig.Value.Enabled)
         {
@@ -140,7 +152,7 @@
         }
     </section>
 
-    <section class="panel">
+    <section class="panel" id="audit">
         <h2>Audit log</h2>
         <p class="muted">
             Who revealed, copied, or deleted what — recorded
@@ -156,28 +168,46 @@
             }
         </p>
 
+        <div class="audit-controls">
+            <div class="filter-chips" role="group" aria-label="Show">
+                @foreach (var (category, label, hint) in AuditCategoryChips)
+                {
+                    <button type="button" class="chip @(category == _auditCategory ? "selected" : "")"
+                            aria-pressed="@(category == _auditCategory ? "true" : "false")" title="@hint"
+                            @onclick="() => SetAuditCategoryAsync(category)">@label</button>
+                }
+            </div>
+            <input class="search" type="search" placeholder="Filter by user, action, or target…"
+                   aria-label="Filter the events shown" @bind="_auditFilter" @bind:event="oninput" />
+        </div>
+
         @if (_auditEvents is null)
         {
             <p class="muted">Loading…</p>
         }
         else if (_auditEvents.Count == 0)
         {
-            <p class="muted">No audit events yet.</p>
+            <p class="muted">@(_auditCategory == AuditCategory.All ? "No audit events yet." : "No events of this kind.")</p>
         }
         else
         {
-            <input class="search" type="search" placeholder="Filter by user, action, or target…"
-                   @bind="_auditFilter" @bind:event="oninput" />
             <div class="table-scroll">
                 <table class="audit-table">
                     <thead>
                         <tr><th>When</th><th>Who</th><th>Action</th><th>What</th><th>Site</th><th>From</th></tr>
                     </thead>
                     <tbody>
-                        @foreach (var e in FilteredAudit)
+                        @foreach (var row in AuditRows)
                         {
-                            <tr>
-                                <td title="@($"{e.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC")">@Relative(e.OccurredAtUtc)</td>
+                            var e = row.Latest;
+                            <tr class="@(AuditActions.CategoryOf(e.Action) == AuditCategory.Background ? "audit-background" : "")">
+                                <td title="@AuditWhenTitle(row)">
+                                    @Relative(e.OccurredAtUtc)
+                                    @if (row.Count > 1)
+                                    {
+                                        <span class="badge audit-repeat">×@row.Count</span>
+                                    }
+                                </td>
                                 <td class="mono">@e.Username</td>
                                 <td><span class="badge @AuditBadgeClass(e.Action)">@e.Action</span></td>
                                 <td>
@@ -201,7 +231,7 @@
         }
     </section>
 
-    <section class="panel">
+    <section class="panel" id="icons">
         <h2>Icon catalogue</h2>
         <p class="muted">
             Custom icons available for password entries. Deleting one leaves
@@ -290,6 +320,8 @@
         }
     </section>
 
+    @* Anchor for the page navigation: the group sections start here, whichever of them are shown. *@
+    <span id="groups" class="section-anchor"></span>
     @if (_adminlessGroups is { Count: > 0 })
     {
         <section class="panel">
@@ -322,7 +354,7 @@
             <h2>Deleted groups</h2>
             <p class="muted">Restoring a group brings back the passwords that were not deleted individually.</p>
             <div class="card-list">
-                @foreach (var g in _deletedGroups)
+                @foreach (var g in _showAllDeletedGroups ? _deletedGroups : _deletedGroups.Take(DeletedGroupsShown))
                 {
                     <div class="card group-card">
                         <div class="group-card-main">
@@ -335,6 +367,12 @@
                     </div>
                 }
             </div>
+            @if (_deletedGroups.Count > DeletedGroupsShown)
+            {
+                <button class="btn btn-ghost btn-sm show-all" @onclick="() => _showAllDeletedGroups = !_showAllDeletedGroups">
+                    @(_showAllDeletedGroups ? "Show fewer" : $"Show all {_deletedGroups.Count}")
+                </button>
+            }
         </section>
     }
 
@@ -374,6 +412,8 @@
     private List<AuditEvent>? _auditEvents;
     private List<Group>? _deletedGroups;
     private List<Group>? _adminlessGroups;
+    private const int DeletedGroupsShown = 5;
+    private bool _showAllDeletedGroups;
     private List<IconSummary>? _icons;
     private Dictionary<Guid, int> _iconUsage = new();
     private readonly Dictionary<Guid, string> _iconUrlEdits = new();
@@ -461,10 +501,67 @@
     {
         _icons = await Icons.GetAllAsync();
         _iconUsage = await Icons.GetUsageAsync();
-        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
+        await LoadAuditAsync();
     }
     private bool _auditHasMore;
     private string _auditFilter = "";
+    private AuditCategory _auditCategory = AuditCategory.All;
+
+    private static readonly (AuditCategory Category, string Label, string Hint)[] AuditCategoryChips =
+    [
+        (AuditCategory.All, "All", "Every recorded event"),
+        (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied"),
+        (AuditCategory.Changes, "Changes", "Memberships, roles, restores, icons, key rotation"),
+        (AuditCategory.Deletions, "Deletions", "Passwords, groups, members and icons removed"),
+        (AuditCategory.Background, "Background", "Routine activity: offline syncs, health report views"),
+    ];
+
+    /// <summary>One line of the table: an event, plus how many identical ones directly preceded it.</summary>
+    private sealed record AuditRow(AuditEvent Latest, int Count, DateTime OldestUtc);
+
+    /// <summary>
+    /// Folds a run of the same person doing the same thing to the same object into
+    /// one row ("×4"), so a device syncing every few minutes or a page opened
+    /// repeatedly doesn't push everything else off the screen.
+    /// </summary>
+    private List<AuditRow> AuditRows
+    {
+        get
+        {
+            var rows = new List<AuditRow>();
+            foreach (var e in FilteredAudit)
+            {
+                if (rows.Count > 0 && rows[^1].Latest is var previous
+                    && previous.Action == e.Action && previous.Username == e.Username
+                    && previous.Target == e.Target && previous.OriginSiteId == e.OriginSiteId)
+                {
+                    rows[^1] = rows[^1] with { Count = rows[^1].Count + 1, OldestUtc = e.OccurredAtUtc };
+                }
+                else
+                {
+                    rows.Add(new AuditRow(e, 1, e.OccurredAtUtc));
+                }
+            }
+            return rows;
+        }
+    }
+
+    private static string AuditWhenTitle(AuditRow row) =>
+        row.Count == 1
+            ? $"{row.Latest.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC"
+            : $"{row.Count} times, from {row.OldestUtc:yyyy-MM-dd HH:mm:ss} to {row.Latest.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC";
+
+    private async Task LoadAuditAsync()
+    {
+        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize, category: _auditCategory);
+        _auditHasMore = _auditEvents.Count == AuditPageSize;
+    }
+
+    private async Task SetAuditCategoryAsync(AuditCategory category)
+    {
+        _auditCategory = category;
+        await LoadAuditAsync();
+    }
     private Timer? _refreshTimer;
 
     private const int AuditPageSize = 50;
@@ -492,8 +589,8 @@
 
     private static string AuditBadgeClass(string action) => action switch
     {
-        AuditActions.PasswordReveal or AuditActions.PasswordCopy or AuditActions.RevisionReveal => "badge-admin",
-        AuditActions.EntryDelete or AuditActions.GroupDelete or AuditActions.MemberRemove => "badge-error",
+        _ when AuditActions.CategoryOf(action) == AuditCategory.Reveals => "badge-admin",
+        _ when AuditActions.CategoryOf(action) == AuditCategory.Deletions => "badge-error",
         _ => "",
     };
 
@@ -504,7 +601,7 @@
             return;
         }
         var oldest = _auditEvents[^1].OccurredAtUtc;
-        var more = await Audit.GetEventsAsync(_user!, beforeUtc: oldest, take: AuditPageSize);
+        var more = await Audit.GetEventsAsync(_user!, beforeUtc: oldest, take: AuditPageSize, category: _auditCategory);
         _auditEvents.AddRange(more);
         _auditHasMore = more.Count == AuditPageSize;
     }
@@ -519,8 +616,7 @@
         _user = UserContext.FromPrincipal((await AuthState).User);
         _groups = await Groups.GetMyGroupsAsync(_user);
         _status = await Engine.GetStatusAsync();
-        _auditEvents = await Audit.GetEventsAsync(_user, take: AuditPageSize);
-        _auditHasMore = _auditEvents.Count == AuditPageSize;
+        await LoadAuditAsync();
         _deletedGroups = await Groups.GetDeletedGroupsAsync(_user);
         _adminlessGroups = await Groups.GetGroupsWithoutAdminAsync(_user);
         _icons = await Icons.GetAllAsync();
@@ -563,7 +659,7 @@
         await Groups.RestoreGroupAsync(_user!, group.Id);
         _groups = await Groups.GetMyGroupsAsync(_user!);
         _deletedGroups = await Groups.GetDeletedGroupsAsync(_user!);
-        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize);
+        await LoadAuditAsync();
     }
 
     public void Dispose() => _refreshTimer?.Dispose();

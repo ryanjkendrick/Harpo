@@ -436,38 +436,61 @@ function renderEntry(entry) {
     reveal.addEventListener("click", () => setShown(!shown));
     row.appendChild(reveal);
 
+    // The 2FA controls form their own cluster after the password's. The toggle is
+    // a labelled chip: as an icon-only button it became a second "eye-off"
+    // sitting right beside the password's.
+    const totpNodes = [];
     if (entry.totp) {
         const totpBtn = document.createElement("button");
-        totpBtn.className = "btn-icon";
-        totpBtn.title = "Show 2FA code";
-        totpBtn.setAttribute("aria-label", "Show 2FA code");
-        totpBtn.innerHTML = lucide("timer");
+        totpBtn.className = "btn-chip";
+        const setTotpLabel = (showing) => {
+            totpBtn.innerHTML = lucide("timer", 14);
+            totpBtn.append(showing ? " Hide 2FA" : " 2FA");
+            totpBtn.title = showing ? "Hide the 2FA code" : "Show the current 2FA code";
+        };
+        setTotpLabel(false);
         const codeEl = document.createElement("span");
         codeEl.className = "pw shown";
         codeEl.style.display = "none";
+        const copyCode = document.createElement("button");
+        copyCode.className = "btn-icon";
+        copyCode.title = "Copy 2FA code";
+        copyCode.setAttribute("aria-label", "Copy 2FA code");
+        copyCode.innerHTML = lucide("copy");
+        copyCode.style.display = "none";
+        let currentCode = null;
         let totpTimer = null;
         const stopTotp = () => {
             clearInterval(totpTimer);
             totpTimer = null;
+            currentCode = null;
             codeEl.style.display = "none";
-            totpBtn.innerHTML = lucide("timer");
+            copyCode.style.display = "none";
+            setTotpLabel(false);
         };
         const renderCode = async () => {
             try {
                 const { code, remaining } = await totpNow(entry.totp);
+                currentCode = code;
                 codeEl.textContent = `${code.slice(0, 3)} ${code.slice(3)} · ${remaining}s`;
             } catch {
                 codeEl.textContent = "2FA error";
                 stopTotp();
             }
         };
+        copyCode.addEventListener("click", async () => {
+            if (currentCode !== null) {
+                toast(await copyText(currentCode) ? "2FA code copied" : "Copy failed");
+            }
+        });
         totpBtn.addEventListener("click", async () => {
             if (totpTimer) {
                 stopTotp();
                 return;
             }
             codeEl.style.display = "";
-            totpBtn.innerHTML = lucide("eye-off");
+            copyCode.style.display = "";
+            setTotpLabel(true);
             await renderCode();
             const startedAt = Date.now();
             totpTimer = setInterval(() => {
@@ -478,8 +501,7 @@ function renderEntry(entry) {
                 renderCode();
             }, 1000);
         });
-        row.appendChild(codeEl);
-        row.appendChild(totpBtn);
+        totpNodes.push(totpBtn, codeEl, copyCode);
     }
 
     const copy = document.createElement("button");
@@ -496,6 +518,7 @@ function renderEntry(entry) {
             : "Copy failed");
     });
     row.appendChild(copy);
+    row.append(...totpNodes);
 
     return row;
 }

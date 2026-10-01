@@ -79,11 +79,11 @@ public class VaultService
         name = name.Trim();
         if (name.Length == 0)
         {
-            throw new VaultValidationException("Name is required.");
+            throw new VaultValidationException("Name is required.", "name");
         }
         if (password.Length == 0)
         {
-            throw new VaultValidationException("Password is required.");
+            throw new VaultValidationException("Password is required.", "password");
         }
         var encryptedTotp = EncryptTotpOrThrow(totpSecret);
 
@@ -124,7 +124,7 @@ public class VaultService
         name = name.Trim();
         if (name.Length == 0)
         {
-            throw new VaultValidationException("Name is required.");
+            throw new VaultValidationException("Name is required.", "name");
         }
         var encryptedTotp = EncryptTotpOrThrow(totpSecret);
 
@@ -168,7 +168,7 @@ public class VaultService
         }
         catch (ArgumentException ex)
         {
-            throw new VaultValidationException(ex.Message);
+            throw new VaultValidationException(ex.Message, "totp");
         }
     }
 
@@ -205,7 +205,7 @@ public class VaultService
     {
         if (newPassword.Length == 0)
         {
-            throw new VaultValidationException("Password is required.");
+            throw new VaultValidationException("Password is required.", "password");
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
@@ -293,8 +293,10 @@ public class VaultService
             .ToList();
     }
 
-    /// <summary>Decrypts a historical password revision.</summary>
-    public async Task<string> RevealRevisionAsync(UserContext user, Guid entryId, Guid revisionId, CancellationToken ct = default)
+    /// <summary>Decrypts a historical password revision, to show it or to put it on the clipboard.</summary>
+    public async Task<string> RevealRevisionAsync(
+        UserContext user, Guid entryId, Guid revisionId,
+        RevealPurpose purpose = RevealPurpose.View, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireEntryAsync(db, user, entryId, ct);
@@ -304,7 +306,9 @@ public class VaultService
         var plaintext = _crypto.Decrypt(revision.EncryptedPassword);
         var entry = await db.PasswordEntries.SingleAsync(e => e.Id == entryId, ct);
         await _audit.RecordAsync(
-            user, AuditActions.RevisionReveal, await DescribeEntryAsync(db, entry, ct),
+            user,
+            purpose == RevealPurpose.Copy ? AuditActions.RevisionCopy : AuditActions.RevisionReveal,
+            await DescribeEntryAsync(db, entry, ct),
             detail: $"historical value set {revision.CreatedAtUtc:u} by {revision.CreatedBy}",
             groupId: entry.GroupId, entryId: entry.Id);
         return plaintext;

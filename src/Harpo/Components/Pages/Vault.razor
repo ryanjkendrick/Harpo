@@ -70,7 +70,7 @@
                        @bind="_search" @bind:event="oninput" />
                 @if (CanEdit)
                 {
-                    <button class="btn btn-primary" @onclick="OpenNewEntry">＋ New password</button>
+                    <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
                 }
                 else
                 {
@@ -134,34 +134,45 @@
                                         }
                                     </td>
                                     <td class="cell-password">
-                                        @if (_revealed.TryGetValue(entry.Id, out var plain))
-                                        {
-                                            <code class="mono revealed">@plain</code>
-                                            <button class="btn btn-icon" title="Hide" aria-label="Hide" @onclick="() => Hide(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
-                                        }
-                                        else
-                                        {
-                                            <span class="mask">••••••••</span>
-                                            <button class="btn btn-icon" title="Reveal" aria-label="Reveal" @onclick="() => RevealAsync(entry.Id)"><Lucide Name="eye" Size="16" /></button>
-                                        }
-                                        <button class="btn btn-icon" title="Copy password" aria-label="Copy password"
-                                                @onclick="() => CopyPasswordAsync(entry.Id)"><Lucide Name="copy" Size="15" /></button>
+                                        <span class="secret-group">
+                                            @if (_revealed.TryGetValue(entry.Id, out var plain))
+                                            {
+                                                <code class="mono revealed">@plain</code>
+                                                <button class="btn btn-icon" title="Hide" aria-label="Hide password" @onclick="() => Hide(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
+                                            }
+                                            else
+                                            {
+                                                <span class="mask">••••••••</span>
+                                                <button class="btn btn-icon" title="Reveal" aria-label="Reveal password" @onclick="() => RevealAsync(entry.Id)"><Lucide Name="eye" Size="16" /></button>
+                                            }
+                                            <button class="btn btn-icon" title="Copy password" aria-label="Copy password"
+                                                    @onclick="() => CopyPasswordAsync(entry.Id)"><Lucide Name="copy" Size="15" /></button>
+                                        </span>
                                         @if (entry.EncryptedTotpSecret is not null)
                                         {
                                             @if (_totp.TryGetValue(entry.Id, out var totp))
                                             {
-                                                <span class="totp-code" title="Current 2FA code">
+                                                <span class="secret-group totp-group">
+                                                    <span class="totp-label">2FA</span>
                                                     <code class="mono revealed">@FormatTotp(totp.Code)</code>
-                                                    <span class="muted totp-remaining">@(totp.Remaining)s</span>
+                                                    <span class="totp-countdown" title="Seconds until this code changes">
+                                                        <svg class="totp-ring" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true">
+                                                            <circle class="totp-ring-track" cx="10" cy="10" r="8" />
+                                                            <circle class="totp-ring-fill @(totp.Remaining <= 5 ? "ending" : "")" cx="10" cy="10" r="8"
+                                                                    stroke-dasharray="@RingLength" stroke-dashoffset="@RingOffset(totp)"
+                                                                    transform="rotate(-90 10 10)" />
+                                                        </svg>
+                                                        <span class="muted totp-remaining">@(totp.Remaining)s</span>
+                                                    </span>
+                                                    <button class="btn btn-icon" title="Copy 2FA code" aria-label="Copy 2FA code"
+                                                            @onclick='() => CopyTextAsync(totp.Code, "2FA code copied")'><Lucide Name="copy" Size="15" /></button>
+                                                    <button class="btn btn-icon" title="Hide 2FA code" aria-label="Hide 2FA code" @onclick="() => HideTotp(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
                                                 </span>
-                                                <button class="btn btn-icon" title="Copy 2FA code" aria-label="Copy 2FA code"
-                                                        @onclick='() => CopyTextAsync(totp.Code, "2FA code copied")'><Lucide Name="copy" Size="15" /></button>
-                                                <button class="btn btn-icon" title="Hide 2FA code" aria-label="Hide 2FA code" @onclick="() => HideTotp(entry.Id)"><Lucide Name="eye-off" Size="16" /></button>
                                             }
                                             else
                                             {
-                                                <button class="btn btn-icon totp-chip" title="Show 2FA code" aria-label="Show 2FA code"
-                                                        @onclick="() => ShowTotpAsync(entry.Id)"><Lucide Name="timer" Size="16" /></button>
+                                                <button class="btn btn-ghost btn-sm totp-chip" title="Show the current 2FA code"
+                                                        @onclick="() => ShowTotpAsync(entry.Id)"><Lucide Name="timer" Size="14" /> 2FA</button>
                                             }
                                         }
                                     </td>
@@ -189,10 +200,14 @@
                     </table>
                 </div>
             }
-            @if (CanEdit && _deletedEntries is { Count: > 0 })
+            @if (CanEdit && _deletedEntries is not null)
             {
                 <details class="trash">
                     <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedEntries.Count)</summary>
+                    <p class="muted small trash-note">
+                        @(_deletedEntries.Count == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
+                        nothing is purged automatically.
+                    </p>
                     <div class="table-scroll">
                         <table>
                             <tbody>
@@ -221,15 +236,23 @@
 <Modal Visible="_editor is not null" Title="@(_editorIsNew ? "New password" : "Edit password")" OnClose="CloseEditor" CloseOnBackdrop="false">
     @if (_editor is not null)
     {
-        <div class="form-grid">
+        <form class="form-grid" novalidate @onsubmit="SaveEntryAsync">
             <label class="field">
                 <span class="field-label">Name</span>
-                <input @bind="_editor.Name" placeholder="e.g. Corporate Twitter" />
+                <input @ref="_nameInput" @bind="_editor.Name" @bind:after='() => ClearFieldError("name")'
+                       placeholder="e.g. Corporate Twitter"
+                       aria-invalid="@(FieldError("name") is null ? null : "true")"
+                       aria-describedby="@(FieldError("name") is null ? null : "error-name")" />
+                @if (FieldError("name") is { } nameError)
+                {
+                    <span class="field-error" id="error-name">@nameError</span>
+                }
             </label>
-            <label class="field">
-                <span class="field-label">Icon</span>
+            @* Not a <label>: it holds buttons, and a label would hand every stray click to the first of them. *@
+            <div class="field" role="group" aria-labelledby="icon-field-label">
+                <span class="field-label" id="icon-field-label">Icon</span>
                 <IconPicker Value="@_editor.Icon" ValueChanged="OnIconPicked" User="_user" SuggestedUrl="@_editor.Url" />
-            </label>
+            </div>
             <label class="field">
                 <span class="field-label">URL</span>
                 <input @bind="_editor.Url" @bind:event="oninput" @bind:after="OnUrlChanged" placeholder="https://…" />
@@ -241,11 +264,18 @@
             <label class="field">
                 <span class="field-label">@(_editorIsNew ? "Password" : "New password (leave blank to keep current)")</span>
                 <span class="password-row">
-                    <input class="mono" @bind="_editor.Password" @bind:event="oninput" />
+                    <input @ref="_passwordInput" class="mono" @bind="_editor.Password" @bind:event="oninput"
+                           @bind:after='() => ClearFieldError("password")' autocomplete="off"
+                           aria-invalid="@(FieldError("password") is null ? null : "true")"
+                           aria-describedby="@(FieldError("password") is null ? null : "error-password")" />
                     <button type="button" class="btn btn-ghost btn-sm" @onclick="GeneratePassword"><Lucide Name="dice" Size="15" /> Generate</button>
                     <button type="button" class="btn btn-ghost btn-sm" title="Generator options"
                             @onclick="() => _showGenOptions = !_showGenOptions"><Lucide Name="sliders" Size="15" /></button>
                 </span>
+                @if (FieldError("password") is { } passwordError)
+                {
+                    <span class="field-error" id="error-password">@passwordError</span>
+                }
                 @if (_editor.Password.Length > 0)
                 {
                     <span>
@@ -273,8 +303,14 @@
             }
             <label class="field">
                 <span class="field-label">2FA secret (TOTP) — optional</span>
-                <input class="mono" @bind="_editor.Totp"
-                       placeholder="base32 secret or otpauth:// URI" autocomplete="off" />
+                <input @ref="_totpInput" class="mono" @bind="_editor.Totp" @bind:after='() => ClearFieldError("totp")'
+                       placeholder="base32 secret or otpauth:// URI" autocomplete="off"
+                       aria-invalid="@(FieldError("totp") is null ? null : "true")"
+                       aria-describedby="@(FieldError("totp") is null ? null : "error-totp")" />
+                @if (FieldError("totp") is { } totpError)
+                {
+                    <span class="field-error" id="error-totp">@totpError</span>
+                }
             </label>
             @if (!_editorIsNew && _editorHasTotp)
             {
@@ -293,14 +329,14 @@
             <div class="modal-footer">
                 @if (_editorError is not null)
                 {
-                    <div class="alert alert-error">@_editorError</div>
+                    <div class="alert alert-error" role="alert">@_editorError</div>
                 }
                 <div class="modal-actions">
-                    <button class="btn btn-ghost" @onclick="CloseEditor">Cancel</button>
-                    <button class="btn btn-primary" @onclick="SaveEntryAsync">@(_editorIsNew ? "Create" : "Save")</button>
+                    <button type="button" class="btn btn-ghost" @onclick="CloseEditor">Cancel</button>
+                    <button type="submit" class="btn btn-primary">@(_editorIsNew ? "Create" : "Save")</button>
                 </div>
             </div>
-        </div>
+        </form>
     }
 </Modal>
 
@@ -332,13 +368,15 @@
                                 @if (_revealedRevisions.TryGetValue(revisionId, out var plain))
                                 {
                                     <code class="mono revealed">@plain</code>
-                                    <button class="btn btn-icon" title="Hide" aria-label="Hide" @onclick="() => _revealedRevisions.Remove(revisionId)"><Lucide Name="eye-off" Size="16" /></button>
+                                    <button class="btn btn-icon" title="Hide" aria-label="Hide this password" @onclick="() => _revealedRevisions.Remove(revisionId)"><Lucide Name="eye-off" Size="16" /></button>
                                 }
                                 else
                                 {
                                     <span class="mask">••••••••</span>
-                                    <button class="btn btn-icon" title="Reveal" aria-label="Reveal" @onclick="() => RevealRevisionAsync(revisionId)"><Lucide Name="eye" Size="16" /></button>
+                                    <button class="btn btn-icon" title="Reveal" aria-label="Reveal this password" @onclick="() => RevealRevisionAsync(revisionId)"><Lucide Name="eye" Size="16" /></button>
                                 }
+                                <button class="btn btn-icon" title="Copy this password" aria-label="Copy this password"
+                                        @onclick="() => CopyRevisionAsync(revisionId)"><Lucide Name="copy" Size="15" /></button>
                             </td>
                         </tr>
                         number--;
@@ -359,6 +397,10 @@
 @code {
     [Parameter] public Guid? GroupId { get; set; }
 
+    /// <summary>Pre-fills the search box — lets other pages (the health report) link straight to an entry.</summary>
+    [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    private string? _appliedQuery;
+
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
 
     private UserContext? _user;
@@ -377,8 +419,15 @@
     {
         public string Code = "";
         public int Remaining;
+        public int Period = 30;
         public DateTimeOffset ShownAtUtc;
     }
+
+    // The countdown ring: a circle of radius 8 whose stroke empties as the code ages.
+    private const string RingLength = "50.27";
+    private static string RingOffset(TotpDisplay totp) =>
+        (50.27 * (1 - Math.Clamp((double)totp.Remaining / Math.Max(1, totp.Period), 0, 1)))
+            .ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
     private const int RevealAutoHideSeconds = 30;
     private const int ClipboardClearMs = 60_000;
 
@@ -388,6 +437,31 @@
     private bool _editorIsNew;
     private Guid _editorEntryId;
     private string? _editorError;
+    // Problems that belong to one input are shown at that input; _editorError is
+    // for everything else (no access, the entry vanished).
+    private readonly Dictionary<string, string> _fieldErrors = new();
+    private ElementReference _nameInput;
+    private ElementReference _passwordInput;
+    private ElementReference _totpInput;
+
+    private string? FieldError(string field) => _fieldErrors.GetValueOrDefault(field);
+
+    private void ClearFieldError(string field) => _fieldErrors.Remove(field);
+
+    private async Task FocusFirstInvalidAsync()
+    {
+        var target = _fieldErrors.ContainsKey("name") ? _nameInput
+            : _fieldErrors.ContainsKey("password") ? _passwordInput
+            : _totpInput;
+        try
+        {
+            await target.FocusAsync();
+        }
+        catch
+        {
+            // The dialog closed in the meantime.
+        }
+    }
 
     private PasswordEntry? _historyEntry;
     private List<RevisionView>? _history;
@@ -434,6 +508,11 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        if (Query != _appliedQuery)
+        {
+            _appliedQuery = Query;
+            _search = Query ?? "";
+        }
         await LoadEntriesAsync();
     }
 
@@ -566,12 +645,32 @@
         }
     }
 
+    private async Task CopyRevisionAsync(Guid revisionId)
+    {
+        if (_historyEntry is null)
+        {
+            return;
+        }
+        try
+        {
+            var plain = await Passwords.RevealRevisionAsync(_user!, _historyEntry.Id, revisionId, RevealPurpose.Copy);
+            var ok = await JS.InvokeAsync<bool>("harpoCopy", plain, ClipboardClearMs);
+            ShowToast(ok ? "Past password copied — clipboard clears in 60s"
+                         : "Copy failed — your browser may require HTTPS for clipboard access.", isError: !ok);
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
+        }
+    }
+
     // ---- editor ----
 
     private void OpenNewEntry()
     {
         _editorIsNew = true;
         _editorError = null;
+        _fieldErrors.Clear();
         _iconAutoSet = false;
         _editor = new EntryEditModel { Icon = "🔐" };
         _ = LoadIconCatalogueAsync();
@@ -624,6 +723,7 @@
         _editorIsNew = false;
         _editorEntryId = entry.Id;
         _editorError = null;
+        _fieldErrors.Clear();
         _iconAutoSet = false;
         _editorHasTotp = entry.EncryptedTotpSecret is not null;
         _ = LoadIconCatalogueAsync();
@@ -727,6 +827,21 @@
         {
             return;
         }
+        _editorError = null;
+        _fieldErrors.Clear();
+        if (string.IsNullOrWhiteSpace(_editor.Name))
+        {
+            _fieldErrors["name"] = "Give this password a name.";
+        }
+        if (_editorIsNew && _editor.Password.Length == 0)
+        {
+            _fieldErrors["password"] = "Enter a password, or generate one.";
+        }
+        if (_fieldErrors.Count > 0)
+        {
+            await FocusFirstInvalidAsync();
+            return;
+        }
         try
         {
             if (_editorIsNew)
@@ -749,6 +864,12 @@
             }
             _editor = null;
             await ReloadAsync();
+        }
+        catch (VaultValidationException ex) when (ex.Field is "name" or "password" or "totp")
+        {
+            // The server is the authority; show its verdict where it applies.
+            _fieldErrors[ex.Field] = ex.Message;
+            await FocusFirstInvalidAsync();
         }
         catch (VaultValidationException ex)
         {
@@ -916,7 +1037,10 @@
             var shownAt = markShown || !_totp.TryGetValue(entryId, out var existing)
                 ? DateTimeOffset.UtcNow
                 : existing.ShownAtUtc;
-            _totp[entryId] = new TotpDisplay { Code = code.Code, Remaining = code.SecondsRemaining, ShownAtUtc = shownAt };
+            _totp[entryId] = new TotpDisplay
+            {
+                Code = code.Code, Remaining = code.SecondsRemaining, Period = code.Period, ShownAtUtc = shownAt,
+            };
         }
         catch (Exception ex)
         {

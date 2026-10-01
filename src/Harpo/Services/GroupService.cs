@@ -68,7 +68,7 @@ public class GroupService
         name = name.Trim();
         if (name.Length == 0)
         {
-            throw new VaultValidationException("Group name is required.");
+            throw new VaultValidationException("Group name is required.", "name");
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
@@ -114,7 +114,7 @@ public class GroupService
         name = name.Trim();
         if (name.Length == 0)
         {
-            throw new VaultValidationException("Group name is required.");
+            throw new VaultValidationException("Group name is required.", "name");
         }
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
