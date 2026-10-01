@@ -194,6 +194,25 @@ public class ServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Current_password_is_the_newest_even_when_revisions_share_a_timestamp()
+    {
+        // Two revisions of one entry in the same clock tick (the ManualTime clock
+        // is not advanced). The newest must still be current — not a coin flip on
+        // the revision's random id. Repeated so a random tie-break would show.
+        for (var i = 0; i < 40; i++)
+        {
+            var group = await _site.Groups.CreateGroupAsync(_alice, $"Infra {i}", "");
+            var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "older");
+            await _site.Vault.ChangePasswordAsync(_alice, entry.Id, "newer");
+
+            Assert.Equal("newer", await _site.Vault.RevealPasswordAsync(_alice, entry.Id));
+            var history = await _site.Vault.GetHistoryAsync(_alice, entry.Id);
+            Assert.True(history[0].IsCurrent);
+            Assert.Equal("newer", await _site.Vault.RevealRevisionAsync(_alice, entry.Id, history[0].RevisionId));
+        }
+    }
+
+    [Fact]
     public async Task Deleting_entry_hides_it_but_keeps_history()
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");

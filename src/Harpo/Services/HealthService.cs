@@ -120,7 +120,7 @@ public class HealthService
                 g => g.Key,
                 g => g.OrderByDescending(r => r.CreatedAtUtc)
                       .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-                      .ThenByDescending(r => r.Id)
+                      .ThenByDescending(r => r.OriginSeq)
                       .First());
 
         await HealMissingAnalysisAsync(latestByEntry.Values, ct);
