@@ -85,7 +85,7 @@
                                 <tr>
                                     <td class="cell-name">
                                         <EntryIcon Icon="@e.Icon" />
-                                        <span class="entry-name">@e.Name</span>
+                                        <a class="entry-name" href="@VaultLink(e)" title="Open this entry in the vault">@e.Name</a>
                                     </td>
                                     <td><a href="/vault/@e.GroupId">@e.GroupName</a></td>
                                     <td><span class="badge badge-error">@PasswordStrength.Label(e.Strength)</span></td>
@@ -115,7 +115,8 @@
                             {
                                 <span class="reuse-chip">
                                     <EntryIcon Icon="@e.Icon" />
-                                    @e.Name <a class="muted" href="/vault/@e.GroupId">(@e.GroupName)</a>
+                                    <a href="@VaultLink(e)" title="Open this entry in the vault">@e.Name</a>
+                                    <a class="muted" href="/vault/@e.GroupId">(@e.GroupName)</a>
                                 </span>
                             }
                             @if (cluster.HiddenCount > 0)
@@ -148,7 +149,7 @@
                                 <tr>
                                     <td class="cell-name">
                                         <EntryIcon Icon="@e.Icon" />
-                                        <span class="entry-name">@e.Name</span>
+                                        <a class="entry-name" href="@VaultLink(e)" title="Open this entry in the vault">@e.Name</a>
                                     </td>
                                     <td><a href="/vault/@e.GroupId">@e.GroupName</a></td>
                                     <td><span class="badge">@Age(e.PasswordChangedUtc)</span></td>
@@ -192,6 +193,10 @@
         _report = await Reports.GetReportAsync(_user!);
         _loading = false;
     }
+
+    /// <summary>The entry's group in the vault, with the search box pre-filled with its name.</summary>
+    private static string VaultLink(HealthEntry entry) =>
+        $"/vault/{entry.GroupId}?q={Uri.EscapeDataString(entry.Name)}";
 
     private string Age(DateTime utc)
     {

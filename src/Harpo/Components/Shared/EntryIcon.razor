@@ -2,7 +2,7 @@
    The alt text doubles as the fallback glyph if a referenced icon was deleted. *@
 @if (CustomIcon.ParseReference(Icon) is { } id)
 {
-    <img class="entry-icon-img" src="/api/icons/@id" alt="🔐" loading="lazy" />
+    <img class="entry-icon-img" src="/api/icons/@id" alt="🔐" />
 }
 else
 {

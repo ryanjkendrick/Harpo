@@ -48,6 +48,69 @@ public class AuditTests : IDisposable
     }
 
     [Fact]
+    public async Task Copying_a_past_password_is_recorded_as_its_own_action()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        await _site.Vault.ChangePasswordAsync(_alice, entry.Id, "pw2");
+        var old = (await _site.Vault.GetHistoryAsync(_alice, entry.Id))[1].RevisionId;
+
+        Assert.Equal("pw1", await _site.Vault.RevealRevisionAsync(_alice, entry.Id, old, RevealPurpose.Copy));
+
+        var recorded = Assert.Single(await AllEventsAsync());
+        Assert.Equal(AuditActions.RevisionCopy, recorded.Action);
+        Assert.Equal("Router (Infra)", recorded.Target);
+    }
+
+    [Fact]
+    public async Task Events_can_be_listed_by_category_and_paged_within_it()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+
+        // A realistic mix, each a second apart: reveals buried among routine events.
+        async Task StepAsync(Func<Task> action)
+        {
+            _site.Time.Advance(TimeSpan.FromSeconds(1));
+            await action();
+        }
+        await StepAsync(() => _site.Vault.RevealPasswordAsync(_alice, entry.Id));                       // reveal
+        await StepAsync(() => _site.Health.GetReportAsync(_alice));                                     // background
+        await StepAsync(() => _site.Groups.AddMemberAsync(_alice, group.Id, "bob", "", GroupRole.Member)); // change
+        await StepAsync(() => _site.Health.GetReportAsync(_alice));                                     // background
+        await StepAsync(() => _site.Vault.RevealPasswordAsync(_alice, entry.Id, RevealPurpose.Copy));   // reveal
+        await StepAsync(() => _site.Groups.RemoveMemberAsync(_alice, group.Id, "bob"));                 // deletion
+        await StepAsync(() => _site.Vault.DeleteEntryAsync(_alice, entry.Id));                          // deletion
+
+        async Task<string[]> ActionsAsync(AuditCategory category) =>
+            (await _site.Audit.GetEventsAsync(_admin, category: category)).Select(e => e.Action).ToArray();
+
+        Assert.Equal(new[] { AuditActions.PasswordCopy, AuditActions.PasswordReveal }, await ActionsAsync(AuditCategory.Reveals));
+        Assert.Equal(new[] { AuditActions.EntryDelete, AuditActions.MemberRemove }, await ActionsAsync(AuditCategory.Deletions));
+        Assert.Equal(new[] { AuditActions.MemberAdd }, await ActionsAsync(AuditCategory.Changes));
+        Assert.All(await ActionsAsync(AuditCategory.Background), a => Assert.Equal(AuditActions.HealthReport, a));
+        Assert.Equal(7, (await ActionsAsync(AuditCategory.All)).Length);
+
+        // "Older events" pages through the category, not through everything.
+        var newest = await _site.Audit.GetEventsAsync(_admin, take: 1, category: AuditCategory.Reveals);
+        var older = await _site.Audit.GetEventsAsync(
+            _admin, beforeUtc: newest[0].OccurredAtUtc, take: 1, category: AuditCategory.Reveals);
+        Assert.Equal(AuditActions.PasswordReveal, Assert.Single(older).Action);
+    }
+
+    [Theory]
+    [InlineData(AuditActions.TotpReveal, AuditCategory.Reveals)]
+    [InlineData(AuditActions.RevisionCopy, AuditCategory.Reveals)]
+    [InlineData(AuditActions.IconDelete, AuditCategory.Deletions)]
+    [InlineData(AuditActions.OfflineSync, AuditCategory.Background)]
+    [InlineData(AuditActions.KeyRotate, AuditCategory.Changes)]
+    [InlineData("something.added.later", AuditCategory.Changes)] // unknown actions (a newer peer) still show somewhere
+    public void Every_action_belongs_to_a_category(string action, AuditCategory expected)
+    {
+        Assert.Equal(expected, AuditActions.CategoryOf(action));
+    }
+
+    [Fact]
     public async Task Membership_and_deletion_changes_are_recorded()
     {
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");

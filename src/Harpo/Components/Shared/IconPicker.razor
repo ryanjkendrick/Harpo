@@ -2,11 +2,12 @@
    and an inline upload that adds straight to the catalogue. *@
 @inject IconService Icons
 
-<div class="icon-picker">
+<div class="icon-picker" role="group" aria-label="Icons">
     @foreach (var icon in Presets)
     {
         <button type="button"
                 class="icon-option @(icon == Value ? "selected" : "")"
+                aria-pressed="@(icon == Value ? "true" : "false")"
                 @onclick="() => SelectAsync(icon)">@icon</button>
     }
     @if (_catalogue is not null)
@@ -16,26 +17,41 @@
             <button type="button"
                     class="icon-option @(icon.Reference == Value ? "selected" : "")"
                     title="@(icon.MatchUrls.Length == 0 ? icon.Name : $"{icon.Name} · {icon.MatchUrls}")"
+                    aria-label="@icon.Name"
+                    aria-pressed="@(icon.Reference == Value ? "true" : "false")"
                     @onclick="() => SelectAsync(icon.Reference)">
-                <img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" loading="lazy" />
+                <img class="entry-icon-img" src="/api/icons/@icon.Id" alt="" />
             </button>
         }
     }
-    <input class="icon-free" maxlength="4" placeholder="…"
-           value="@(Value.StartsWith(CustomIcon.ReferencePrefix) ? "" : Value)"
-           @onchange='e => SelectAsync(e.Value?.ToString() ?? "")'
-           title="Or type any emoji" />
     @if (User is not null)
     {
-        <label class="icon-upload" title="Add an image to the org-wide icon catalogue (≤64 KB)">
-            ＋
-            <InputFile OnChange="UploadAsync" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" />
+        @* The file input stays focusable (visually hidden, not display:none) so the
+           upload is reachable by keyboard; the label is its visible face. *@
+        <label class="icon-upload">
+            <Lucide Name="upload" Size="14" /> Upload
+            <InputFile class="visually-hidden" OnChange="UploadAsync"
+                       accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" />
         </label>
+    }
+</div>
+<div class="icon-picker-extra">
+    <label class="icon-free-label">
+        <span>Or type any emoji</span>
+        <input class="icon-free" maxlength="4"
+               value="@(Value.StartsWith(CustomIcon.ReferencePrefix) ? "" : Value)"
+               @onchange='e => SelectAsync(e.Value?.ToString() ?? "")' />
+    </label>
+    @if (User is not null)
+    {
+        <span class="muted small">
+            Uploaded images (up to @(CustomIcon.MaxBytes / 1024) KB) join the icon catalogue shared by everyone on this Harpo.
+        </span>
     }
 </div>
 @if (_uploadError is not null)
 {
-    <div class="alert alert-error">@_uploadError</div>
+    <div class="alert alert-error" role="alert">@_uploadError</div>
 }
 
 @code {

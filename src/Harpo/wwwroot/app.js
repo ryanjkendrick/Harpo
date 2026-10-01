@@ -55,3 +55,76 @@ async function harpoCopyCore(text) {
         return false;
     }
 };
+
+// Keyboard focus for <Modal>. Blazor renders the dialog; this keeps focus honest
+// around it: remember what had focus, move focus into the dialog, keep Tab
+// inside it, close on Escape wherever focus happens to be, and put focus back
+// where it was when the dialog closes.
+window.harpoModal = (() => {
+    const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
+        'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    let panel = null;
+    let returnTo = null;
+
+    const rendered = (el) => el.getClientRects().length > 0;
+    const focusables = () => [...panel.querySelectorAll(FOCUSABLE)].filter(rendered);
+
+    function onKeyDown(e) {
+        if (panel === null || !document.contains(panel)) {
+            return;
+        }
+        if (e.key === "Escape") {
+            e.preventDefault();
+            panel.querySelector(".modal-close")?.click();
+            return;
+        }
+        if (e.key !== "Tab") {
+            return;
+        }
+        const items = focusables();
+        if (items.length === 0) {
+            e.preventDefault();
+            panel.focus();
+            return;
+        }
+        const first = items[0];
+        const last = items[items.length - 1];
+        const active = document.activeElement;
+        if (!panel.contains(active)) {
+            e.preventDefault(); // focus escaped (a click on the backdrop, say): bring it back
+            first.focus();
+        } else if (e.shiftKey && (active === first || active === panel)) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && active === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    }
+
+    return {
+        open(element) {
+            if (panel === null) {
+                returnTo = document.activeElement;
+                document.addEventListener("keydown", onKeyDown, true);
+            }
+            panel = element;
+            // Start in the first field when there is one, so typing can begin at once.
+            const field = element.querySelector(
+                'input:not([type="hidden"]):not([type="file"]):not([disabled]), textarea, select');
+            (field ?? element).focus();
+        },
+        close() {
+            if (panel === null) {
+                return;
+            }
+            document.removeEventListener("keydown", onKeyDown, true);
+            panel = null;
+            const target = returnTo;
+            returnTo = null;
+            if (target && document.contains(target) && typeof target.focus === "function") {
+                target.focus();
+            }
+        },
+    };
+})();

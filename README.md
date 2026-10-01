@@ -366,7 +366,7 @@ record captures:
 | Action | Recorded when |
 | --- | --- |
 | `password.reveal` / `password.copy` | someone views or copies a current password |
-| `revision.reveal` | someone views a historical password value |
+| `revision.reveal` / `revision.copy` | someone views or copies a historical password value |
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
 | `entry.delete` / `group.delete` | something is deleted |
 | `member.add` / `member.remove` / `member.role` | group access changes |
@@ -376,7 +376,11 @@ Each event stores who, when, what (denormalized names, so the trail outlives
 renames and deletions), the site it happened on, and a best-effort client
 address. Events are **append-only and replicate between sites** like password
 revisions, so every site's admins see the whole organisation's trail on the
-**Administration** page (filterable, newest first).
+**Administration** page, newest first. It can be narrowed to a category —
+*Reveals*, *Changes*, *Deletions*, or *Background* (routine events such as
+offline syncs and health-report views) — and a run of the same person doing
+the same thing to the same object is folded into one row with a count, so
+routine activity doesn't bury the events you are looking for.
 
 Controls:
 

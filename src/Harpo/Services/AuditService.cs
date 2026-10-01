@@ -77,7 +77,8 @@ public class AuditService
 
     /// <summary>Newest-first page of the trail; site admins only.</summary>
     public async Task<List<AuditEvent>> GetEventsAsync(
-        UserContext user, DateTime? beforeUtc = null, int take = 100, CancellationToken ct = default)
+        UserContext user, DateTime? beforeUtc = null, int take = 100,
+        AuditCategory category = AuditCategory.All, CancellationToken ct = default)
     {
         RequireSiteAdmin(user);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
@@ -86,6 +87,17 @@ public class AuditService
         {
             query = query.Where(e => e.OccurredAtUtc < beforeUtc);
         }
+        // Filtered in the query, not after paging, so "older events" pages
+        // through the chosen category instead of through everything.
+        string[] named = [.. AuditActions.Reveals, .. AuditActions.Deletions, .. AuditActions.Background];
+        query = category switch
+        {
+            AuditCategory.Reveals => query.Where(e => AuditActions.Reveals.Contains(e.Action)),
+            AuditCategory.Deletions => query.Where(e => AuditActions.Deletions.Contains(e.Action)),
+            AuditCategory.Background => query.Where(e => AuditActions.Background.Contains(e.Action)),
+            AuditCategory.Changes => query.Where(e => !named.Contains(e.Action)),
+            _ => query,
+        };
         return await query
             .OrderByDescending(e => e.OccurredAtUtc)
             .ThenByDescending(e => e.Id)

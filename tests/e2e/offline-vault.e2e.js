@@ -32,6 +32,7 @@ const GROUP_NAME = `E2E Offline ${RUN_ID}`;
 const ENTRY_NAME = `E2E Entry ${RUN_ID}`;
 const ENTRY_PASSWORD = `E2e-Secret-${RUN_ID}!x`;
 const PASSPHRASE = "correct-horse-battery";
+const TOTP_SECRET = "JBSWY3DPEHPK3PXP"; // so the offline copy has a 2FA code to generate
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -189,6 +190,7 @@ async function retryUntil(action, probe, tries = 15) {
                 await page.waitForSelector(".modal-panel .password-row input", { visible: true, timeout: 4000 });
                 await typeInto(page, ".modal-panel .form-grid > label:nth-of-type(1) input", ENTRY_NAME);
                 await typeInto(page, ".modal-panel .password-row input", ENTRY_PASSWORD);
+                await typeInto(page, '.modal-panel input[placeholder^="base32"]', TOTP_SECRET);
                 await jsClick(page, ".modal-actions .btn-primary");
             });
         check("create test entry", true);
@@ -305,6 +307,21 @@ async function retryUntil(action, probe, tries = 15) {
             return entry.querySelector(".pw").textContent;
         }, ENTRY_NAME);
         check("revealed password matches", revealed === ENTRY_PASSWORD, revealed);
+
+        // The 2FA control is a labelled chip (not a second "eye" beside the
+        // password's), and the code is generated on the device, offline.
+        const totp = await page.evaluate(async (name) => {
+            const entry = [...document.querySelectorAll(".entry")].find((e) => e.textContent.includes(name));
+            const chip = entry.querySelector(".btn-chip");
+            const before = chip.textContent.trim();
+            chip.click();
+            await new Promise((r) => setTimeout(r, 1500));
+            const code = [...entry.querySelectorAll(".pw.shown")].map((e) => e.textContent)
+                .find((t) => /^\d{3} \d{3} · \d+s$/.test(t)) ?? null;
+            return { before, after: chip.textContent.trim(), code };
+        }, ENTRY_NAME);
+        check("2FA code is generated offline behind a labelled control",
+            totp.before === "2FA" && totp.after === "Hide 2FA" && totp.code !== null, JSON.stringify(totp));
 
         await page.goto(`${BASE}/`, { waitUntil: "load" });
         check("navigation fallback to offline vault", (await page.title()) === "Offline vault · Harpo");
