@@ -1,6 +1,9 @@
 using Harpo.Data;
 using Harpo.Replication;
+using Harpo.Security;
 using Harpo.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Harpo.Tests;
 
@@ -242,5 +245,118 @@ public class ReplicationTests : IDisposable
 
         // Identical stamps: no-op.
         Assert.False(ReplicationEngine.IncomingWins(tieA, tieA));
+    }
+
+    // A row dated far in the future would win last-writer-wins over every honest
+    // edit until the clock caught up. A tampering or badly-skewed peer must not be
+    // able to pin such a row; the whole response is refused. (The engine bounds
+    // against the real clock, so these craft real-future / real-near timestamps.)
+    [Fact]
+    public async Task A_response_dated_far_in_the_future_is_rejected_wholesale()
+    {
+        var future = new PullResponse
+        {
+            SiteId = "evil",
+            UtcNow = DateTime.UtcNow,
+            Groups =
+            {
+                new Group
+                {
+                    Id = Guid.NewGuid(), Name = "Future", Description = "",
+                    CreatedBy = "x", CreatedAtUtc = DateTime.UtcNow,
+                    OriginSiteId = "evil", OriginSeq = 1,
+                    UpdatedAtUtc = DateTime.UtcNow.AddHours(2), // past the 1h default bound
+                },
+            },
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => _beta.Engine.ApplyAsync(future));
+        Assert.Contains("ahead", ex.Message);
+
+        // Nothing stored, and the watermark did not advance — a retry re-offers the row.
+        await using var db = _beta.Db.CreateDbContext();
+        Assert.Empty(await db.Groups.ToListAsync());
+        Assert.False((await _beta.Engine.GetVectorAsync()).ContainsKey("evil"));
+    }
+
+    [Fact]
+    public async Task A_response_within_the_skew_bound_is_accepted()
+    {
+        var soon = new PullResponse
+        {
+            SiteId = "peer",
+            UtcNow = DateTime.UtcNow,
+            Groups =
+            {
+                new Group
+                {
+                    Id = Guid.NewGuid(), Name = "Soon", Description = "",
+                    CreatedBy = "x", CreatedAtUtc = DateTime.UtcNow,
+                    OriginSiteId = "peer", OriginSeq = 1,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1), // ordinary, within bound
+                },
+            },
+        };
+
+        Assert.Equal(1, await _beta.Engine.ApplyAsync(soon));
+        Assert.Equal(1, (await _beta.Engine.GetVectorAsync())["peer"]);
+    }
+
+    // Finding 3: a brand-new site started with the WRONG master key must not join
+    // a cluster and silently diverge. It plants no canary at startup, and the first
+    // sync whose password data it cannot decrypt halts replication loudly.
+    [Fact]
+    public async Task A_new_site_with_the_wrong_master_key_halts_instead_of_diverging()
+    {
+        using var good = new TestSite("good", _clock, masterKey: "the-real-cluster-master-key");
+        var group = await good.Groups.CreateGroupAsync(_alice, "Infra", "");
+        await good.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "admin", "", "cluster-secret");
+
+        using var joiner = new TestSite("joiner", _clock, masterKey: "the-reel-cluster-master-key"); // typo
+        // An empty vault proves nothing about the key, so startup plants no canary.
+        await KeyRotation.EnsureMasterKeyStateAsync(
+            joiner.Db, joiner.Crypto, joiner.Audit, NullLogger<CryptoService>.Instance);
+        await using (var jdb = joiner.Db.CreateDbContext())
+        {
+            Assert.False(await jdb.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId));
+        }
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => joiner.PullFromAsync(good));
+        Assert.Contains("does not match the cluster", ex.Message);
+
+        // Nothing was stored and no canary was planted: a retry hits the same wall,
+        // so the mismatch stays visible instead of degrading into silent divergence.
+        await using (var jdb = joiner.Db.CreateDbContext())
+        {
+            Assert.Empty(await jdb.PasswordRevisions.ToListAsync());
+            Assert.Empty(await jdb.Groups.ToListAsync());
+            Assert.False(await jdb.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId));
+        }
+    }
+
+    [Fact]
+    public async Task A_new_empty_site_with_the_right_key_syncs_and_gets_validated()
+    {
+        using var good = new TestSite("good", _clock);
+        var group = await good.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await good.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "admin", "", "cluster-secret");
+
+        using var joiner = new TestSite("joiner", _clock); // same (default) master key
+        await KeyRotation.EnsureMasterKeyStateAsync(
+            joiner.Db, joiner.Crypto, joiner.Audit, NullLogger<CryptoService>.Instance);
+        await using (var jdb = joiner.Db.CreateDbContext())
+        {
+            Assert.False(await jdb.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId)); // empty: not yet
+        }
+
+        await joiner.PullFromAsync(good); // the right key: no halt
+        Assert.Equal("cluster-secret", await joiner.Vault.RevealPasswordAsync(_alice, entry.Id));
+
+        // The key is now proven against real cluster data, so a canary exists and a
+        // later restart would fail fast on a wrong key the usual way.
+        await using (var jdb = joiner.Db.CreateDbContext())
+        {
+            Assert.True(await jdb.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId));
+        }
     }
 }

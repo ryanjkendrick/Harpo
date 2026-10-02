@@ -171,6 +171,27 @@ public class ReplicationEngine
             return 0;
         }
 
+        // Pre-flight: a replicated row dated absurdly far in the future would win
+        // last-writer-wins over every honest edit until the clock caught up — a
+        // tampering peer (or one with a broken clock) could pin a membership or an
+        // entry that nothing can overwrite. We can't accept just the sane rows:
+        // the watermark advances to the highest sequence received, so skipping one
+        // row while taking a later one from the same origin would lose it for good
+        // (the gap the single-snapshot read on the server side exists to prevent).
+        // So reject the whole response and leave the watermark where it is; the
+        // peer is retried next cycle. Honest, NTP-synced sites never come close.
+        var maxAcceptableUtc = DateTime.UtcNow + _options.MaxFutureSkew;
+        var fromTheFuture = AllRows(response).Where(r => r.UpdatedAtUtc > maxAcceptableUtc).ToList();
+        if (fromTheFuture.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Peer {response.SiteId} sent {fromTheFuture.Count} row(s) dated more than "
+                + $"{_options.MaxFutureSkew.TotalMinutes:0} minutes ahead of this site's clock "
+                + $"(the furthest is {fromTheFuture.Max(r => r.UpdatedAtUtc):u}); refusing the whole response. "
+                + "Check that every site's clock is NTP-synced; raise Replication:MaxFutureSkewSeconds only if "
+                + "you understand why a peer is this far ahead.");
+        }
+
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         db.SuppressReplicationStamping = true;
 
@@ -307,6 +328,14 @@ public class ReplicationEngine
             }
         }
 
+        // A site that started with an empty vault planted no master-key canary
+        // (see KeyRotation): this is where its key is first proven against real
+        // cluster data, or the mismatch is caught before the store fills with
+        // ciphertext this site can never read. Throws (halting this sync) on a
+        // wrong key; established sites, with a canary already, are untouched.
+        await KeyRotation.ValidateFirstSyncAsync(
+            db, _crypto, response.Revisions.Select(r => r.EncryptedPassword).ToList(), ct);
+
         // Advance high-watermarks for every origin seen, whether or not each row won
         // its merge — losers must not be re-offered forever.
         foreach (var (origin, seq) in highWater)
@@ -362,6 +391,14 @@ public class ReplicationEngine
             UtcNow = DateTime.UtcNow,
         };
     }
+
+    private static IEnumerable<IReplicatedRow> AllRows(PullResponse r) =>
+        r.Groups.Cast<IReplicatedRow>()
+            .Concat(r.Members)
+            .Concat(r.Entries)
+            .Concat(r.Revisions)
+            .Concat(r.Audits)
+            .Concat(r.Icons);
 
     private static void Track(Dictionary<string, long> highWater, IReplicatedRow row)
     {

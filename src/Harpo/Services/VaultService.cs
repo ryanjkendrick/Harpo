@@ -54,7 +54,7 @@ public class VaultService
         var entryIds = entries.Select(e => e.Id).ToList();
         var revisions = await db.PasswordRevisions
             .Where(r => entryIds.Contains(r.EntryId))
-            .Select(r => new { r.EntryId, r.CreatedBy, r.CreatedAtUtc, r.OriginSiteId, r.Id })
+            .Select(r => new { r.EntryId, r.CreatedBy, r.CreatedAtUtc, r.OriginSiteId, r.OriginSeq })
             .ToListAsync(ct);
         var latestByEntry = revisions
             .GroupBy(r => r.EntryId)
@@ -62,7 +62,7 @@ public class VaultService
                 g => g.Key,
                 g => g.OrderByDescending(r => r.CreatedAtUtc)
                       .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-                      .ThenByDescending(r => r.Id)
+                      .ThenByDescending(r => r.OriginSeq)
                       .First());
 
         return entries
@@ -286,7 +286,7 @@ public class VaultService
         var ordered = revisions
             .OrderByDescending(r => r.CreatedAtUtc)
             .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-            .ThenByDescending(r => r.Id)
+            .ThenByDescending(r => r.OriginSeq)
             .ToList();
         return ordered
             .Select((r, i) => new RevisionView(r.Id, r.CreatedBy, r.CreatedAtUtc, i == 0))
@@ -361,7 +361,7 @@ public class VaultService
                 g => g.Key,
                 g => g.OrderByDescending(r => r.CreatedAtUtc)
                       .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-                      .ThenByDescending(r => r.Id)
+                      .ThenByDescending(r => r.OriginSeq)
                       .First());
 
         var offlineEntries = entries
@@ -399,13 +399,19 @@ public class VaultService
         Strength = _health.Enabled ? PasswordStrength.Score(password) : null,
     };
 
+    // The current password is the newest revision. Two revisions can share a
+    // CreatedAtUtc (same site, same clock tick), so ties break by OriginSiteId
+    // then OriginSeq — the same total order replication uses in IncomingWins, and
+    // OriginSeq is monotonic per origin. (An earlier random-Guid tie-break made
+    // "current" non-deterministic for same-tick revisions; see GetHistoryAsync,
+    // GetEntriesAsync, GetOfflineDataAsync and HealthService, which order the same way.)
     private static async Task<PasswordRevision?> LatestRevisionAsync(HarpoDbContext db, Guid entryId, CancellationToken ct)
     {
         var revisions = await db.PasswordRevisions.Where(r => r.EntryId == entryId).ToListAsync(ct);
         return revisions
             .OrderByDescending(r => r.CreatedAtUtc)
             .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-            .ThenByDescending(r => r.Id)
+            .ThenByDescending(r => r.OriginSeq)
             .FirstOrDefault();
     }
 
