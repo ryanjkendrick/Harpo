@@ -262,11 +262,21 @@ full initial sync automatically.
 Operational notes:
 
 - Keep site clocks NTP-synced — last-writer-wins uses timestamps (AD has the
-  same requirement).
+  same requirement). As a backstop, a pull response containing any row dated
+  more than `Replication__MaxFutureSkewSeconds` (default 1 hour) ahead of this
+  site's clock is rejected wholesale and retried next cycle: a far-future
+  timestamp would otherwise win last-writer-wins over every honest edit until
+  the clock caught up. A correctly-synced cluster never approaches this.
 - Site ids are forever: don't reuse a site id with an empty database *unless*
   you first let it fully sync from a peer (it then continues its old sequence
   automatically; the code handles this recovery case).
-- Adding a site later: start it empty with a new id and a peer — done.
+- Adding a site later: start it empty with a new id and a peer — done. If it is
+  started with the *wrong* `Harpo__MasterKey`, the first sync whose password
+  data it cannot decrypt halts replication with a clear error on the
+  **Administration** page (shown as that peer's last error) rather than quietly
+  filling up with unreadable data — fix the key and restart. Let a new site
+  sync from a peer before creating passwords on it, so its key is proven against
+  the cluster's data first.
 - **Group admins across sites.** Within a site, a group can never lose its
   last admin. Two sites that are out of contact can, however, each demote or
   remove the *other's* admin; both changes were valid where they were made,
@@ -492,7 +502,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__DatabaseKey` | *(empty = off)* | Optional SQLCipher key encrypting the whole database file; per-site |
 | `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
 | `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
-| `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist |
+| `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist; the ring is encrypted at rest with `Harpo__MasterKey` |
 | `Harpo__Audit__Enabled` | `true` | Record audit events (reveals, copies, deletions, membership changes) on this site |
 | `Harpo__Health__Enabled` | `true` | Compute password fingerprints/strength and offer the vault health report |
 | `Harpo__Health__StalePasswordDays` | `365` | Age at which an unchanged password counts as stale |
@@ -510,6 +520,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Replication__Key` | *(empty = replication off)* | Shared secret between sites |
 | `Replication__IntervalSeconds` | `15` | How often to pull from peers |
 | `Replication__BatchSize` | `2000` | Max rows per origin per pull |
+| `Replication__MaxFutureSkewSeconds` | `3600` | Reject a peer's response if any row is dated more than this far in the future (clock-skew/tamper guard; floored at 60) |
 | `Replication__Peers__N__Name/Url` | — | Peer sites to pull from |
 
 ## Security model (read this)
@@ -542,6 +553,42 @@ All settings can be given as environment variables (`Section__Key` form).
   loud warning at startup while it's active.
 - Run the web UI behind HTTPS. The clipboard API also requires a secure context,
   so copy buttons work best over HTTPS (a legacy fallback covers plain HTTP).
+- **The cookie/antiforgery key ring is encrypted at rest** with the master key
+  (it lives in `Harpo__DataProtectionKeysPath`, i.e. `/data/keys`, which
+  SQLCipher does *not* cover). So a stolen volume or backup cannot be used to
+  forge a session cookie without the master key. Keys written by an older Harpo
+  (before this) stay readable and are replaced by encrypted ones as the ring
+  rolls; to protect the current key immediately, delete the keys directory once
+  (everyone signs in again) and restart.
+
+### Trust between replicating sites
+
+Replication is a **mutual-trust** relationship, by design: every site shares the
+same `Harpo__MasterKey` and `Replication__Key`, and merges peers' rows into its
+own store. Running a site means trusting the other sites, and the chain is only
+as strong as its least-trusted site. Specifically:
+
+- **The replication key is as sensitive as the master key.** A peer presents
+  only `Replication__Key` to pull, and a pull returns everything needed to
+  replicate: all group/entry names, URLs, usernames, notes, membership, the
+  password-reuse fingerprints, and the **full audit log**. Password *values*
+  stay encrypted (the master key is still required to read them), but the audit
+  log — which is site-admin-only in the UI — is readable by any holder of the
+  replication key. Keep it in a secret store, never in a public place, and run
+  site-to-site traffic over HTTPS or a private tunnel.
+- **The audit log is not tamper-evident across a compromised site.** Events
+  replicate like any other row, carrying the origin site, user and time they
+  claim. An honest site displays them faithfully; a *compromised* site can write
+  events attributed to another site or user, and a site admin with config access
+  can set `Harpo__Audit__Enabled=false` to stop recording locally without peers
+  being able to tell. Treat the audit log as an operational record among trusted
+  sites, not as evidence against one of them.
+- **A membership change and a removal can race across a partition.** Access
+  control is per-row last-writer-wins. If one site *removes* a member while
+  another, out of contact, *edits that same member's role*, the later-timestamped
+  edit wins when they reconnect — so a removal can be undone by a concurrent
+  benign edit. Re-removing the member replicates normally. (This is the same
+  family as the cross-site admin collision noted under "Cross-site replication".)
 
 ## Development
 

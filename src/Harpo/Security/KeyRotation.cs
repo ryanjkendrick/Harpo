@@ -54,7 +54,19 @@ public static class KeyRotation
                 .Take(5)
                 .Select(x => x.EncryptedPassword)
                 .ToListAsync(ct);
-            if (samples.Count > 0 && !samples.Any(s => crypto.TryDecrypt(s, out _, out _)))
+            if (samples.Count == 0)
+            {
+                // An empty vault proves nothing about the configured key. Planting
+                // a canary now would bless whatever was set — a typo included — and
+                // let a mis-keyed site join a cluster and silently diverge (it would
+                // store peer rows it cannot read, and write its own secrets under a
+                // key no peer can read). Plant nothing: the canary is established
+                // either on a later start once real data exists, or by the
+                // replication engine on the first sync that proves the key against a
+                // peer's data (see ValidateFirstSyncAsync). Nothing to sweep either.
+                return;
+            }
+            if (!samples.Any(s => crypto.TryDecrypt(s, out _, out _)))
             {
                 throw WrongKey(crypto);
             }
@@ -178,6 +190,42 @@ public static class KeyRotation
         }
 
         return (revisions, totpSecrets, undecryptable);
+    }
+
+    /// <summary>
+    /// First-sync master-key check for a site that started empty (so
+    /// <see cref="EnsureMasterKeyStateAsync"/> planted no canary). The replication
+    /// engine calls this as a peer's rows are merged. While no canary exists yet,
+    /// if password revisions have arrived from a peer and NONE of them decrypt
+    /// under any configured key, the configured master key does not match the
+    /// cluster — throw so replication halts loudly (surfaced as the peer's last
+    /// error) instead of filling the store with unreadable ciphertext. Once at
+    /// least one revision decrypts, the key is proven against real cluster data,
+    /// so a canary is planted (committed by the caller's SaveChanges) and later
+    /// starts fail fast the same way a pre-existing vault does.
+    /// Established sites (canary present) are left untouched.
+    /// </summary>
+    internal static async Task ValidateFirstSyncAsync(
+        HarpoDbContext db, CryptoService crypto, IReadOnlyCollection<string> incomingRevisionBlobs, CancellationToken ct)
+    {
+        if (incomingRevisionBlobs.Count == 0)
+        {
+            return; // no ciphertext to test the key against in this batch
+        }
+        if (await db.SiteSettings.AnyAsync(x => x.Id == CanaryId, ct))
+        {
+            return; // key already proven; normal merge rules apply from here
+        }
+        if (!incomingRevisionBlobs.Any(blob => crypto.TryDecrypt(blob, out _, out _)))
+        {
+            throw new InvalidOperationException(
+                "This site's Harpo:MasterKey does not match the cluster: none of the password data "
+                + "replicated from the peer can be decrypted with the configured key(s). Replication is "
+                + "halted so this site does not fill up with unreadable data, or write new secrets under a "
+                + "key no other site can read. Set Harpo:MasterKey to the cluster's key (and stage any old "
+                + "keys in Harpo:PreviousMasterKeys if you are rotating), then restart.");
+        }
+        db.SiteSettings.Add(new SiteSetting { Id = CanaryId, Value = crypto.Encrypt(CanaryPlaintext) });
     }
 
     private static InvalidOperationException WrongKey(CryptoService crypto) => new(
