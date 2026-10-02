@@ -105,13 +105,28 @@ public class KeyRotationTests
     }
 
     [Fact]
-    public async Task WrongKey_FailsStartup_ViaCanary_OnEmptyVault()
+    public async Task EmptyVault_PlantsNoCanary_SoAnUnprovenKeyIsNotBlessed()
     {
+        // An empty vault proves nothing about the configured key, so startup plants
+        // no canary. (Planting one for an unproven key is what let a mis-keyed site
+        // join a cluster and silently diverge; now the key is validated against real
+        // data instead — on a later start, or by replication on first sync.)
         using var site = new TestSite("a");
-        await EnsureAsync(site, site.Crypto, site.Audit); // plants canary; vault is empty
+        await EnsureAsync(site, site.Crypto, site.Audit);
+        await using (var db = site.Db.CreateDbContext())
+        {
+            Assert.False(await db.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId));
+        }
 
+        // Restarting a still-empty vault under a different key also starts quietly:
+        // there are no secrets to protect yet. Once data exists, a wrong key is
+        // caught (WrongKey_FailsStartup_EvenWithoutACanary covers that).
         var (crypto, _, audit) = Restart(site, "wrong-key-entirely");
-        await Assert.ThrowsAsync<InvalidOperationException>(() => EnsureAsync(site, crypto, audit));
+        await EnsureAsync(site, crypto, audit);
+        await using (var db = site.Db.CreateDbContext())
+        {
+            Assert.False(await db.SiteSettings.AnyAsync(x => x.Id == KeyRotation.CanaryId));
+        }
     }
 
     [Fact]
@@ -203,7 +218,9 @@ public class KeyRotationTests
 
         // Strongest form of the same claim: a peer that was already in sync
         // pulls nothing new after the sweep (only the key.rotate audit event).
-        using var peer = new TestSite("b", site.Time);
+        // The peer is rotated too (NewKey active), as every site in a rotated
+        // cluster is — so it can read what it pulls.
+        using var peer = new TestSite("b", site.Time, NewKey, [OldKey]);
         await peer.PullFromAsync(site);
         var request = new Harpo.Replication.PullRequest { SiteId = "b", Vector = await peer.Engine.GetVectorAsync() };
         var response = await site.Engine.BuildResponseAsync(request);
@@ -236,21 +253,28 @@ public class KeyRotationTests
     }
 
     [Fact]
-    public async Task Apply_WithoutPreviousKeys_StoresForeignBlobsVerbatim()
+    public async Task Apply_AtAnEstablishedSite_StoresForeignBlobsVerbatim()
     {
         var time = new ManualTime();
         using var oldSite = new TestSite("old", time);
-        await SeedAsync(oldSite);
+        var (_, oldEntryId) = await SeedAsync(oldSite);
         await using var source = oldSite.Db.CreateDbContext();
-        var original = await source.PasswordRevisions.AsNoTracking().SingleAsync();
+        var original = await source.PasswordRevisions.AsNoTracking().SingleAsync(r => r.EntryId == oldEntryId);
 
-        // Misconfigured peer: different key, no previous keys. It must not corrupt
-        // what it cannot read — the blob is stored byte-for-byte as received.
-        using var strangeSite = new TestSite("strange", time, "some-entirely-different-key");
-        await strangeSite.PullFromAsync(oldSite, viaJson: true);
+        // An established site on a different key — it has proven its own key against
+        // its own data, so it holds a canary and keeps running. A row it cannot read
+        // (from a peer whose key was never shared here) must not be corrupted: it is
+        // stored byte-for-byte, recoverable if that key is ever configured.
+        // (A brand-new site that can read NOTHING is misconfigured and halts instead;
+        // see ReplicationTests.A_new_site_with_the_wrong_master_key_halts_instead_of_diverging.)
+        using var home = new TestSite("home", time, "some-entirely-different-key");
+        await SeedAsync(home);
+        await EnsureAsync(home, home.Crypto, home.Audit); // its own data proves the key → canary planted
 
-        await using var db = strangeSite.Db.CreateDbContext();
-        var stored = await db.PasswordRevisions.AsNoTracking().SingleAsync();
+        await home.PullFromAsync(oldSite, viaJson: true);
+
+        await using var db = home.Db.CreateDbContext();
+        var stored = await db.PasswordRevisions.AsNoTracking().SingleAsync(r => r.Id == original.Id);
         Assert.Equal(original.EncryptedPassword, stored.EncryptedPassword);
         Assert.Equal(original.Fingerprint, stored.Fingerprint);
     }

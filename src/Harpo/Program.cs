@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.EntityFrameworkCore;
 
 // We ship the SQLCipher build of SQLite (optional full-file encryption via
@@ -90,6 +91,11 @@ if (!string.IsNullOrWhiteSpace(keysPath))
     builder.Services.AddDataProtection()
         .SetApplicationName("Harpo")
         .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+    // Encrypt the persisted key ring with the master key: the keys/ directory
+    // lives in /data but is NOT covered by SQLCipher, so a stolen volume could
+    // otherwise be used to forge an auth cookie. See MasterKeyXmlEncryptor.
+    builder.Services.AddOptions<KeyManagementOptions>()
+        .Configure<CryptoService>((options, crypto) => options.XmlEncryptor = new MasterKeyXmlEncryptor(crypto));
 }
 
 // ---- Cross-site replication ----
