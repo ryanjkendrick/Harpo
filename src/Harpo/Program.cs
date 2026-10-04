@@ -83,6 +83,10 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     });
 builder.Services.AddAuthorization();
 
+// Who may hold an interactive connection open, and how many (see InteractiveConnections).
+builder.Services.AddInteractiveConnectionLimits(
+    builder.Configuration.GetSection("Harpo:Connections").Get<ConnectionLimitOptions>() ?? new ConnectionLimitOptions());
+
 // Cookie/antiforgery keys must survive container restarts.
 var keysPath = builder.Configuration["Harpo:DataProtectionKeysPath"];
 if (!string.IsNullOrWhiteSpace(keysPath))
@@ -138,13 +142,23 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 
+// After the two re-executing handlers above, so error and not-found pages get the headers too.
+app.UseSecurityHeaders();
+
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseInteractiveConnectionLimits();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode();
+    .AddInteractiveServerRenderMode(options =>
+    {
+        // Blazor would add "frame-ancestors 'self'" of its own to these pages.
+        // The whole policy, framing included, is set once for every response by
+        // UseSecurityHeaders; a second, weaker one here would only confuse.
+        options.ContentSecurityFrameAncestorsPolicy = null;
+    });
 
 app.MapReplicationEndpoints();
 app.MapOfflineEndpoints();
