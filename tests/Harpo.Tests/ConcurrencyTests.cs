@@ -165,6 +165,26 @@ public class ConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task Concurrent_adds_of_the_same_member_end_in_one_membership_and_one_plain_refusal()
+    {
+        var hook = new CommandHook();
+        using var site = new TestSite("a", databasePath: DbPath("a"), interceptors: hook);
+        var group = await site.Groups.CreateGroupAsync(_alice, "Infra", "");
+
+        // Two admins add bob at the same moment. Unguarded, both find nobody
+        // there and the second insert dies on the membership's key — which would
+        // escape RaceAsync as a DbUpdateException and fail this test.
+        var outcomes = await RaceAsync(hook,
+            () => site.Groups.AddMemberAsync(_alice, group.Id, "bob", "Bob", GroupRole.Member),
+            () => site.Groups.AddMemberAsync(_root, group.Id, "bob", "Bob", GroupRole.Viewer),
+            pauseBefore: "INSERT INTO \"GroupMembers\"");
+
+        Assert.Equal(1, outcomes.Count(rejected => rejected));
+        var bob = Assert.Single(await site.Groups.GetMembersAsync(_root, group.Id), m => m.Username == "bob");
+        Assert.Equal(GroupRole.Member, bob.Role); // the first call's, not a blend of the two
+    }
+
+    [Fact]
     public async Task Demotions_on_disconnected_sites_are_surfaced_for_a_site_admin_to_repair()
     {
         var time = new ManualTime();
@@ -205,16 +225,18 @@ public class ConcurrencyTests : IDisposable
     }
 
     /// <summary>
-    /// Runs <paramref name="first"/> until its membership UPDATE is about to be
-    /// sent — its "is there another admin?" check has passed, its write has not
-    /// landed — then starts <paramref name="second"/> and lets both finish.
-    /// Returns, per call, whether it was rejected.
+    /// Runs <paramref name="first"/> until its membership write (an UPDATE unless
+    /// <paramref name="pauseBefore"/> says otherwise) is about to be sent — its
+    /// check has passed, its write has not landed — then starts
+    /// <paramref name="second"/> and lets both finish. Returns, per call, whether
+    /// it was rejected.
     /// </summary>
-    private static async Task<bool[]> RaceAsync(CommandHook hook, Func<Task> first, Func<Task> second)
+    private static async Task<bool[]> RaceAsync(
+        CommandHook hook, Func<Task> first, Func<Task> second, string pauseBefore = "UPDATE \"GroupMembers\"")
     {
         var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        hook.Before(sql => sql.Contains("UPDATE \"GroupMembers\""), async () =>
+        hook.Before(sql => sql.Contains(pauseBefore), async () =>
         {
             reached.SetResult();
             await release.Task;
