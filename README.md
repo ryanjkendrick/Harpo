@@ -658,7 +658,7 @@ for testing. Forks: change the `IMAGE` name in
 `.github/workflows/release.yml` and in `docker-compose.yml`.
 
 Two things are pinned on purpose and move only by hand. `docker-compose.yml`
-names a release line (`:0.3`) rather than `latest`, so a new minor version
+names a release line (`:0.4`) rather than `latest`, so a new minor version
 means updating that tag as part of the release. And the workflow's actions are
 pinned to commit SHAs rather than tags — the file's header says how to update
 one.
