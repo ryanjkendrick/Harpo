@@ -9,10 +9,13 @@
 
 services:
   harpo:
-    # Prebuilt multi-arch image (amd64 + arm64) from Docker Hub. Pin a version
-    # tag (e.g. :0.1.0) for controlled upgrades. To build from source instead,
-    # replace the `image:` line with `build: .`
-    image: ryanjkendrick/harpo:latest
+    # Prebuilt multi-arch image (amd64 + arm64) from Docker Hub, pinned to a
+    # release line: `docker compose pull` brings fixes within 0.4 and never a
+    # new minor version unasked — moving up is an edit to this line, made when
+    # you have read that version's notes. Pin an exact version (e.g. :0.4.0) to
+    # freeze it completely. To build from source instead, replace the `image:`
+    # line with `build: .`
+    image: ryanjkendrick/harpo:0.4
     container_name: harpo
     restart: unless-stopped
     ports:

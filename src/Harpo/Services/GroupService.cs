@@ -181,40 +181,49 @@ public class GroupService
             throw new VaultValidationException("Username is required.");
         }
 
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var group = await RequireGroupAdminAsync(db, user, groupId, ct);
+        Group group;
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            // "Is this user already a member?" and the insert are one atomic step.
+            // Checked separately, two admins adding the same person at the same
+            // moment would both find nobody there, and the second insert would
+            // fail on the membership's key — an error page instead of the plain
+            // "already a member" the first check exists to give.
+            using var gate = await db.BeginExclusiveWriteAsync(ct);
+            group = await RequireGroupAdminAsync(db, user, groupId, ct);
 
-        var id = DeterministicGuid.For(groupId.ToString("N"), username);
-        var existing = await db.GroupMembers.SingleOrDefaultAsync(m => m.Id == id, ct);
-        if (existing is not null && !existing.IsDeleted)
-        {
-            throw new VaultValidationException($"'{username}' is already a member of this group.");
-        }
-
-        var now = _time.GetUtcNow().UtcDateTime;
-        if (existing is not null)
-        {
-            // Revive the tombstoned membership.
-            existing.IsDeleted = false;
-            existing.Role = role;
-            existing.DisplayName = string.IsNullOrWhiteSpace(displayName) ? existing.DisplayName : displayName.Trim();
-            existing.AddedBy = user.Username;
-            existing.CreatedAtUtc = now;
-        }
-        else
-        {
-            db.GroupMembers.Add(new GroupMember
+            var id = DeterministicGuid.For(groupId.ToString("N"), username);
+            var existing = await db.GroupMembers.SingleOrDefaultAsync(m => m.Id == id, ct);
+            if (existing is not null && !existing.IsDeleted)
             {
-                Id = id,
-                GroupId = groupId,
-                Username = username,
-                DisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim(),
-                Role = role,
-                AddedBy = user.Username,
-                CreatedAtUtc = now,
-            });
+                throw new VaultValidationException($"'{username}' is already a member of this group.");
+            }
+
+            var now = _time.GetUtcNow().UtcDateTime;
+            if (existing is not null)
+            {
+                // Revive the tombstoned membership.
+                existing.IsDeleted = false;
+                existing.Role = role;
+                existing.DisplayName = string.IsNullOrWhiteSpace(displayName) ? existing.DisplayName : displayName.Trim();
+                existing.AddedBy = user.Username;
+                existing.CreatedAtUtc = now;
+            }
+            else
+            {
+                db.GroupMembers.Add(new GroupMember
+                {
+                    Id = id,
+                    GroupId = groupId,
+                    Username = username,
+                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim(),
+                    Role = role,
+                    AddedBy = user.Username,
+                    CreatedAtUtc = now,
+                });
+            }
+            await db.SaveChangesAsync(ct);
         }
-        await db.SaveChangesAsync(ct);
         await _audit.RecordAsync(user, AuditActions.MemberAdd, group.Name,
             detail: $"{username} as {role}", groupId: groupId);
     }

@@ -21,6 +21,7 @@ const GROUP = `E2E UI ${RUN_ID}`;
 const ENTRY = `E2E Router ${RUN_ID}`;
 const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
+const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -127,6 +128,22 @@ async function groupId(page) {
     // Headless Chrome cancels confirm() dialogs opened without user activation.
     await page.evaluateOnNewDocument(() => { window.confirm = () => true; });
     await page.setViewport({ width: 1280, height: 860 });
+    // Chrome reports whatever the content security policy blocked as a console
+    // error, so a page that needs something the policy forbids shows up here.
+    const blocked = [];
+    let expectingBlocks = false;
+    page.on("console", (message) => {
+        if (!expectingBlocks && /Content Security Policy/i.test(message.text())) {
+            blocked.push(`${new URL(page.url()).pathname}: ${message.text().slice(0, 160)}`);
+        }
+    });
+    const policies = new Map(); // page path -> the policy it was served with
+    page.on("response", (response) => {
+        if (response.request().resourceType() === "document") {
+            policies.set(new URL(response.url()).pathname.replace(/[0-9a-f-]{36}/, "{id}"),
+                response.headers()["content-security-policy"] ?? "");
+        }
+    });
     let id = null;
 
     try {
@@ -225,6 +242,27 @@ async function groupId(page) {
         await createEntry(page, ENTRY, "Xk9#mQ2$vL7!pR4&", TOTP_SECRET);
         await createEntry(page, WEAK_ENTRY, "password");
         check("entries are created by submitting the form", true);
+
+        // Notes: typed into the editor, shown on the entry, and offered back next time.
+        await rowAction(page, ENTRY, "Edit");
+        await page.waitForSelector(".modal-panel textarea", { timeout: 10000 });
+        await sleep(500);
+        await setValue(page, ".modal-panel textarea", NOTES);
+        await sleep(300);
+        await submitDialog(page);
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        await sleep(600);
+        const notesOnRow = await page.evaluate((name) =>
+            [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name))
+                ?.querySelector(".cell-name")?.getAttribute("title"), ENTRY);
+        await rowAction(page, ENTRY, "Edit");
+        await page.waitForSelector(".modal-panel textarea", { timeout: 10000 });
+        await sleep(500);
+        const notesInEditor = await page.evaluate(() => document.querySelector(".modal-panel textarea").value);
+        await page.evaluate(() => document.querySelector(".modal-close").click());
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        check("notes are saved, shown on the entry and offered back for editing",
+            notesOnRow === NOTES && notesInEditor === NOTES, JSON.stringify({ notesOnRow, notesInEditor }));
 
         // ---- 3. Vault row: 2FA control, trash, history ----
         const row = await page.evaluate(() => ({
@@ -355,10 +393,32 @@ async function groupId(page) {
             reveals.length > 0 && reveals.includes("revision.copy")
             && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal)$/.test(a)),
             [...new Set(reveals)].join(","));
+
+        // ---- 7. Content security policy: on every page, in nobody's way, and enforced ----
+        const unprotected = [...policies].filter(([, policy]) =>
+            !/script-src 'self';/.test(policy) || !/style-src 'self';/.test(policy) || !/frame-ancestors 'none'/.test(policy));
+        check("every page is served with the content security policy", policies.size >= 6 && unprotected.length === 0,
+            unprotected.length === 0 ? [...policies.keys()].join(" ") : `missing or weaker on: ${unprotected.map(([path]) => path).join(", ")}`);
+        check("nothing the app does is blocked by it", blocked.length === 0, blocked.slice(0, 3).join(" | "));
+        expectingBlocks = true;
+        const injected = await page.evaluate(() => {
+            const script = document.createElement("script");
+            script.textContent = "window.__injected = true;";
+            document.body.appendChild(script);
+            const probe = document.createElement("div");
+            probe.setAttribute("style", "color: rgb(1, 2, 3)");
+            document.body.appendChild(probe);
+            const result = { scriptRan: window.__injected === true, styleApplied: getComputedStyle(probe).color === "rgb(1, 2, 3)" };
+            script.remove();
+            probe.remove();
+            return result;
+        });
+        check("an injected inline script does not run and an injected inline style does not apply",
+            !injected.scriptRan && !injected.styleApplied, JSON.stringify(injected));
     } catch (e) {
         check("script completed", false, e.message.slice(0, 200));
     } finally {
-        // ---- 7. Remove the throwaway group ----
+        // ---- 8. Remove the throwaway group ----
         try {
             await page.setViewport({ width: 1280, height: 860 });
             id ??= await groupId(page);

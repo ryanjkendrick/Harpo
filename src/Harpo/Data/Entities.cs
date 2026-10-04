@@ -81,7 +81,17 @@ public class PasswordEntry : IReplicatedRow
     public string Url { get; set; } = "";
     /// <summary>The account/login name this password belongs to (not an AD user).</summary>
     public string Username { get; set; } = "";
-    public string Notes { get; set; } = "";
+    /// <summary>
+    /// Free-text notes, encrypted like passwords — people keep recovery codes and
+    /// security answers here. Empty, or <see cref="Security.ProtectedNotes"/>'s
+    /// marker followed by ciphertext; read and written only through that class.
+    /// It was a plain-text column called Notes before notes were encrypted, and
+    /// both the column and the name on the wire stay "notes": sites still on an
+    /// older version keep replicating with this one (they see the ciphertext as
+    /// text; their own plain-text notes are encrypted here as they arrive).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("notes")]
+    public string EncryptedNotes { get; set; } = "";
     /// <summary>
     /// Optional TOTP (2FA) secret — a base32 seed or full otpauth:// URI —
     /// AES-256-GCM encrypted like passwords. Entry-level rather than versioned:

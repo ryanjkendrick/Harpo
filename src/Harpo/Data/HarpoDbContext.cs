@@ -102,6 +102,8 @@ public class HarpoDbContext : DbContext
 
         modelBuilder.Entity<PasswordEntry>(b =>
         {
+            // Same column as before notes were encrypted — see the property.
+            b.Property(x => x.EncryptedNotes).HasColumnName("Notes");
             b.HasIndex(x => x.GroupId);
             b.HasIndex(x => new { x.OriginSiteId, x.OriginSeq });
         });

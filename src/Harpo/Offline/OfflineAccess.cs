@@ -14,7 +14,12 @@ public class OfflineOptions
 {
     public bool Enabled { get; set; } = true;
 
-    /// <summary>How long a device may keep using a snapshot without refreshing from the server.</summary>
+    /// <summary>
+    /// How long a device may keep using a snapshot without refreshing from the
+    /// server. Checked by the offline page against the device's own clock: it
+    /// keeps honest devices tidy and cannot bind someone who holds the device
+    /// and the passphrase — the README says so, and what to do instead.
+    /// </summary>
     public int SnapshotMaxAgeDays { get; set; } = 7;
 
     /// <summary>Minimum seconds between snapshot downloads per user (each one bulk-decrypts their vault).</summary>

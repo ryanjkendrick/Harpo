@@ -12,10 +12,14 @@ afterwards.
   flight when the vault is locked cannot undo the lock.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
-  field it concerns, the password and 2FA controls, copying from history, the
-  entries layout at seven widths (nothing may overflow or sit under another
-  element, at rest or with secrets revealed), links from the health report,
-  and the Administration page's navigation and audit-log filters.
+  field it concerns, the password and 2FA controls, notes through the editor,
+  copying from history, the entries layout at seven widths (nothing may
+  overflow or sit under another element, at rest or with secrets revealed),
+  links from the health report, and the Administration page's navigation and
+  audit-log filters. It also holds the content security policy to its word:
+  every page must be served with it, nothing the app does may be blocked by
+  it, and an injected inline script or style must have no effect — so a
+  change that quietly needs something the policy forbids fails here.
 
 ## Prerequisites
 
@@ -29,7 +33,7 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 25/25 checks passed
+npm run test:ui   # interactive UI — expect 29/29 checks passed
 npm run test:all  # both
 ```
 

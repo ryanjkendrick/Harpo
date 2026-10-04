@@ -52,7 +52,7 @@
         </div>
         @if (Crypto.HasPreviousKeys)
         {
-            <div class="alert alert-warning" style="margin-top: .8rem;">
+            <div class="alert alert-warning gap-top">
                 <strong>Master key rotation in progress</strong> — @Crypto.PreviousKeyCount previous
                 key@(Crypto.PreviousKeyCount == 1 ? "" : "s") configured. Local data has been re-encrypted
                 under the active key. Once every replicated site runs the new key and replication has
