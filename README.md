@@ -510,6 +510,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
+| `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`) |
 | `Auth__Lockout__Enabled` | `true` | Brute-force lockout on the sign-in form |
@@ -553,6 +554,20 @@ All settings can be given as environment variables (`Section__Key` form).
   loud warning at startup while it's active.
 - Run the web UI behind HTTPS. The clipboard API also requires a secure context,
   so copy buttons work best over HTTPS (a legacy fallback covers plain HTTP).
+- **Every page is sent with a strict Content-Security-Policy**: scripts, styles,
+  images and connections from Harpo's own origin only; nothing inline, no
+  `eval`, forms post only to Harpo, and no other site may frame it. Blazor
+  already encodes everything it renders, so this is the second line — a page
+  showing revealed passwords could not run foreign script or send data
+  elsewhere even if a way to inject markup were found. A proxy in front of
+  Harpo that injects its own scripts or styles (banners, analytics) will be
+  blocked by it; that is the policy working.
+- **Only signed-in users can open the live connection** an interactive page
+  keeps to the server, and one account can hold at most 20 at a time
+  (`Harpo__Connections__MaxPerUser`). Each open page costs the server memory
+  for as long as it stays open; without a session there is nothing to open,
+  and one account — or one runaway browser — cannot exhaust it. A tab over the
+  limit loads but does not respond until another is closed.
 - **The cookie/antiforgery key ring is encrypted at rest** with the master key
   (it lives in `Harpo__DataProtectionKeysPath`, i.e. `/data/keys`, which
   SQLCipher does *not* cover). So a stolen volume or backup cannot be used to

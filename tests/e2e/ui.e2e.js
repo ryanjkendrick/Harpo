@@ -127,6 +127,22 @@ async function groupId(page) {
     // Headless Chrome cancels confirm() dialogs opened without user activation.
     await page.evaluateOnNewDocument(() => { window.confirm = () => true; });
     await page.setViewport({ width: 1280, height: 860 });
+    // Chrome reports whatever the content security policy blocked as a console
+    // error, so a page that needs something the policy forbids shows up here.
+    const blocked = [];
+    let expectingBlocks = false;
+    page.on("console", (message) => {
+        if (!expectingBlocks && /Content Security Policy/i.test(message.text())) {
+            blocked.push(`${new URL(page.url()).pathname}: ${message.text().slice(0, 160)}`);
+        }
+    });
+    const policies = new Map(); // page path -> the policy it was served with
+    page.on("response", (response) => {
+        if (response.request().resourceType() === "document") {
+            policies.set(new URL(response.url()).pathname.replace(/[0-9a-f-]{36}/, "{id}"),
+                response.headers()["content-security-policy"] ?? "");
+        }
+    });
     let id = null;
 
     try {
@@ -355,10 +371,32 @@ async function groupId(page) {
             reveals.length > 0 && reveals.includes("revision.copy")
             && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal)$/.test(a)),
             [...new Set(reveals)].join(","));
+
+        // ---- 7. Content security policy: on every page, in nobody's way, and enforced ----
+        const unprotected = [...policies].filter(([, policy]) =>
+            !/script-src 'self';/.test(policy) || !/style-src 'self';/.test(policy) || !/frame-ancestors 'none'/.test(policy));
+        check("every page is served with the content security policy", policies.size >= 6 && unprotected.length === 0,
+            unprotected.length === 0 ? [...policies.keys()].join(" ") : `missing or weaker on: ${unprotected.map(([path]) => path).join(", ")}`);
+        check("nothing the app does is blocked by it", blocked.length === 0, blocked.slice(0, 3).join(" | "));
+        expectingBlocks = true;
+        const injected = await page.evaluate(() => {
+            const script = document.createElement("script");
+            script.textContent = "window.__injected = true;";
+            document.body.appendChild(script);
+            const probe = document.createElement("div");
+            probe.setAttribute("style", "color: rgb(1, 2, 3)");
+            document.body.appendChild(probe);
+            const result = { scriptRan: window.__injected === true, styleApplied: getComputedStyle(probe).color === "rgb(1, 2, 3)" };
+            script.remove();
+            probe.remove();
+            return result;
+        });
+        check("an injected inline script does not run and an injected inline style does not apply",
+            !injected.scriptRan && !injected.styleApplied, JSON.stringify(injected));
     } catch (e) {
         check("script completed", false, e.message.slice(0, 200));
     } finally {
-        // ---- 7. Remove the throwaway group ----
+        // ---- 8. Remove the throwaway group ----
         try {
             await page.setViewport({ width: 1280, height: 860 });
             id ??= await groupId(page);

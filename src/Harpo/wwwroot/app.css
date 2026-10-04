@@ -47,6 +47,7 @@ a:hover { text-decoration: underline; }
 
 .mono { font-family: var(--mono); font-size: .92em; }
 .muted { color: var(--muted); }
+.gap-top { margin-top: .8rem; }
 
 /* ---------- shell ---------- */
 

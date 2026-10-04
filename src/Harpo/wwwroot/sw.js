@@ -6,8 +6,10 @@
 // navigation fails because the server is unreachable, it serves the offline
 // vault page instead.
 // Bump this version whenever offline.html/offline.js or the PWA assets change —
-// it is what makes installed service workers refresh their cached shell.
-const CACHE = "harpo-v10";
+// it is what makes installed service workers refresh their cached shell. The
+// cache keeps each response's headers too, so a change to the headers the shell
+// is served with (its content security policy) needs a bump just the same.
+const CACHE = "harpo-v11";
 const PRECACHE = [
     "/offline.html",
     "/offline.js",
