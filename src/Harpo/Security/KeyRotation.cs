@@ -22,11 +22,17 @@ namespace Harpo.Security;
 /// A site-local "canary" (a known value encrypted under the active key) makes a
 /// misconfigured master key a loud startup failure instead of a silently
 /// unreadable vault.
+///
+/// The same pass encrypts entry notes that an earlier version stored as plain
+/// text (see <see cref="ProtectedNotes"/>) — on every start, rotation or not,
+/// and like rotation, locally and without touching replication stamps.
 /// </summary>
 public static class KeyRotation
 {
     public const string CanaryId = "master-key-canary";
     public const string CanaryPlaintext = "Harpo master key canary v1";
+    /// <summary>Site-local marker: this database file has been rewritten since notes became encrypted.</summary>
+    public const string NotesScrubbedId = "plain-text-notes-scrubbed";
     private const int BatchSize = 500;
 
     private static readonly UserContext ServerUser = new("server", "Server", IsSiteAdmin: true);
@@ -78,6 +84,18 @@ public static class KeyRotation
             throw WrongKey(crypto);
         }
 
+        // The key is proven from here on, so it is safe to encrypt with it. Notes
+        // were plain text before they were encrypted; whatever an upgrade left
+        // behind is converted now, before the site serves a request.
+        var legacyNotes = await EncryptPlainTextNotesAsync(db, crypto, ct);
+        if (legacyNotes > 0)
+        {
+            logger.LogInformation(
+                "Encrypted the notes of {Count} entr{Plural} that an earlier version had stored as plain text.",
+                legacyNotes, legacyNotes == 1 ? "y" : "ies");
+        }
+        await ScrubPlainTextRemnantsAsync(db, rowsWereConverted: legacyNotes > 0, logger, ct);
+
         if (!crypto.HasPreviousKeys)
         {
             return;
@@ -89,7 +107,7 @@ public static class KeyRotation
             "every replicated site has been rotated and replication has caught up.",
             crypto.PreviousKeyCount);
 
-        var (revisions, totpSecrets, undecryptable) = await SweepAsync(db, crypto, ct);
+        var (revisions, totpSecrets, notes, undecryptable) = await SweepAsync(db, crypto, ct);
 
         // The canary follows the data: once the sweep ran, it must live under
         // the active key so a later start without the previous keys succeeds.
@@ -108,23 +126,104 @@ public static class KeyRotation
                 "revealing them will fail until a matching key is configured.",
                 undecryptable);
         }
-        if (revisions > 0 || totpSecrets > 0)
+        if (revisions > 0 || totpSecrets > 0 || notes > 0)
         {
             logger.LogInformation(
-                "Master key rotation: re-encrypted {Revisions} password revision(s) and {Totp} 2FA secret(s) under the active key.",
-                revisions, totpSecrets);
+                "Master key rotation: re-encrypted {Revisions} password revision(s), {Totp} 2FA secret(s) and " +
+                "the notes of {Notes} entr(ies) under the active key.",
+                revisions, totpSecrets, notes);
             await audit.RecordAsync(
                 ServerUser, AuditActions.KeyRotate, "master-key",
-                $"re-encrypted {revisions} password revision(s) and {totpSecrets} 2FA secret(s) under the active key"
+                $"re-encrypted {revisions} password revision(s), {totpSecrets} 2FA secret(s) and "
+                + $"the notes of {notes} entr{(notes == 1 ? "y" : "ies")} under the active key"
                 + (undecryptable > 0 ? $"; {undecryptable} value(s) matched no configured key" : ""));
         }
     }
 
-    private static async Task<(int Revisions, int TotpSecrets, int Undecryptable)> SweepAsync(
+    /// <summary>
+    /// Encrypts notes still held as plain text. Each converted row drops out of
+    /// the filter, so the loop simply asks for "the next batch" until none is left;
+    /// tombstoned entries are included, since an entry restored from the trash
+    /// brings its notes back with it.
+    /// </summary>
+    private static async Task<int> EncryptPlainTextNotesAsync(HarpoDbContext db, CryptoService crypto, CancellationToken ct)
+    {
+        var converted = 0;
+        while (true)
+        {
+            // GLOB, not StartsWith: that becomes LIKE, which SQLite matches without
+            // regard to case, and the marker is case-sensitive everywhere else.
+            var page = await db.PasswordEntries
+                .Where(x => x.EncryptedNotes != "" && !EF.Functions.Glob(x.EncryptedNotes, ProtectedNotes.Marker + "*"))
+                .OrderBy(x => x.Id)
+                .Take(BatchSize)
+                .ToListAsync(ct);
+            if (page.Count == 0)
+            {
+                return converted;
+            }
+            foreach (var entry in page)
+            {
+                entry.EncryptedNotes = ProtectedNotes.Protect(crypto, entry.EncryptedNotes);
+                converted++;
+            }
+            await db.SaveChangesAsync(ct);
+            db.ChangeTracker.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Encrypting a row does not remove what the row used to say. SQLite leaves
+    /// the old bytes in the pages it freed and in its write-ahead log until
+    /// something overwrites them, so right after the conversion the "encrypted"
+    /// notes could still be read out of the database file with a hex editor —
+    /// as could notes that were edited or cleared long before it. Rewriting the
+    /// file (VACUUM) and emptying the log is what actually removes them.
+    ///
+    /// Done once per database (a site-local marker records it), and again
+    /// whenever a start finds plain-text notes to convert. If it fails — a full
+    /// disk, say — the notes are still encrypted where they are used; the marker
+    /// is withheld so the next start tries again.
+    /// </summary>
+    private static async Task ScrubPlainTextRemnantsAsync(
+        HarpoDbContext db, bool rowsWereConverted, ILogger logger, CancellationToken ct)
+    {
+        var marker = await db.SiteSettings.SingleOrDefaultAsync(x => x.Id == NotesScrubbedId, ct);
+        if (marker is not null && !rowsWereConverted)
+        {
+            return;
+        }
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);", ct);
+            await db.Database.ExecuteSqlRawAsync("VACUUM;", ct);
+            await db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);", ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex,
+                "Notes are encrypted, but the database file could not be rewritten to remove the plain-text " +
+                "copies SQLite keeps in freed pages. This will be retried at the next start.");
+            if (marker is not null)
+            {
+                db.SiteSettings.Remove(marker);
+                await db.SaveChangesAsync(ct);
+            }
+            return;
+        }
+        if (marker is null)
+        {
+            db.SiteSettings.Add(new SiteSetting { Id = NotesScrubbedId, Value = "v1" });
+            await db.SaveChangesAsync(ct);
+        }
+    }
+
+    private static async Task<(int Revisions, int TotpSecrets, int Notes, int Undecryptable)> SweepAsync(
         HarpoDbContext db, CryptoService crypto, CancellationToken ct)
     {
         var revisions = 0;
         var totpSecrets = 0;
+        var notes = 0;
         var undecryptable = 0;
 
         // Page by Id so interleaved saves can't skip rows; tombstoned rows are
@@ -189,7 +288,35 @@ public static class KeyRotation
             db.ChangeTracker.Clear();
         }
 
-        return (revisions, totpSecrets, undecryptable);
+        for (var offset = 0; ; offset += BatchSize)
+        {
+            var page = await db.PasswordEntries
+                .Where(x => x.EncryptedNotes != "")
+                .OrderBy(x => x.Id)
+                .Skip(offset)
+                .Take(BatchSize)
+                .ToListAsync(ct);
+            if (page.Count == 0)
+            {
+                break;
+            }
+            foreach (var entry in page)
+            {
+                if (ProtectedNotes.TryBringUpToDate(crypto, entry.EncryptedNotes, out var updated, out var unreadable))
+                {
+                    entry.EncryptedNotes = updated;
+                    notes++;
+                }
+                else if (unreadable)
+                {
+                    undecryptable++;
+                }
+            }
+            await db.SaveChangesAsync(ct);
+            db.ChangeTracker.Clear();
+        }
+
+        return (revisions, totpSecrets, notes, undecryptable);
     }
 
     /// <summary>

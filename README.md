@@ -38,8 +38,8 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   recording *who* changed it and *when*; old values remain viewable.
 - **Cross-site replication** — multiple sites (offices, datacenters) each run
   their own Harpo with their own database and continuously merge changes, AD-style.
-- **Encrypted at rest** — password values are AES-256-GCM encrypted under a
-  master key that never lives in the database.
+- **Encrypted at rest** — passwords, 2FA secrets and entry notes are
+  AES-256-GCM encrypted under a master key that never lives in the database.
 - **Audit log** — who revealed, copied, or deleted what, when, from where;
   append-only, replicated to every site, browsable by site admins, with
   configurable retention — and an admin kill switch.
@@ -288,8 +288,8 @@ Operational notes:
 
 ## Encrypting the database file
 
-Password *values* are always AES-256-GCM encrypted, but the rest of the SQLite
-file (entry names, URLs, usernames, membership) is plaintext by default —
+Passwords, 2FA secrets and notes are always AES-256-GCM encrypted, but the rest
+of the SQLite file (entry names, URLs, usernames, membership) is plaintext by default —
 protect it with disk encryption and encrypted backups, or turn on **full-file
 encryption** (SQLCipher):
 
@@ -356,7 +356,7 @@ Details worth knowing:
   re-encrypts **its own copy** — ciphertext bytes differ per site after
   rotation (GCM nonces are random), but plaintexts and fingerprints are
   identical everywhere. Reuse-detection fingerprints are recomputed under the
-  new key during the sweep.
+  new key during the sweep. 2FA secrets and notes are re-encrypted the same way.
 - The sweep never touches replication stamps: rotation generates **zero
   replication traffic** (just one `key.rotate` audit event per site).
 - Offline devices are unaffected — snapshots are protected by each user's
@@ -526,15 +526,22 @@ All settings can be given as environment variables (`Section__Key` form).
 
 ## Security model (read this)
 
-- Passwords are encrypted with AES-256-GCM before hitting the database; the
-  master key comes from configuration/environment only. Anyone with both the
+- Passwords, 2FA secrets and entry notes are encrypted with AES-256-GCM before
+  hitting the database; the master key comes from configuration/environment
+  only. Anyone with both the
   database *and* the key can read secrets — protect the key like a domain admin
   password (Docker secrets, a vault, or locked-down env files). Optionally the
   whole database file can be SQLCipher-encrypted too (`Harpo__DatabaseKey`) so
   copied files and backups expose no metadata either — see "Encrypting the
   database file". Both keys can be rotated — see "Rotating the master key".
-- Decryption happens **server-side, on explicit reveal/copy actions only**, and
-  every reveal is authorization-checked against group membership. This is a
+- Notes are for the things people really keep there — recovery codes, security
+  answers — so they get the same treatment as passwords at rest and between
+  sites. Unlike a password they are part of what a member sees when opening a
+  group, so they are decrypted with the list rather than on a reveal click.
+  Entry names, URLs and usernames stay plain text in the database (they are
+  searched and matched on); turn on file encryption if those matter too.
+- Password decryption happens **server-side, on explicit reveal/copy actions
+  only**, and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.
 - All access control is enforced in the service layer, not the UI.
@@ -585,9 +592,10 @@ as strong as its least-trusted site. Specifically:
 
 - **The replication key is as sensitive as the master key.** A peer presents
   only `Replication__Key` to pull, and a pull returns everything needed to
-  replicate: all group/entry names, URLs, usernames, notes, membership, the
-  password-reuse fingerprints, and the **full audit log**. Password *values*
-  stay encrypted (the master key is still required to read them), but the audit
+  replicate: all group/entry names, URLs, usernames, membership, the
+  password-reuse fingerprints, and the **full audit log**. Passwords, 2FA
+  secrets and notes stay encrypted (the master key is still required to read
+  them), but the audit
   log — which is site-admin-only in the UI — is readable by any holder of the
   replication key. Keep it in a secret store, never in a public place, and run
   site-to-site traffic over HTTPS or a private tunnel.
@@ -649,6 +657,16 @@ for testing. Forks: change the `IMAGE` name in
   baselined automatically on first start. When upgrading a replicated
   deployment, upgrade sites one at a time; the replication protocol tolerates
   peers that don't yet know about newer tables.
+- **Upgrading from 0.3.1 or earlier: notes become encrypted.** Earlier versions
+  stored notes as plain text. The first start on a newer version encrypts them
+  in place and rewrites the database file once, so the old text is not left
+  behind in the file's free space (the log says how many entries were
+  converted; allow for the file being copied once). Nothing replicates because
+  of it. In a replicated deployment, upgrade every site: a site still on the
+  older version keeps working, but shows notes written by upgraded sites as
+  `enc:v1:…` text — leave those alone there, since editing that text destroys
+  the note — and its own notes travel in plain text until it is upgraded.
+  Going back to an older version after upgrading has the same effect.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read
