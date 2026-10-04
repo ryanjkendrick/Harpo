@@ -5,8 +5,15 @@ using Microsoft.Extensions.Options;
 
 namespace Harpo.Services;
 
-/// <summary>A password entry plus the who/when of its newest revision.</summary>
-public sealed record EntryView(PasswordEntry Entry, string PasswordUpdatedBy, DateTime? PasswordUpdatedAtUtc);
+/// <summary>
+/// A password entry as a member sees it: the row, its notes decrypted, and the
+/// who/when of its newest revision. <paramref name="NotesUnreadable"/> is set
+/// when the entry has notes but this site holds no key that opens them (the
+/// same situation in which its password could not be revealed); Notes is then
+/// empty.
+/// </summary>
+public sealed record EntryView(
+    PasswordEntry Entry, string Notes, bool NotesUnreadable, string PasswordUpdatedBy, DateTime? PasswordUpdatedAtUtc);
 
 public sealed record RevisionView(Guid RevisionId, string CreatedBy, DateTime CreatedAtUtc, bool IsCurrent);
 
@@ -19,6 +26,8 @@ public enum RevealPurpose
 /// <summary>
 /// Password entry CRUD, revealing, and history. Every operation checks group
 /// membership; passwords are decrypted only on explicit reveal/copy calls.
+/// Notes are encrypted at rest too, but are part of what a member sees when
+/// listing a group, so they are decrypted with the list.
 /// </summary>
 public class VaultService
 {
@@ -66,9 +75,13 @@ public class VaultService
                       .First());
 
         return entries
-            .Select(e => latestByEntry.TryGetValue(e.Id, out var latest)
-                ? new EntryView(e, latest.CreatedBy, latest.CreatedAtUtc)
-                : new EntryView(e, e.CreatedBy, null))
+            .Select(e =>
+            {
+                var readable = ProtectedNotes.TryRead(_crypto, e.EncryptedNotes, out var notes);
+                return latestByEntry.TryGetValue(e.Id, out var latest)
+                    ? new EntryView(e, notes, !readable, latest.CreatedBy, latest.CreatedAtUtc)
+                    : new EntryView(e, notes, !readable, e.CreatedBy, null);
+            })
             .ToList();
     }
 
@@ -99,7 +112,7 @@ public class VaultService
             Icon = icon.Trim(),
             Url = NormalizeUrl(url),
             Username = username.Trim(),
-            Notes = notes.Trim(),
+            EncryptedNotes = ProtectedNotes.Protect(_crypto, notes.Trim()),
             EncryptedTotpSecret = encryptedTotp,
             CreatedBy = user.Username,
             CreatedAtUtc = now,
@@ -115,7 +128,9 @@ public class VaultService
     /// <summary>
     /// Metadata update. TOTP semantics: empty <paramref name="totpSecret"/> keeps
     /// the current 2FA configuration, a value replaces it, <paramref name="clearTotp"/>
-    /// removes it.
+    /// removes it. Notes are replaced by <paramref name="notes"/>, except that
+    /// notes this site cannot decrypt survive an empty value (see
+    /// <see cref="ProtectedNotes.Replace"/>).
     /// </summary>
     public async Task UpdateEntryAsync(
         UserContext user, Guid entryId, string name, string icon, string url, string username, string notes,
@@ -134,7 +149,7 @@ public class VaultService
         entry.Icon = icon.Trim();
         entry.Url = NormalizeUrl(url);
         entry.Username = username.Trim();
-        entry.Notes = notes.Trim();
+        entry.EncryptedNotes = ProtectedNotes.Replace(_crypto, entry.EncryptedNotes, notes.Trim());
         var totpChanged = false;
         if (clearTotp && entry.EncryptedTotpSecret is not null)
         {
@@ -375,7 +390,7 @@ public class VaultService
                     e.Icon,
                     e.Url,
                     e.Username,
-                    e.Notes,
+                    ProtectedNotes.TryRead(_crypto, e.EncryptedNotes, out var notes) ? notes : "",
                     latest is null ? null : _crypto.Decrypt(latest.EncryptedPassword),
                     latest?.CreatedBy ?? e.CreatedBy,
                     latest?.CreatedAtUtc,

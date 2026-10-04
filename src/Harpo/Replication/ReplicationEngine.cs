@@ -254,6 +254,15 @@ public class ReplicationEngine
             {
                 incoming.EncryptedTotpSecret = healedTotp;
             }
+            // Notes arrive as plain text from a peer that predates encrypted notes,
+            // or under a previous master key mid-rotation. Either way this site's
+            // copy is held encrypted under its active key. Like the heal above,
+            // that changes the stored bytes and none of the row's stamps, so it
+            // never travels back out as an edit.
+            if (ProtectedNotes.TryBringUpToDate(_crypto, incoming.EncryptedNotes, out var notes, out _))
+            {
+                incoming.EncryptedNotes = notes;
+            }
             var local = await db.PasswordEntries.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
             if (local is null)
             {
@@ -267,7 +276,7 @@ public class ReplicationEngine
                 local.Icon = incoming.Icon;
                 local.Url = incoming.Url;
                 local.Username = incoming.Username;
-                local.Notes = incoming.Notes;
+                local.EncryptedNotes = incoming.EncryptedNotes;
                 local.EncryptedTotpSecret = incoming.EncryptedTotpSecret;
                 local.CreatedBy = incoming.CreatedBy;
                 local.CreatedAtUtc = incoming.CreatedAtUtc;

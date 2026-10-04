@@ -229,6 +229,12 @@ namespace Harpo.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("EncryptedNotes")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("Notes")
+                        .HasJsonPropertyName("notes");
+
                     b.Property<string>("EncryptedTotpSecret")
                         .HasColumnType("TEXT");
 
@@ -243,10 +249,6 @@ namespace Harpo.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Notes")
                         .IsRequired()
                         .HasColumnType("TEXT");
 

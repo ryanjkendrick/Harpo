@@ -21,6 +21,7 @@ const GROUP = `E2E UI ${RUN_ID}`;
 const ENTRY = `E2E Router ${RUN_ID}`;
 const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
+const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -241,6 +242,27 @@ async function groupId(page) {
         await createEntry(page, ENTRY, "Xk9#mQ2$vL7!pR4&", TOTP_SECRET);
         await createEntry(page, WEAK_ENTRY, "password");
         check("entries are created by submitting the form", true);
+
+        // Notes: typed into the editor, shown on the entry, and offered back next time.
+        await rowAction(page, ENTRY, "Edit");
+        await page.waitForSelector(".modal-panel textarea", { timeout: 10000 });
+        await sleep(500);
+        await setValue(page, ".modal-panel textarea", NOTES);
+        await sleep(300);
+        await submitDialog(page);
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        await sleep(600);
+        const notesOnRow = await page.evaluate((name) =>
+            [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name))
+                ?.querySelector(".cell-name")?.getAttribute("title"), ENTRY);
+        await rowAction(page, ENTRY, "Edit");
+        await page.waitForSelector(".modal-panel textarea", { timeout: 10000 });
+        await sleep(500);
+        const notesInEditor = await page.evaluate(() => document.querySelector(".modal-panel textarea").value);
+        await page.evaluate(() => document.querySelector(".modal-close").click());
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        check("notes are saved, shown on the entry and offered back for editing",
+            notesOnRow === NOTES && notesInEditor === NOTES, JSON.stringify({ notesOnRow, notesInEditor }));
 
         // ---- 3. Vault row: 2FA control, trash, history ----
         const row = await page.evaluate(() => ({

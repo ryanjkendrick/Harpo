@@ -108,7 +108,7 @@
                             {
                                 var entry = view.Entry;
                                 <tr>
-                                    <td class="cell-name" title="@entry.Notes">
+                                    <td class="cell-name" title="@NotesTooltip(view)">
                                         <EntryIcon Icon="@entry.Icon" />
                                         <span class="entry-name">@entry.Name</span>
                                     </td>
@@ -186,7 +186,7 @@
                                     <td class="cell-actions">
                                         @if (CanEdit)
                                         {
-                                            <button class="btn btn-icon" title="Edit" aria-label="Edit" @onclick="() => OpenEditEntry(entry)"><Lucide Name="pencil" Size="16" /></button>
+                                            <button class="btn btn-icon" title="Edit" aria-label="Edit" @onclick="() => OpenEditEntry(view)"><Lucide Name="pencil" Size="16" /></button>
                                         }
                                         <button class="btn btn-icon" title="Password history" aria-label="Password history" @onclick="() => OpenHistoryAsync(entry)"><Lucide Name="history" Size="16" /></button>
                                         @if (CanEdit)
@@ -325,6 +325,14 @@
             <label class="field">
                 <span class="field-label">Notes</span>
                 <textarea rows="2" @bind="_editor.Notes"></textarea>
+                @if (!_editorIsNew && _editorNotesUnreadable)
+                {
+                    <span class="muted small">
+                        This entry has notes that this site cannot decrypt — its master key
+                        differs from the site that wrote them. Leave the field empty to keep
+                        them as they are; anything typed here replaces them.
+                    </span>
+                }
             </label>
             <div class="modal-footer">
                 @if (_editorError is not null)
@@ -414,6 +422,7 @@
     private readonly Dictionary<Guid, TotpDisplay> _totp = new();
     private System.Threading.Timer? _totpTimer;
     private bool _editorHasTotp;
+    private bool _editorNotesUnreadable;
 
     private sealed class TotpDisplay
     {
@@ -718,14 +727,19 @@
         }
     }
 
-    private void OpenEditEntry(PasswordEntry entry)
+    private static string NotesTooltip(EntryView view) =>
+        view.NotesUnreadable ? "This entry has notes, but this site cannot decrypt them." : view.Notes;
+
+    private void OpenEditEntry(EntryView view)
     {
+        var entry = view.Entry;
         _editorIsNew = false;
         _editorEntryId = entry.Id;
         _editorError = null;
         _fieldErrors.Clear();
         _iconAutoSet = false;
         _editorHasTotp = entry.EncryptedTotpSecret is not null;
+        _editorNotesUnreadable = view.NotesUnreadable;
         _ = LoadIconCatalogueAsync();
         _editor = new EntryEditModel
         {
@@ -733,7 +747,7 @@
             Icon = string.IsNullOrEmpty(entry.Icon) ? "🔐" : entry.Icon,
             Url = entry.Url,
             Username = entry.Username,
-            Notes = entry.Notes,
+            Notes = view.Notes,
         };
     }
 
