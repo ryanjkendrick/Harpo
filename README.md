@@ -217,6 +217,16 @@ That copy is protected by the user's passphrase (and their disk encryption),
 which is exactly the trade-off you accept by enabling offline access. The
 demo stacks show both settings: multisite has it on, the AD lab has it off.
 
+One more piece of honesty: **expiry, auto-lock and the wipe are carried out by
+the offline page itself, on the device.** They keep honest devices tidy; they
+are not a control over whoever holds the device. Someone with the device *and*
+the passphrase can set its clock back, or read the stored copy with their own
+code, for as long as they like — no offline design can prevent that, so Harpo
+does not pretend to. Treat whatever a person could see as theirs to keep: when
+someone leaves, change the passwords of the groups they were in rather than
+waiting for their offline copy to expire. The audit log's `offline.sync`
+events show who has taken a copy, and when.
+
 Also worth knowing: the service worker only ever caches the static offline
 page and PWA assets — never authenticated pages or API responses. On iOS,
 the OS may evict PWA storage under disk pressure; treat the offline copy as
@@ -646,6 +656,12 @@ The workflow needs two repository secrets: `DOCKERHUB_USERNAME` and
 also be dispatched manually from the Actions tab, which publishes a `main` tag
 for testing. Forks: change the `IMAGE` name in
 `.github/workflows/release.yml` and in `docker-compose.yml`.
+
+Two things are pinned on purpose and move only by hand. `docker-compose.yml`
+names a release line (`:0.3`) rather than `latest`, so a new minor version
+means updating that tag as part of the release. And the workflow's actions are
+pinned to commit SHAs rather than tags — the file's header says how to update
+one.
 
 ## Design notes & limitations
 
