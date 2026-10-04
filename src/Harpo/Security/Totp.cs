@@ -33,7 +33,14 @@ public static class Totp
     {
         if (stored.StartsWith("otpauth://", StringComparison.OrdinalIgnoreCase))
         {
-            var uri = new Uri(stored);
+            // TryCreate, not new Uri(): input that is not a URI at all must come
+            // back as the ArgumentException callers turn into a message at the
+            // field, not as a UriFormatException nobody handles.
+            if (!Uri.TryCreate(stored, UriKind.Absolute, out var uri))
+            {
+                throw new ArgumentException(
+                    "That otpauth:// link is not valid — paste it again exactly as the 2FA setup page gives it, or enter just the secret.");
+            }
             if (!uri.Host.Equals("totp", StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException("Only otpauth://totp/ URIs are supported (not hotp).");

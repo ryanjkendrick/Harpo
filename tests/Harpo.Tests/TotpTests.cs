@@ -80,6 +80,18 @@ public class TotpTests
         Assert.Throws<ArgumentException>(() => Totp.Normalize("   "));
     }
 
+    [Theory]
+    [InlineData("otpauth://")]
+    [InlineData("otpauth://totp:notaport/Corp?secret=JBSWY3DPEHPK3PXP")]
+    [InlineData("otpauth://[totp/Corp?secret=JBSWY3DPEHPK3PXP")]
+    public void A_malformed_otpauth_uri_is_a_validation_error_not_a_crash(string input)
+    {
+        // These are not URIs at all. The parser used to let UriFormatException
+        // escape, which callers (expecting ArgumentException) did not handle.
+        Assert.Throws<ArgumentException>(() => Totp.Parse(input));
+        Assert.Throws<ArgumentException>(() => Totp.Normalize(input));
+    }
+
     [Fact]
     public void Seconds_remaining_tracks_the_period_window()
     {
@@ -125,6 +137,22 @@ public class TotpServiceTests : IDisposable
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
         await Assert.ThrowsAsync<VaultValidationException>(
             () => _site.Vault.CreateEntryAsync(_alice, group.Id, "X", "🔐", "", "", "", "pw", "not!base32"));
+    }
+
+    [Fact]
+    public async Task A_malformed_otpauth_uri_is_reported_at_the_2fa_field()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+
+        var onCreate = await Assert.ThrowsAsync<VaultValidationException>(
+            () => _site.Vault.CreateEntryAsync(_alice, group.Id, "X", "🔐", "", "", "", "pw",
+                "otpauth://totp:notaport/Corp?secret=JBSWY3DPEHPK3PXP"));
+        Assert.Equal("totp", onCreate.Field);
+
+        var onUpdate = await Assert.ThrowsAsync<VaultValidationException>(
+            () => _site.Vault.UpdateEntryAsync(_alice, entry.Id, "Router", "🌐", "", "", "", "otpauth://[totp/x?secret=A"));
+        Assert.Equal("totp", onUpdate.Field);
     }
 
     [Fact]
