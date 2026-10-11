@@ -235,14 +235,26 @@ public class NotesEncryptionTests
             Directory.Delete(dir, recursive: true);
         }
 
-        // Everything SQLite keeps for this database: the main file, its write-ahead log, any journal.
+        // Everything SQLite keeps for this database: the main file, its write-ahead
+        // log, any journal. The log and shared-memory files come and go — SQLite
+        // removes them when the last pooled connection closes, and the pool does
+        // that on its own schedule — so a file listed here may be gone by the time
+        // it is opened. One that vanished holds nothing: whatever it carried was
+        // checkpointed into the main file, which is read.
         static string FileText(string directory) => string.Concat(
             Directory.GetFiles(directory).OrderBy(f => f).Select(f =>
             {
-                using var stream = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var memory = new MemoryStream();
-                stream.CopyTo(memory);
-                return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+                try
+                {
+                    using var stream = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var memory = new MemoryStream();
+                    stream.CopyTo(memory);
+                    return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+                }
+                catch (FileNotFoundException)
+                {
+                    return "";
+                }
             }));
     }
 
