@@ -13,43 +13,64 @@
 
 <div class="vault">
     <div class="vault-groups">
-        <div class="vault-groups-header">
-            <h2>Groups</h2>
-            <a class="btn btn-ghost btn-sm" href="/groups" title="Manage groups">Manage</a>
-        </div>
         @if (_groups is null)
         {
             <p class="muted">Loading…</p>
         }
-        else if (_groups.Count == 0)
-        {
-            <p class="muted">You are not a member of any group yet.</p>
-            <a class="btn btn-primary btn-sm" href="/groups">Create a group</a>
-        }
         else
         {
-            <ul class="group-list">
-                @foreach (var g in _groups)
-                {
+            @if (PersonalVault is { } personal)
+            {
+                <div class="vault-groups-header">
+                    <h2>Personal</h2>
+                </div>
+                <ul class="group-list personal-list">
                     <li>
-                        <a class="group-item @(g.Group.Id == SelectedGroupId ? "selected" : "")"
-                           href="/vault/@g.Group.Id">
-                            <span class="group-item-name">@g.Group.Name</span>
+                        <a class="group-item @(personal.Group.Id == SelectedGroupId ? "selected" : "")"
+                           href="/vault/@personal.Group.Id">
+                            <span class="group-item-name">@personal.Group.Name</span>
                             <span class="group-item-meta">
-                                @g.EntryCount @(g.EntryCount == 1 ? "password" : "passwords")
-                                @if (g.MyRole == GroupRole.Admin)
-                                {
-                                    <span class="badge badge-admin" title="You administer this group">admin</span>
-                                }
-                                else if (g.MyRole is null)
-                                {
-                                    <span class="badge" title="Visible because you are a site admin">site admin</span>
-                                }
+                                @personal.EntryCount @(personal.EntryCount == 1 ? "password" : "passwords")
+                                <span class="badge badge-private" title="Only you can see these — site administrators included">only you</span>
                             </span>
                         </a>
                     </li>
-                }
-            </ul>
+                </ul>
+            }
+            <div class="vault-groups-header">
+                <h2>Groups</h2>
+                <a class="btn btn-ghost btn-sm" href="/groups" title="Manage groups">Manage</a>
+            </div>
+            @if (SharedGroups.Count == 0)
+            {
+                <p class="muted">You are not a member of any group yet.</p>
+                <a class="btn btn-primary btn-sm" href="/groups">Create a group</a>
+            }
+            else
+            {
+                <ul class="group-list">
+                    @foreach (var g in SharedGroups)
+                    {
+                        <li>
+                            <a class="group-item @(g.Group.Id == SelectedGroupId ? "selected" : "")"
+                               href="/vault/@g.Group.Id">
+                                <span class="group-item-name">@g.Group.Name</span>
+                                <span class="group-item-meta">
+                                    @g.EntryCount @(g.EntryCount == 1 ? "password" : "passwords")
+                                    @if (g.MyRole == GroupRole.Admin)
+                                    {
+                                        <span class="badge badge-admin" title="You administer this group">admin</span>
+                                    }
+                                    else if (g.MyRole is null)
+                                    {
+                                        <span class="badge" title="Visible because you are a site admin">site admin</span>
+                                    }
+                                </span>
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
         }
     </div>
 
@@ -66,13 +87,18 @@
         {
             <div class="vault-toolbar">
                 <h1>@_selectedGroupName</h1>
+                @if (SelectedIsPersonal)
+                {
+                    <span class="badge badge-private vault-private-badge"
+                          title="Your personal vault: nobody else can open it, site administrators included. If you leave, an administrator can turn it into a group — you would see that happen here.">only you</span>
+                }
                 <input class="search" type="search" placeholder="Search name, URL, username…"
                        @bind="_search" @bind:event="oninput" />
                 @if (CanEdit)
                 {
                     <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
                 }
-                else
+                else if (SelectedSummary is not null)
                 {
                     <span class="badge" title="You have read-only access to this group">viewer</span>
                 }
@@ -86,7 +112,11 @@
             {
                 <div class="empty-state">
                     <span class="empty-icon">🗝️</span>
-                    <p class="muted">@(_entries.Count == 0 ? "No passwords in this group yet." : "Nothing matches your search.")</p>
+                    <p class="muted">
+                        @(_entries.Count > 0 ? "Nothing matches your search."
+                            : SelectedIsPersonal ? "Nothing here yet. Passwords you add to your personal vault are yours alone."
+                            : "No passwords in this group yet.")
+                    </p>
                 </div>
             }
             else
@@ -480,13 +510,24 @@
     private bool _toastIsError;
     private CancellationTokenSource? _toastCts;
 
-    private Guid? SelectedGroupId => GroupId ?? _groups?.FirstOrDefault()?.Group.Id;
+    private GroupSummary? PersonalVault => _groups?.FirstOrDefault(g => g.Group.IsPersonal);
 
-    private GroupRole? SelectedRole =>
-        _groups?.FirstOrDefault(g => g.Group.Id == SelectedGroupId)?.MyRole;
+    private List<GroupSummary> SharedGroups => _groups?.Where(g => !g.Group.IsPersonal).ToList() ?? [];
 
+    // With nothing chosen, open the first shared group; the personal vault is
+    // the fallback for someone who is in no group yet.
+    private Guid? SelectedGroupId =>
+        GroupId ?? SharedGroups.FirstOrDefault()?.Group.Id ?? PersonalVault?.Group.Id;
+
+    private GroupSummary? SelectedSummary => _groups?.FirstOrDefault(g => g.Group.Id == SelectedGroupId);
+
+    private bool SelectedIsPersonal => SelectedSummary?.Group.IsPersonal == true;
+
+    // A group the listing does not contain (someone else's personal vault, a
+    // group that no longer exists) gets no edit controls, whoever is asking.
     private bool CanEdit =>
-        _user?.IsSiteAdmin == true || (SelectedRole?.CanWrite() ?? false);
+        SelectedSummary is { } selected
+        && (selected.MyRole?.CanWrite() ?? _user?.IsSiteAdmin == true);
 
     private List<EntryView> FilteredEntries
     {
@@ -512,6 +553,7 @@
     protected override async Task OnInitializedAsync()
     {
         _user = UserContext.FromPrincipal((await AuthState).User);
+        await Groups.EnsurePersonalVaultAsync(_user);
         _groups = await Groups.GetMyGroupsAsync(_user);
     }
 

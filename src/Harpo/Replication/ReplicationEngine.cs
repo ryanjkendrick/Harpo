@@ -220,7 +220,17 @@ public class ReplicationEngine
                 local.Description = incoming.Description;
                 local.CreatedBy = incoming.CreatedBy;
                 local.CreatedAtUtc = incoming.CreatedAtUtc;
+                local.OwnerUsername = incoming.OwnerUsername;
                 CopyStamps(incoming, local);
+                accepted++;
+            }
+            else if (SameVersion(incoming, local) && local.OwnerUsername.Length == 0 && incoming.OwnerUsername.Length > 0)
+            {
+                // The same version of the row, but this site's copy has no owner
+                // mark: it was stored by an earlier Harpo that had no column for
+                // it (see UpgradeResync). One version of a row has one owner, so
+                // the peer's copy is the complete one. No stamps change.
+                local.OwnerUsername = incoming.OwnerUsername;
                 accepted++;
             }
         }
@@ -417,10 +427,13 @@ public class ReplicationEngine
         }
     }
 
+    private static bool SameVersion(IReplicatedRow incoming, IReplicatedRow local) =>
+        incoming.OriginSiteId == local.OriginSiteId && incoming.OriginSeq == local.OriginSeq;
+
     /// <summary>Last-writer-wins with a total order: timestamp, then origin site, then sequence.</summary>
     internal static bool IncomingWins(IReplicatedRow incoming, IReplicatedRow local)
     {
-        if (incoming.OriginSiteId == local.OriginSiteId && incoming.OriginSeq == local.OriginSeq)
+        if (SameVersion(incoming, local))
         {
             return false; // identical version
         }

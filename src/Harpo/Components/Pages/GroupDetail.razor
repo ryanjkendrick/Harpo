@@ -28,6 +28,20 @@
             <p class="muted">@_group.Description</p>
         }
 
+        @if (_group.IsPersonal)
+        {
+            <section class="panel">
+                <h2>Your personal vault</h2>
+                <p class="muted">
+                    This is not a group: it has no members, no settings, and cannot be deleted.
+                    Only you can see what is in it — site administrators included. Should you
+                    leave, an administrator can turn it into an ordinary group so that company
+                    accounts kept here are not lost; that is recorded in the audit log, and if
+                    you are still around you would see the change in your vault.
+                </p>
+            </section>
+        }
+
         @if (CanAdmin)
         {
             <section class="panel">
@@ -46,6 +60,8 @@
             </section>
         }
 
+        @if (!_group.IsPersonal)
+        {
         <section class="panel">
             <h2>Members</h2>
             <p class="muted">Only these people can see the passwords in this group.</p>
@@ -144,6 +160,7 @@
                 }
             }
         </section>
+        }
 
         @if (_error is not null)
         {
@@ -181,7 +198,8 @@
     private string? _error;
     private string? _loadError;
 
-    private bool CanAdmin => _user is not null && (_user.IsSiteAdmin || _myRole == GroupRole.Admin);
+    private bool CanAdmin =>
+        _user is not null && _group?.IsPersonal != true && (_user.IsSiteAdmin || _myRole == GroupRole.Admin);
 
     protected override async Task OnInitializedAsync()
     {

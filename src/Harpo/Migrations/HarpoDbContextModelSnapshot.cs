@@ -154,10 +154,16 @@ namespace Harpo.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("OwnerUsername")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OwnerUsername");
 
                     b.HasIndex("OriginSiteId", "OriginSeq");
 

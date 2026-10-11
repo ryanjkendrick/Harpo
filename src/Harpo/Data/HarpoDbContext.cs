@@ -90,6 +90,8 @@ public class HarpoDbContext : DbContext
         // as eventually consistent.
         modelBuilder.Entity<Group>(b =>
         {
+            b.Ignore(x => x.IsPersonal);
+            b.HasIndex(x => x.OwnerUsername);
             b.HasIndex(x => new { x.OriginSiteId, x.OriginSeq });
         });
 

@@ -15,8 +15,12 @@ afterwards.
   field it concerns, the password and 2FA controls, notes through the editor,
   copying from history, the entries layout at seven widths (nothing may
   overflow or sit under another element, at rest or with secrets revealed),
-  links from the health report, and the Administration page's navigation and
-  audit-log filters. It also holds the content security policy to its word:
+  links from the health report, the Administration page's navigation and
+  audit-log filters, and personal vaults as two accounts see them: one each,
+  closed to the other (the site administrator included), described in the
+  audit log without entry names, and taken over from the Administration page
+  — after which the second account gets a fresh one. It also holds the
+  content security policy to its word:
   every page must be served with it, nothing the app does may be blocked by
   it, and an injected inline script or style must have no effect — so a
   change that quietly needs something the policy forbids fails here.
@@ -33,13 +37,16 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 29/29 checks passed
+npm run test:ui   # interactive UI — expect 38/38 checks passed
 npm run test:all  # both
 ```
 
 Environment overrides: `HARPO_BASE_URL`, `HARPO_CONTAINER`, `HARPO_USER`
 (a site administrator), `HARPO_PASSWORD`, and `HARPO_OTHER_USER` /
-`HARPO_OTHER_PASSWORD` (a second account, used by the offline suite).
+`HARPO_OTHER_PASSWORD` (a second account that is not a site administrator,
+used by both suites). The UI suite takes over the second account's personal
+vault, so point it at a throwaway stack, not at one whose second account
+keeps real passwords there.
 
 Re-running the offline suite within 30 seconds hits the per-user snapshot
 cooldown; the script waits it out automatically once.
