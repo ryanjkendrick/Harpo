@@ -48,8 +48,8 @@ public sealed record VaultHealthReport(
 /// (without touching their replication stamps, so healing stays local).
 ///
 /// Scope: site admins see the whole vault; group admins see the groups they
-/// administer. Reuse that crosses out of the caller's scope is shown only as a
-/// count — never as names.
+/// administer; nobody sees anyone else's personal vault. Reuse that crosses out
+/// of the caller's scope is shown only as a count — never as names.
 /// </summary>
 public class HealthService
 {
@@ -88,23 +88,31 @@ public class HealthService
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
-        // The caller's scope: everything for site admins, administered groups otherwise.
-        List<Guid>? scopeGroupIds = null;
-        if (!user.IsSiteAdmin)
+        // The caller's scope: everything for site admins, administered groups
+        // otherwise — minus other people's personal vaults either way. Their
+        // entries still count towards reuse totals, so a shared password that is
+        // also someone's personal one shows as "+1 outside your groups", never by name.
+        var liveGroups = await db.Groups.Where(g => !g.IsDeleted).ToListAsync(ct);
+        var ownOrShared = liveGroups.Where(g => !g.IsPersonal || g.OwnerUsername == user.Username);
+        HashSet<Guid> scopeGroupIds;
+        if (user.IsSiteAdmin)
         {
-            scopeGroupIds = await db.GroupMembers
+            scopeGroupIds = ownOrShared.Select(g => g.Id).ToHashSet();
+        }
+        else
+        {
+            var administered = await db.GroupMembers
                 .Where(m => !m.IsDeleted && m.Username == user.Username && m.Role == GroupRole.Admin)
                 .Select(m => m.GroupId)
                 .ToListAsync(ct);
+            scopeGroupIds = ownOrShared.Where(g => administered.Contains(g.Id)).Select(g => g.Id).ToHashSet();
             if (scopeGroupIds.Count == 0)
             {
                 return null;
             }
         }
 
-        var groups = await db.Groups
-            .Where(g => !g.IsDeleted)
-            .ToDictionaryAsync(g => g.Id, g => g.Name, ct);
+        var groups = liveGroups.ToDictionary(g => g.Id, g => g.Name);
         var entries = await db.PasswordEntries
             .Where(e => !e.IsDeleted)
             .ToListAsync(ct);
@@ -140,7 +148,7 @@ public class HealthService
                 fingerprintTotals[fingerprint] = fingerprintTotals.GetValueOrDefault(fingerprint) + 1;
                 fingerprintByEntry[entry.Id] = fingerprint;
             }
-            if (scopeGroupIds is null || scopeGroupIds.Contains(entry.GroupId))
+            if (scopeGroupIds.Contains(entry.GroupId))
             {
                 inScope.Add(new HealthEntry(
                     entry.Id, entry.Name, entry.Icon, entry.GroupId, groups[entry.GroupId],

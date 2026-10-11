@@ -124,6 +124,8 @@ if (devAuth)
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
+await Harpo.Replication.UpgradeResync.EnsureAsync(
+    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), app.Logger);
 
 // Validate the master key against the stored data (fail fast on a wrong key),
 // and re-encrypt local data when a key rotation is in progress.

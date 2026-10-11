@@ -1,12 +1,15 @@
 // End-to-end checks of Harpo's interactive UI against the live multisite demo
 // stack: dialog keyboard behaviour and validation, the vault's password and
 // 2FA controls, the entries layout at a range of widths, the links between
-// pages, and the Administration page.
+// pages, the Administration page, and personal vaults as two accounts see them.
 //
 // These are the things unit tests cannot see — a control that ends up hidden
 // under another, focus left behind a dialog, an error shown far from its field.
 // The suite creates its own throwaway group and entries and deletes the group
-// when it is done.
+// when it is done. The personal-vault section takes over the second account's
+// vault (that account gets a fresh one on its next visit) and deletes the
+// resulting group; run it against a throwaway stack rather than one whose
+// second account keeps real passwords in its personal vault.
 //
 // Prerequisites: `docker compose -f docker-compose.multisite.yml up -d`.
 // Run with: npm run test:ui (see README.md in this directory).
@@ -15,11 +18,15 @@ const puppeteer = require("puppeteer");
 const BASE = process.env.HARPO_BASE_URL || "http://localhost:8081";
 const USER = process.env.HARPO_USER || "alice"; // must be a site administrator
 const USER_PASSWORD = process.env.HARPO_PASSWORD || "alice";
+const OTHER_USER = process.env.HARPO_OTHER_USER || "bob"; // not a site administrator
+const OTHER_PASSWORD = process.env.HARPO_OTHER_PASSWORD || "bob";
 
 const RUN_ID = Date.now();
 const GROUP = `E2E UI ${RUN_ID}`;
 const ENTRY = `E2E Router ${RUN_ID}`;
 const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
+const PERSONAL_ENTRY = `E2E Personal ${RUN_ID}`;
+const OTHER_PERSONAL_ENTRY = `E2E Other Personal ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
@@ -60,17 +67,46 @@ const focused = (page) => page.evaluate(() => {
     return a ? `${a.tagName.toLowerCase()}:${(a.getAttribute("aria-label") || a.placeholder || a.textContent || "").trim().slice(0, 40)}` : "(nothing)";
 });
 
-async function signIn(page) {
+async function signIn(page, user = USER, password = USER_PASSWORD) {
     await page.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
-    await setValue(page, 'input[name="Model.Username"]', USER);
-    await setValue(page, 'input[name="Model.Password"]', USER_PASSWORD);
+    await setValue(page, 'input[name="Model.Username"]', user);
+    await setValue(page, 'input[name="Model.Password"]', password);
     await Promise.all([
         page.waitForNavigation({ waitUntil: "networkidle2" }),
         page.evaluate(() => document.querySelector('button[type="submit"]').click()),
     ]);
     if (page.url() !== `${BASE}/`) {
-        throw new Error("sign-in failed: " + page.url());
+        throw new Error(`sign-in as ${user} failed: ` + page.url());
     }
+}
+
+// The vault page's sidebar, once it has rendered: section headings, the
+// personal vault's link, and the shared groups listed.
+async function sidebar(page) {
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle2" });
+    await page.waitForSelector(".vault-groups .group-list", { timeout: 15000 });
+    await sleep(600);
+    return page.evaluate(() => ({
+        headings: [...document.querySelectorAll(".vault-groups-header h2")].map((h) => h.textContent.trim()),
+        personal: document.querySelector(".personal-list .group-item")?.getAttribute("href")?.split("/").pop() ?? null,
+        personalName: document.querySelector(".personal-list .group-item-name")?.textContent.trim(),
+        personalBadge: document.querySelector(".personal-list .badge")?.textContent.trim(),
+        groups: [...document.querySelectorAll(".group-list:not(.personal-list) .group-item-name")].map((e) => e.textContent.trim()),
+    }));
+}
+
+// What a visitor finds at a vault URL: the entries shown, the toolbar, and any toast.
+async function visitVault(page, vaultId) {
+    await page.goto(`${BASE}/vault/${vaultId}`, { waitUntil: "networkidle2" });
+    await page.waitForSelector(".vault-toolbar", { timeout: 15000 });
+    await sleep(1500);
+    return page.evaluate(() => ({
+        title: document.querySelector(".vault-toolbar h1")?.textContent.trim(),
+        privateBadge: document.querySelector(".vault-private-badge")?.textContent.trim() ?? null,
+        canAdd: !!document.querySelector(".vault-toolbar .btn-primary"),
+        entries: [...document.querySelectorAll(".entries-table tbody .entry-name")].map((e) => e.textContent.trim()),
+        toast: document.querySelector(".toast")?.textContent.trim() ?? "",
+    }));
 }
 
 // Interactive pages ignore clicks until the circuit attaches: click until the dialog shows.
@@ -145,6 +181,9 @@ async function groupId(page) {
         }
     });
     let id = null;
+    let takenOverId = null;
+    let personalId = null;
+    let otherContext = null;
 
     try {
         await signIn(page);
@@ -394,7 +433,124 @@ async function groupId(page) {
             && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal)$/.test(a)),
             [...new Set(reveals)].join(","));
 
-        // ---- 7. Content security policy: on every page, in nobody's way, and enforced ----
+        // ---- 7. Personal vaults: one each, owner-only, taken over on departure ----
+        const mine = await sidebar(page);
+        personalId = mine.personal;
+        check("the vault lists a personal vault above the groups, marked as only yours",
+            mine.headings.join(",") === "Personal,Groups" && !!personalId && mine.personalName === "Personal"
+            && mine.personalBadge === "only you" && !mine.groups.includes("Personal"), JSON.stringify(mine));
+
+        let vault = await visitVault(page, personalId);
+        check("the personal vault opens for its owner with the private marker", vault.privateBadge === "only you" && vault.canAdd, JSON.stringify(vault));
+        await createEntry(page, PERSONAL_ENTRY, "Pv7$kq2!Lm9#xW4e");
+        await rowAction(page, PERSONAL_ENTRY, "Reveal");
+        await page.waitForSelector(".entries-table .revealed", { timeout: 10000 });
+        check("a personal entry is created and revealed like any other", true);
+
+        await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".card-list, .empty-state", { timeout: 15000 });
+        await sleep(600);
+        const groupsPage = await page.evaluate((pid) => ({
+            names: [...document.querySelectorAll(".group-card-name")].map((e) => e.textContent.trim()),
+            linksToPersonal: !!document.querySelector(`a[href="/groups/${pid}"]`),
+        }), personalId);
+        await page.goto(`${BASE}/groups/${personalId}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".page-narrow .panel, .alert-error", { timeout: 15000 });
+        await sleep(600);
+        const personalDetail = await page.evaluate(() => ({
+            heading: document.querySelector(".panel h2")?.textContent.trim(),
+            members: !!document.querySelector(".members-table"),
+            danger: !!document.querySelector(".panel-danger"),
+            settings: [...document.querySelectorAll(".panel h2")].some((h) => h.textContent === "Group settings"),
+        }));
+        check("the personal vault is not a group: absent from the groups list, nothing to manage",
+            !groupsPage.names.includes("Personal") && !groupsPage.linksToPersonal
+            && personalDetail.heading === "Your personal vault" && !personalDetail.members && !personalDetail.danger && !personalDetail.settings,
+            JSON.stringify({ groupsPage, personalDetail }));
+
+        // The second account, in its own browser context (cookies ignore the port).
+        otherContext = await browser.createBrowserContext();
+        const other = await otherContext.newPage();
+        await other.evaluateOnNewDocument(() => { window.confirm = () => true; });
+        await other.setViewport({ width: 1280, height: 860 });
+        await signIn(other, OTHER_USER, OTHER_PASSWORD);
+        const theirs = await sidebar(other);
+        const otherPersonalId = theirs.personal;
+        await visitVault(other, otherPersonalId);
+        await createEntry(other, OTHER_PERSONAL_ENTRY, "Qz3!vb8#Nt5$yR2p");
+        const theirView = await visitVault(other, personalId);
+        await page.bringToFront();
+        const myView = await visitVault(page, otherPersonalId);
+        check("each account has its own vault and neither can open the other's — the site admin included",
+            !!otherPersonalId && otherPersonalId !== personalId
+            && theirView.entries.length === 0 && !theirView.canAdd && theirView.toast.includes("Only its owner")
+            && myView.entries.length === 0 && !myView.canAdd && myView.toast.includes("Only its owner"),
+            JSON.stringify({ theirView, myView }));
+
+        await page.goto(`${BASE}/admin`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".personal-vaults-table, #personal-vaults .muted", { timeout: 15000 });
+        await sleep(1200);
+        const adminBefore = await page.evaluate((otherUser) => {
+            const row = [...document.querySelectorAll(".personal-vaults-table tbody tr")]
+                .find((r) => r.querySelector(".mono")?.textContent.trim() === otherUser);
+            return {
+                otherListed: !!row,
+                otherCount: row?.querySelector("td:nth-child(2)")?.textContent.trim(),
+                allGroups: [...document.querySelectorAll("section.panel")]
+                    .find((s) => s.querySelector("h2")?.textContent === "All groups")
+                    ?.querySelectorAll(".group-card-name").length ?? 0,
+                personalInAllGroups: [...document.querySelectorAll(".group-card-name")].some((e) => e.textContent.trim() === "Personal"),
+                auditWhat: [...document.querySelectorAll(".audit-table tbody tr td:nth-child(4)")].map((td) => td.textContent.trim()),
+            };
+        }, OTHER_USER);
+        check("administration lists personal vaults by owner and size only, and keeps them out of the group list",
+            adminBefore.otherListed && adminBefore.otherCount === "1" && adminBefore.allGroups > 0 && !adminBefore.personalInAllGroups,
+            JSON.stringify({ ...adminBefore, auditWhat: undefined }));
+        check("the audit log records the personal reveal without the entry's name",
+            adminBefore.auditWhat.some((w) => w.startsWith("an entry in a personal vault"))
+            && !adminBefore.auditWhat.some((w) => w.includes(PERSONAL_ENTRY)),
+            adminBefore.auditWhat.slice(0, 3).join(" | "));
+
+        // Take the other account's vault over.
+        await page.evaluate((otherUser) => {
+            const row = [...document.querySelectorAll(".personal-vaults-table tbody tr")]
+                .find((r) => r.querySelector(".mono")?.textContent.trim() === otherUser);
+            row.querySelector("button").click();
+        }, OTHER_USER);
+        await page.waitForSelector(".modal-panel form", { timeout: 10000 });
+        await sleep(500);
+        const takeoverDialog = await page.evaluate(() => ({
+            title: document.querySelector(".modal-panel h2")?.textContent.trim(),
+            name: document.querySelector(".modal-panel input")?.value,
+        }));
+        await submitDialog(page);
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        await sleep(1200);
+        const adminAfter = await page.evaluate((otherUser) => ({
+            otherStillListed: [...document.querySelectorAll(".personal-vaults-table tbody tr")]
+                .some((r) => r.querySelector(".mono")?.textContent.trim() === otherUser),
+            groupNames: [...document.querySelectorAll(".group-card-name")].map((e) => e.textContent.trim()),
+            takeoverLogged: [...document.querySelectorAll(".audit-table tbody tr")]
+                .some((r) => r.textContent.includes("personal.takeover") && r.textContent.includes(`was the personal vault of ${otherUser}`)),
+        }), OTHER_USER);
+        takenOverId = otherPersonalId;
+        const takenOver = await visitVault(page, otherPersonalId);
+        check("a takeover turns the vault into a group the admin can open, named after its owner and audited",
+            takeoverDialog.title === "Take over a personal vault" && takeoverDialog.name === `${OTHER_USER}'s personal vault`
+            && !adminAfter.otherStillListed && adminAfter.groupNames.includes(`${OTHER_USER}'s personal vault`) && adminAfter.takeoverLogged
+            && takenOver.entries.includes(OTHER_PERSONAL_ENTRY) && takenOver.privateBadge === null,
+            JSON.stringify({ takeoverDialog, adminAfter, takenOver: takenOver.entries }));
+
+        await other.bringToFront();
+        const theirsAfter = await sidebar(other);
+        await page.bringToFront();
+        check("the former owner sees the group they lost, and gets a fresh personal vault",
+            theirsAfter.groups.includes(`${OTHER_USER}'s personal vault`)
+            && !!theirsAfter.personal && theirsAfter.personal !== otherPersonalId,
+            JSON.stringify(theirsAfter));
+        await other.close();
+
+        // ---- 8. Content security policy: on every page, in nobody's way, and enforced ----
         const unprotected = [...policies].filter(([, policy]) =>
             !/script-src 'self';/.test(policy) || !/style-src 'self';/.test(policy) || !/frame-ancestors 'none'/.test(policy));
         check("every page is served with the content security policy", policies.size >= 6 && unprotected.length === 0,
@@ -418,11 +574,9 @@ async function groupId(page) {
     } catch (e) {
         check("script completed", false, e.message.slice(0, 200));
     } finally {
-        // ---- 8. Remove the throwaway group ----
-        try {
-            await page.setViewport({ width: 1280, height: 860 });
-            id ??= await groupId(page);
-            await page.goto(`${BASE}/groups/${id}`, { waitUntil: "networkidle2" });
+        // ---- 9. Remove the throwaway groups and the personal entry ----
+        const deleteGroup = async (groupToDelete) => {
+            await page.goto(`${BASE}/groups/${groupToDelete}`, { waitUntil: "networkidle2" });
             await page.waitForSelector(".panel-danger .btn-danger", { timeout: 15000 });
             for (let i = 0; i < 12; i++) {
                 await page.evaluate(() => document.querySelector(".panel-danger .btn-danger")?.click());
@@ -431,10 +585,28 @@ async function groupId(page) {
                     break;
                 } catch { /* circuit not attached yet */ }
             }
-            check("test group cleaned up", await page.evaluate(() => location.pathname === "/groups"));
+            return page.evaluate(() => location.pathname === "/groups");
+        };
+        try {
+            await page.setViewport({ width: 1280, height: 860 });
+            id ??= await groupId(page);
+            let cleaned = await deleteGroup(id);
+            if (takenOverId) {
+                cleaned = (await deleteGroup(takenOverId)) && cleaned;
+            }
+            if (personalId) {
+                await visitVault(page, personalId);
+                await rowAction(page, PERSONAL_ENTRY, "Delete");
+                await page.waitForFunction((n) => !document.querySelector(".entries-table")?.textContent.includes(n),
+                    { timeout: 10000 }, PERSONAL_ENTRY);
+            }
+            check("test groups and the personal entry cleaned up", cleaned);
         } catch (e) {
-            check("test group cleaned up", false, e.message.slice(0, 120));
+            check("test groups and the personal entry cleaned up", false, e.message.slice(0, 120));
         }
+        try {
+            await otherContext?.close();
+        } catch { /* already gone with the browser */ }
         await browser.close();
     }
 
