@@ -14,7 +14,13 @@ public interface IReplicatedRow
     bool IsDeleted { get; set; }
 }
 
-/// <summary>A vault group. Users must be members to see the passwords inside.</summary>
+/// <summary>
+/// A vault group. Users must be members to see the passwords inside. A group
+/// with an <see cref="OwnerUsername"/> is one person's <b>personal vault</b>:
+/// it has that one member, no settings to manage, and — unlike every other
+/// group — site administrators cannot open it (they can only convert it into
+/// an ordinary group, which is audited and visible to its owner).
+/// </summary>
 public class Group : IReplicatedRow
 {
     public Guid Id { get; set; }
@@ -22,6 +28,15 @@ public class Group : IReplicatedRow
     public string Description { get; set; } = "";
     public string CreatedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
+    /// <summary>
+    /// Normalized AD account name of the one person who can see this group, or
+    /// empty for an ordinary (shared) group. Set only when the vault is created
+    /// and cleared only by a site admin's takeover; never edited otherwise.
+    /// </summary>
+    public string OwnerUsername { get; set; } = "";
+
+    /// <summary>Whether this group is somebody's personal vault.</summary>
+    public bool IsPersonal => OwnerUsername.Length > 0;
 
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }

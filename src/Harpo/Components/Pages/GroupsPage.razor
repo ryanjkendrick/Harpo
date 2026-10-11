@@ -12,7 +12,8 @@
     </div>
     <p class="muted">
         Passwords live inside groups. Only members of a group can see its passwords;
-        group admins decide who is a member.
+        group admins decide who is a member. Passwords that are yours alone go in
+        your <a href="/">personal vault</a>, which is not a group and has no members.
     </p>
 
     @if (_groups is null)
@@ -107,8 +108,11 @@
     protected override async Task OnInitializedAsync()
     {
         _user = UserContext.FromPrincipal((await AuthState).User);
-        _groups = await Groups.GetMyGroupsAsync(_user);
+        _groups = await SharedGroupsAsync();
     }
+
+    private async Task<List<GroupSummary>> SharedGroupsAsync() =>
+        (await Groups.GetMyGroupsAsync(_user!)).Where(g => !g.Group.IsPersonal).ToList();
 
     private async Task CreateAsync()
     {
@@ -125,7 +129,7 @@
             _showCreate = false;
             _newName = "";
             _newDescription = "";
-            _groups = await Groups.GetMyGroupsAsync(_user!);
+            _groups = await SharedGroupsAsync();
         }
         catch (VaultValidationException ex) when (ex.Field == "name")
         {

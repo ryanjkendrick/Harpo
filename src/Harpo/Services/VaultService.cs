@@ -329,14 +329,24 @@ public class VaultService
         return plaintext;
     }
 
+    /// <summary>
+    /// The audit trail's name for an entry. Entries in a personal vault are
+    /// described without their name: the trail is read by site admins, and the
+    /// names of what someone keeps privately are theirs. The event itself (who,
+    /// what kind of action, when, from where) is still recorded.
+    /// </summary>
     private static async Task<string> DescribeEntryAsync(HarpoDbContext db, PasswordEntry entry, CancellationToken ct)
     {
-        var groupName = await db.Groups
+        var group = await db.Groups
             .Where(g => g.Id == entry.GroupId)
-            .Select(g => g.Name)
+            .Select(g => new { g.Name, g.OwnerUsername })
             .FirstOrDefaultAsync(ct);
-        return groupName is null ? entry.Name : $"{entry.Name} ({groupName})";
+        return group is null ? entry.Name
+            : group.OwnerUsername.Length > 0 ? PersonalEntryDescription
+            : $"{entry.Name} ({group.Name})";
     }
+
+    public const string PersonalEntryDescription = "an entry in a personal vault";
 
     /// <summary>
     /// Everything the user may take offline: groups they are an explicit member of,
@@ -355,8 +365,10 @@ public class VaultService
             .ToListAsync(ct);
 
         var groups = await db.Groups
-            .Where(g => !g.IsDeleted && groupIds.Contains(g.Id))
-            .OrderBy(g => g.Name)
+            .Where(g => !g.IsDeleted && groupIds.Contains(g.Id)
+                        && (g.OwnerUsername == "" || g.OwnerUsername == user.Username))
+            .OrderBy(g => g.OwnerUsername == "" ? 1 : 0)
+            .ThenBy(g => g.Name)
             .Select(g => new Offline.OfflineGroup(g.Id, g.Name, g.Description))
             .ToListAsync(ct);
 
@@ -435,6 +447,11 @@ public class VaultService
     {
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Group not found.");
+        GroupService.RequireNotSomeoneElsesPersonalVault(group, user);
+        if (group.IsPersonal)
+        {
+            return; // the owner, with every right over their own entries
+        }
         if (user.IsSiteAdmin)
         {
             return;

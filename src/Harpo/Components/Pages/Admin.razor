@@ -376,6 +376,57 @@
         </section>
     }
 
+    <section class="panel" id="personal-vaults">
+        <h2>Personal vaults</h2>
+        <p class="muted">
+            Everyone gets a personal vault the first time they open Harpo. Only its owner can
+            see what is in it — you included. When someone leaves, <strong>take their vault
+            over</strong>: it becomes an ordinary group with you as an admin, so company accounts
+            they kept there are not lost. The owner keeps their membership (if they are still
+            around, they see it happen), the takeover is recorded in the audit log, and their
+            next visit gives them a fresh personal vault.
+        </p>
+        @if (_personalVaults is null)
+        {
+            <p class="muted">Loading…</p>
+        }
+        else if (_personalVaults.Count == 0)
+        {
+            <p class="muted">Nobody has opened their personal vault yet.</p>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="personal-vaults-table">
+                    <thead><tr><th>Owner</th><th>Passwords</th><th>Since</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var vault in _personalVaults)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="mono">@vault.Group.OwnerUsername</span>
+                                    @if (vault.OwnerDisplayName != vault.Group.OwnerUsername)
+                                    {
+                                        <span class="muted"> · @vault.OwnerDisplayName</span>
+                                    }
+                                </td>
+                                <td>@vault.EntryCount</td>
+                                <td class="muted" title="@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC">@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd")</td>
+                                <td class="cell-actions">
+                                    <button class="btn btn-ghost btn-sm" @onclick="() => OpenTakeover(vault)">Take over…</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (_takeoverError is not null && _takeover is null)
+        {
+            <div class="alert alert-error">@_takeoverError</div>
+        }
+    </section>
+
     <section class="panel">
         <h2>All groups</h2>
         @if (_groups is null)
@@ -385,7 +436,7 @@
         else
         {
             <div class="card-list">
-                @foreach (var g in _groups)
+                @foreach (var g in _groups.Where(g => !g.Group.IsPersonal))
                 {
                     <a class="card group-card" href="/groups/@g.Group.Id">
                         <div class="group-card-main">
@@ -403,8 +454,67 @@
     </section>
 </div>
 
+<Modal Visible="_takeover is not null" Title="Take over a personal vault" OnClose="() => _takeover = null">
+    @if (_takeover is { } taking)
+    {
+        <form class="form-grid" novalidate @onsubmit="TakeOverAsync">
+            <p class="muted">
+                <span class="mono">@taking.Group.OwnerUsername</span>'s personal vault
+                (@taking.EntryCount @(taking.EntryCount == 1 ? "password" : "passwords")) becomes an
+                ordinary group that you administer. This cannot be undone, is recorded in the audit
+                log, and is visible to its owner.
+            </p>
+            <label class="field">
+                <span class="field-label">Name for the group</span>
+                <input @bind="_takeoverName" />
+            </label>
+            @if (_takeoverError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_takeoverError</div>
+            }
+            <div class="modal-actions">
+                <button type="button" class="btn btn-ghost" @onclick="() => _takeover = null">Cancel</button>
+                <button type="submit" class="btn btn-danger">Take over</button>
+            </div>
+        </form>
+    }
+</Modal>
+
 @code {
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private List<PersonalVaultSummary>? _personalVaults;
+    private PersonalVaultSummary? _takeover;
+    private string _takeoverName = "";
+    private string? _takeoverError;
+
+    private void OpenTakeover(PersonalVaultSummary vault)
+    {
+        _takeover = vault;
+        _takeoverName = $"{vault.Group.OwnerUsername}'s personal vault";
+        _takeoverError = null;
+    }
+
+    private async Task TakeOverAsync()
+    {
+        if (_takeover is null)
+        {
+            return;
+        }
+        try
+        {
+            _takeoverError = null;
+            await Groups.TakeOverPersonalVaultAsync(_user!, _takeover.Group.Id, _takeoverName);
+            _takeover = null;
+            _groups = await Groups.GetMyGroupsAsync(_user!);
+            _personalVaults = await Groups.GetPersonalVaultsAsync(_user!);
+            await LoadAuditAsync();
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _takeoverError = ex.Message;
+        }
+    }
 
     private UserContext? _user;
     private ReplicationStatusResponse? _status;
@@ -511,7 +621,7 @@
     [
         (AuditCategory.All, "All", "Every recorded event"),
         (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied"),
-        (AuditCategory.Changes, "Changes", "Memberships, roles, restores, icons, key rotation"),
+        (AuditCategory.Changes, "Changes", "Memberships, roles, restores, icons, key rotation, personal-vault takeovers"),
         (AuditCategory.Deletions, "Deletions", "Passwords, groups, members and icons removed"),
         (AuditCategory.Background, "Background", "Routine activity: offline syncs, health report views"),
     ];
@@ -619,6 +729,7 @@
         await LoadAuditAsync();
         _deletedGroups = await Groups.GetDeletedGroupsAsync(_user);
         _adminlessGroups = await Groups.GetGroupsWithoutAdminAsync(_user);
+        _personalVaults = await Groups.GetPersonalVaultsAsync(_user);
         _icons = await Icons.GetAllAsync();
         _iconUsage = await Icons.GetUsageAsync();
         _refreshTimer = new Timer(_ => _ = RefreshAsync(), null,

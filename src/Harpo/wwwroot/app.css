@@ -245,6 +245,7 @@ input:focus, select:focus, textarea:focus {
 .badge-admin { background: var(--accent-soft); color: var(--accent); }
 .badge-current, .badge-ok { background: var(--ok-soft); color: var(--ok); }
 .badge-error { background: var(--danger-soft); color: var(--danger); }
+.badge-private { background: var(--accent-soft); color: var(--accent); }
 
 /* ---------- login ---------- */
 
@@ -320,6 +321,9 @@ input:focus, select:focus, textarea:focus {
     background: var(--accent-soft);
     border-color: var(--accent);
 }
+
+.personal-list { margin-bottom: 1rem; }
+.vault-private-badge { flex-shrink: 0; }
 
 .group-item-name { font-weight: 600; }
 .group-item-meta { font-size: .78rem; color: var(--muted); display: flex; gap: .4rem; align-items: center; }

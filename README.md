@@ -21,6 +21,12 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
 - **Groups gate access** — passwords live inside groups, and only users who have
   been added to a group can see its passwords. Group admins manage membership;
   any user can create a group and becomes its admin.
+- **Personal vaults** — everyone also gets a vault of their own, created the
+  first time they open Harpo, for the passwords that are theirs alone. Only
+  its owner can open it: site admins' see-everything right stops at it, and
+  its entries appear in the audit log without their names. When someone
+  leaves, a site admin can take their vault over as an ordinary group — an
+  audited, one-way step the owner would see.
 - **Named, decorated entries** — every password has a name, an icon, the URL it
   belongs to, an account username, and free-text notes. Icons come from emoji
   or an org-wide **custom icon catalogue**: anyone can upload small images
@@ -166,7 +172,7 @@ running with an empty key.
 | `Auth__Ldap__SkipCertificateValidation` | Accept any DC certificate (labs only) | `false` |
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
 | `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups | `DC=corp,DC=example,DC=com` |
-| `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group | `Harpo Admins` |
+| `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
 the user** to validate them, then reads `displayName` and `memberOf` from their
@@ -390,6 +396,7 @@ record captures:
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
 | `entry.delete` / `group.delete` | something is deleted |
 | `member.add` / `member.remove` / `member.role` | group access changes |
+| `personal.takeover` | a site admin converts someone's personal vault into a group |
 | `icon.add` / `icon.delete` | the custom icon catalogue changes |
 
 Each event stores who, when, what (denormalized names, so the trail outlives
@@ -414,6 +421,46 @@ replicated from other sites) remain visible. Retention purges run daily per
 site. Recording is fail-open by design: an audit-write failure is logged loudly
 but never blocks the user's operation. Password *changes* aren't audit events —
 they're already permanently attributed in each entry's revision history.
+
+## Personal vaults
+
+A team password manager still ends up holding passwords that belong to one
+person — the account only they use, the recovery codes for their own 2FA. So
+everyone gets a **personal vault**: created the first time they open the vault
+page, shown above their groups, and otherwise an ordinary place to keep
+entries (history, 2FA codes, trash, the offline copy all work).
+
+What makes it personal:
+
+- **Only its owner can open it.** It has exactly one member and no settings:
+  nothing to rename, nobody to add, nothing to delete. Site admins, who see
+  every group, cannot see inside a personal vault, and the admin pages that
+  list groups by state leave personal vaults out.
+- **The audit log keeps the names to the owner.** Reveals, copies, deletions
+  and 2FA events in a personal vault are recorded like any other — who, what
+  kind of action, when, from where — but the entry is described only as *an
+  entry in a personal vault*.
+- **The health report counts, but does not name.** A personal password that
+  matches one in a shared group shows up to the shared group's admins as
+  "+1 outside your groups", never as an entry.
+- **Replication treats it like any group**, so a user has the same vault on
+  every site; two sites that first see the same person while out of contact
+  create the same vault, not two.
+
+**When someone leaves.** Company accounts kept in a personal vault must not
+leave with their owner, so a site admin can **take the vault over** from the
+Administration page: it becomes an ordinary group with the admin as an admin
+of it. This is deliberately not quiet — it is one-way, recorded in the audit
+log as `personal.takeover`, and the former owner keeps their membership, so if
+they are still around they see exactly what happened. Their next visit gives
+them a fresh, empty personal vault.
+
+**Read this honestly.** "Only its owner" is enforced by Harpo's access checks,
+the same way group membership is. Whoever holds the master key and the
+database — the people who run the server — could read a personal vault the
+way they could read any group; Harpo is a trusted-server design (see
+"Security model"), and a personal vault is private from colleagues and
+administrators, not from the operator.
 
 ## 2FA codes (TOTP)
 
@@ -486,8 +533,9 @@ The **Vault health** page (sidebar) grades password hygiene:
   (default 365).
 
 Scope follows responsibility: site admins see the whole vault; group admins
-see the groups they administer, and reuse that crosses out of their scope is
-shown only as "+N outside your groups" — names never leak. Report views are
+see the groups they administer; nobody sees anyone else's personal vault.
+Reuse that crosses out of the caller's scope is shown only as "+N outside your
+groups" — names never leak. Report views are
 audit events. Rows written before this feature (or replicated from a site
 without it) are analyzed lazily the first time a report needs them, without
 touching their replication stamps.
@@ -555,6 +603,11 @@ All settings can be given as environment variables (`Section__Key` form).
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.
 - All access control is enforced in the service layer, not the UI.
+- **Personal vaults are private from colleagues and site admins, not from the
+  operator.** The owner-only rule is an access check like group membership;
+  the entries are encrypted under the same master key as everything else.
+  A site admin's one power over a personal vault — converting it into a group
+  — is one-way, audited, and visible to the owner.
 - The AD bind sends the user's password to the DC — use LDAPS (`UseSsl=true`).
   Failed logins are logged; invalid and unreachable-DC cases are distinguished.
 - **Brute-force lockout** is on by default: 5 failures against an account (or 20
@@ -683,6 +736,16 @@ one.
   `enc:v1:…` text — leave those alone there, since editing that text destroys
   the note — and its own notes travel in plain text until it is upgraded.
   Going back to an older version after upgrading has the same effect.
+- **Upgrading from 0.4.0 or earlier with replication: upgrade every site before
+  anyone relies on personal vaults.** A site still on the older version does
+  not know what a personal vault is: it treats one as an ordinary group, so its
+  site admins can open it there, and if someone edits it there (renames it,
+  adds a member) the edit replicates back without the owner mark and the vault
+  becomes an ordinary group everywhere. Nothing is lost, but it is no longer
+  personal. Once such a site is upgraded it fetches every row from its peers
+  once more (the log says so), which restores the mark on vaults it received
+  while it was behind; allow for one pass over the peers' data. Upgraded sites
+  exchanging rows with each other are unaffected.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read

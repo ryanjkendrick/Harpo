@@ -50,6 +50,7 @@ public static class AuditActions
     public const string IconUpdate = "icon.update";
     public const string IconDelete = "icon.delete";
     public const string KeyRotate = "key.rotate";
+    public const string PersonalTakeover = "personal.takeover";
 
     /// <summary>A secret left the vault: shown on screen or put on a clipboard.</summary>
     public static readonly string[] Reveals =
