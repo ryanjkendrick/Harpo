@@ -525,9 +525,12 @@
 
     // A group the listing does not contain (someone else's personal vault, a
     // group that no longer exists) gets no edit controls, whoever is asking.
+    // For a listed group a site admin may always write, even with an explicit
+    // Viewer membership: the service (RequireMemberAsync) lets them, so the UI
+    // must not hide what the service allows.
     private bool CanEdit =>
         SelectedSummary is { } selected
-        && (selected.MyRole?.CanWrite() ?? _user?.IsSiteAdmin == true);
+        && (_user?.IsSiteAdmin == true || selected.MyRole?.CanWrite() == true);
 
     private List<EntryView> FilteredEntries
     {

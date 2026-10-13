@@ -19,7 +19,7 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   direct LDAP(S) bind from the app; membership of a configurable AD group grants
   site-admin rights. Works from Linux containers (no domain-joined host needed).
 - **Groups gate access** — passwords live inside groups, and only users who have
-  been added to a group can see its passwords. Group admins manage membership;
+  been added to a group, and site administrators, can see its passwords. Group admins manage membership;
   any user can create a group and becomes its admin.
 - **Personal vaults** — everyone also gets a vault of their own, created the
   first time they open Harpo, for the passwords that are theirs alone. Only
