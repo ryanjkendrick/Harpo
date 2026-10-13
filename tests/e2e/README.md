@@ -43,7 +43,9 @@ afterwards.
   screen (notes as selectable text with a copy button, a notes indicator on
   the row, "No notes" when empty), the entries layout at seven widths (nothing may
   overflow or sit under another element, at rest or with secrets revealed),
-  links from the health report, the Administration page's navigation and
+  links from the health report, the vault search finding an entry in another
+  vault (the personal vault, named and linked, with no secret in the result,
+  fitting at 1280px and 390px, and the link opening that vault filtered), the Administration page's navigation and
   audit-log filters, and personal vaults as two accounts see them: one each,
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
@@ -66,7 +68,7 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 45/45 checks passed
+npm run test:ui   # interactive UI — expect 52/52 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
 ```

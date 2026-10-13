@@ -1,0 +1,56 @@
+@* Matches for the vault page's search box that live in the user's OTHER vaults,
+   so an account can be found without remembering its group. Each hit names its
+   vault and links to it already filtered (the page's ?q= deep link). Only plain
+   text fields are shown — secrets are never in a search result; users click
+   through and reveal in the vault, where it is audited. Cards, not a table, so
+   it needs no separate narrow-screen layout. *@
+<section class="search-others" aria-labelledby="search-others-title">
+    <h2 id="search-others-title" class="search-others-title">Also in other vaults</h2>
+    @if (Matches.Count == 0)
+    {
+        <p class="muted small search-none">No matches in your other vaults.</p>
+    }
+    else
+    {
+        <ul class="card-list search-hits">
+            @foreach (var hit in Matches)
+            {
+                <li class="card search-hit">
+                    <EntryIcon Icon="@hit.Icon" />
+                    <span class="search-hit-main">
+                        <span class="search-hit-name">@hit.Name</span>
+                        @if (hit.Username.Length > 0 || hit.Url.Length > 0)
+                        {
+                            <span class="muted small search-hit-detail">
+                                @if (hit.Username.Length > 0)
+                                {
+                                    <span class="mono">@hit.Username</span>
+                                }
+                                @if (hit.Username.Length > 0 && hit.Url.Length > 0)
+                                {
+                                    <span> · </span>
+                                }
+                                @if (hit.Url.Length > 0)
+                                {
+                                    <span title="@hit.Url">@HostOf(hit.Url)</span>
+                                }
+                            </span>
+                        }
+                    </span>
+                    <a class="search-hit-vault" href="/vault/@hit.GroupId?q=@Uri.EscapeDataString(Term)"
+                       title="Open @hit.GroupName with this search">@hit.GroupName</a>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<EntryMatch> Matches { get; set; } = [];
+
+    /// <summary>The search the link carries into the other vault.</summary>
+    [Parameter, EditorRequired] public string Term { get; set; } = "";
+
+    private static string HostOf(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Host.Length > 0 ? uri.Host : url;
+}

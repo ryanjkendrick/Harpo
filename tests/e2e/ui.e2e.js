@@ -449,6 +449,94 @@ async function groupId(page) {
         await page.waitForSelector(".entries-table .revealed", { timeout: 10000 });
         check("a personal entry is created and revealed like any other", true);
 
+        // ---- 7a. Global search: an entry in another vault is found from this one ----
+        // The shared test group is open and holds nothing called PERSONAL_ENTRY;
+        // the personal vault does. Typing keeps retrying until the circuit has
+        // attached, since an input event sent before that is lost.
+        await page.setViewport({ width: 1280, height: 860 });
+        await page.goto(`${BASE}/vault/${id}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".vault-toolbar .search");
+        const typeSearch = async (text, waitFor) => {
+            for (let i = 0; i < 12; i++) {
+                await setValue(page, ".vault-toolbar .search", text);
+                try {
+                    await page.waitForFunction(waitFor, { timeout: 2500 });
+                    return true;
+                } catch { /* not attached yet */ }
+            }
+            return false;
+        };
+        const found = await typeSearch(PERSONAL_ENTRY, () => !!document.querySelector(".search-others .search-hit"));
+        const searchHit = await page.evaluate((name) => {
+            const hit = [...document.querySelectorAll(".search-others .search-hit")].find((h) => h.textContent.includes(name));
+            const link = hit?.querySelector("a.search-hit-vault");
+            return {
+                heading: document.querySelector(".search-others-title")?.textContent.trim(),
+                hit: !!hit,
+                vault: link?.textContent.trim(),
+                href: link?.getAttribute("href") ?? "",
+                buttons: hit ? hit.querySelectorAll("button").length : -1,
+                text: document.querySelector(".search-others")?.textContent ?? "",
+                // The open group's own results are untouched: nothing matches here.
+                openGroupSays: document.querySelector(".vault-entries .empty-state")?.textContent.trim() ?? "",
+            };
+        }, PERSONAL_ENTRY);
+        check("searching from a shared group lists a match in the personal vault under 'Also in other vaults', named Personal",
+            found && searchHit.heading === "Also in other vaults" && searchHit.hit && searchHit.vault === "Personal"
+            && searchHit.href === `/vault/${personalId}?q=${encodeURIComponent(PERSONAL_ENTRY)}`
+            && searchHit.openGroupSays.includes("Nothing matches your search."), JSON.stringify(searchHit));
+        check("a search result shows no password and offers no reveal",
+            !searchHit.text.includes("Pv7$kq2!Lm9#xW4e") && searchHit.buttons === 0 && !(await page.$(".search-others .revealed, .search-others .mask")));
+
+        // One character is not enough to search elsewhere; the section goes away.
+        await setValue(page, ".vault-toolbar .search", "E");
+        await page.waitForFunction(() => !document.querySelector(".search-others"), { timeout: 5000 });
+        check("a single character does not search other vaults", true);
+
+        const none = await typeSearch(`zz-no-such-entry-${RUN_ID}`,
+            () => document.querySelector(".search-others .search-none"));
+        check("a term nothing else matches says so quietly instead of listing", none
+            && (await page.evaluate(() => document.querySelectorAll(".search-others .search-hit").length)) === 0);
+
+        // The result card fits a phone and the wide layout alike.
+        await typeSearch(PERSONAL_ENTRY, () => !!document.querySelector(".search-others .search-hit"));
+        const fits = [];
+        for (const width of [1280, 390]) {
+            // Width alone: toggling isMobile reloads the page, which would drop the typed search.
+            await page.setViewport({ width, height: 860 });
+            await sleep(500);
+            fits.push(await page.evaluate((w) => {
+                const root = document.documentElement;
+                const hit = document.querySelector(".search-others .search-hit");
+                const link = hit?.querySelector("a.search-hit-vault");
+                if (!hit || !link) {
+                    return `${w}: missing`;
+                }
+                const h = hit.getBoundingClientRect();
+                const l = link.getBoundingClientRect();
+                const inside = h.left >= 0 && h.right <= root.clientWidth + 1 && l.left >= h.left - 1 && l.right <= h.right + 1;
+                return inside && root.scrollWidth <= root.clientWidth + 1
+                    ? "ok" : `${w}: overflow ${JSON.stringify({ hl: h.left, hr: h.right, ll: l.left, lr: l.right, sw: root.scrollWidth, cw: root.clientWidth })}`;
+            }, width));
+        }
+        await page.setViewport({ width: 1280, height: 860 });
+        check("the other-vaults result fits at 1280px and at 390px with no sideways scroll", fits.every((f) => f === "ok"), fits.join(" | "));
+
+        // Clicking the vault name opens it already filtered to the entry.
+        await page.evaluate(() => document.querySelector(".search-others a.search-hit-vault").click());
+        await page.waitForFunction((pid) => location.pathname === `/vault/${pid}`, { timeout: 15000 }, personalId);
+        await page.waitForFunction(
+            (n) => document.querySelector(".vault-toolbar h1")?.textContent.trim() === "Personal"
+                && document.querySelector(".vault-toolbar .search")?.value === n
+                && document.querySelectorAll(".entries-table tbody .entry-name").length === 1,
+            { timeout: 15000 }, PERSONAL_ENTRY);
+        check("clicking the vault name opens the personal vault filtered to that entry",
+            await page.evaluate((n) => document.querySelector(".entries-table tbody .entry-name").textContent.trim() === n, PERSONAL_ENTRY));
+        // The vault we landed in is the match's own, so nothing is "elsewhere".
+        await sleep(800);
+        check("the vault the result led to does not list its own entry again under 'Also in other vaults'",
+            !(await page.evaluate((n) => [...document.querySelectorAll(".search-others .search-hit")].some((h) => h.textContent.includes(n)), PERSONAL_ENTRY)));
+
         await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
         await page.waitForSelector(".card-list, .empty-state", { timeout: 15000 });
         await sleep(600);
