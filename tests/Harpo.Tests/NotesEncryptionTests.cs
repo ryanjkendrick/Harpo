@@ -238,24 +238,40 @@ public class NotesEncryptionTests
         // Everything SQLite keeps for this database: the main file, its write-ahead
         // log, any journal. The log and shared-memory files come and go — SQLite
         // removes them when the last pooled connection closes, and the pool does
-        // that on its own schedule — so a file listed here may be gone by the time
-        // it is opened. One that vanished holds nothing: whatever it carried was
-        // checkpointed into the main file, which is read.
+        // that on its own schedule, so one listed here may be gone, or mid-removal,
+        // by the time it is opened (seen as sporadic failures under the full
+        // suite's load). A side file that cannot be read holds nothing the check
+        // needs: whatever it carried was checkpointed into the main file, which
+        // must always be readable.
         static string FileText(string directory) => string.Concat(
-            Directory.GetFiles(directory).OrderBy(f => f).Select(f =>
+            Directory.GetFiles(directory).OrderBy(f => f).Select(f => ReadFile(f, Path.GetFileName(f) == "harpo.db")));
+
+        static string ReadFile(string path, bool required)
+        {
+            for (var attempt = 1; ; attempt++)
             {
                 try
                 {
-                    using var stream = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                     using var memory = new MemoryStream();
                     stream.CopyTo(memory);
                     return System.Text.Encoding.Latin1.GetString(memory.ToArray());
                 }
-                catch (FileNotFoundException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
+                    if (attempt < 3)
+                    {
+                        Thread.Sleep(50);
+                        continue;
+                    }
+                    if (required)
+                    {
+                        throw;
+                    }
                     return "";
                 }
-            }));
+            }
+        }
     }
 
     // ---- Replication ----
