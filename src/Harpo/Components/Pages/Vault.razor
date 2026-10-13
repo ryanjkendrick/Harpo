@@ -965,7 +965,7 @@
             var last = _deletedEntries[^1];
             var page = await Passwords.GetDeletedEntriesAsync(_user!, groupId, new DeletedCursor(last.UpdatedAtUtc, last.Id));
             _deletedEntries.AddRange(page.Items);
-            _deletedTotal = page.Total + _deletedEntries.Count - page.Items.Count;
+            _deletedTotal = page.Total;
         }
         catch (Exception ex)
         {

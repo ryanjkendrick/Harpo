@@ -789,7 +789,7 @@
         var last = _deletedGroups[^1];
         var page = await Groups.GetDeletedGroupsAsync(_user!, new DeletedCursor(last.UpdatedAtUtc, last.Id));
         _deletedGroups.AddRange(page.Items);
-        _deletedGroupsTotal = page.Total + _deletedGroups.Count - page.Items.Count;
+        _deletedGroupsTotal = page.Total;
     }
 
     private async Task RestoreGroupAsync(Group group)
