@@ -710,8 +710,8 @@
         {
             return;
         }
-        var oldest = _auditEvents[^1].OccurredAtUtc;
-        var more = await Audit.GetEventsAsync(_user!, beforeUtc: oldest, take: AuditPageSize, category: _auditCategory);
+        var oldest = AuditCursor.Of(_auditEvents[^1]);
+        var more = await Audit.GetEventsAsync(_user!, before: oldest, take: AuditPageSize, category: _auditCategory);
         _auditEvents.AddRange(more);
         _auditHasMore = more.Count == AuditPageSize;
     }
