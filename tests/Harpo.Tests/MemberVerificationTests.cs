@@ -50,10 +50,10 @@ public class MemberVerificationTests : IDisposable
         var row = await MemberAsync(group.Id, "bob");
         Assert.NotNull(row);
         Assert.Equal("Bob Loblaw", row.DisplayName);
-        Assert.True(row.Verified);
+        Assert.Equal(true, row.Verified);
         Assert.Equal(["bob as Member"], await MemberAddDetailsAsync());
         // The creator's own row came from a sign-in, which the directory vouched for.
-        Assert.True((await MemberAsync(group.Id, "alice"))!.Verified);
+        Assert.Equal(true, (await MemberAsync(group.Id, "alice"))!.Verified);
     }
 
     [Fact]
@@ -109,8 +109,8 @@ public class MemberVerificationTests : IDisposable
         Assert.Equal(new MemberAdded("nobody", "nobody", false), bare);
         var row = await MemberAsync(group.Id, "bob");
         Assert.Equal("Bobby", row!.DisplayName);
-        Assert.False(row.Verified);
-        Assert.False((await MemberAsync(group.Id, "nobody"))!.Verified);
+        Assert.Equal(false, row.Verified);
+        Assert.Equal(false, (await MemberAsync(group.Id, "nobody"))!.Verified);
         Assert.Equal(
             ["bob as Viewer (unverified: directory not available)", "nobody as Member (unverified: directory not available)"],
             await MemberAddDetailsAsync());
@@ -130,7 +130,7 @@ public class MemberVerificationTests : IDisposable
         await _site.Groups.AddMemberAsync(_alice, group.Id, "bob", "", GroupRole.Member);
 
         var row = await MemberAsync(group.Id, "bob");
-        Assert.True(row!.Verified);
+        Assert.Equal(true, row!.Verified);
         Assert.Equal("Bob Loblaw", row.DisplayName);
     }
 
@@ -146,8 +146,32 @@ public class MemberVerificationTests : IDisposable
         await beta.PullFromAsync(_site, viaJson: true);
 
         var members = await beta.Groups.GetMembersAsync(TestSite.User("root", siteAdmin: true), group.Id);
-        Assert.True(members.Single(m => m.Username == "bob").Verified);
-        Assert.False(members.Single(m => m.Username == "carol").Verified);
+        Assert.Equal(true, members.Single(m => m.Username == "bob").Verified);
+        Assert.Equal(false, members.Single(m => m.Username == "carol").Verified);
+    }
+
+    [Fact]
+    public async Task A_membership_from_a_peer_that_predates_the_field_reads_as_not_known()
+    {
+        using var beta = new TestSite("s2", _site.Time);
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        await _site.Groups.AddMemberAsync(_alice, group.Id, "bob", "", GroupRole.Member);
+        _site.Directory.Unavailable = true;
+        await _site.Groups.AddMemberAsync(_alice, group.Id, "carol", "", GroupRole.Member);
+
+        // What an older Harpo puts on the wire: the same rows, no "verified" property.
+        var response = await _site.Engine.BuildResponseAsync(
+            new Harpo.Replication.PullRequest { SiteId = beta.SiteId, Vector = await beta.Engine.GetVectorAsync() });
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(response, web))!;
+        var sent = json["members"]!.AsArray();
+        Assert.All(sent, m => Assert.True(m!.AsObject().Remove("verified")));
+        await beta.Engine.ApplyAsync(System.Text.Json.JsonSerializer.Deserialize<Harpo.Replication.PullResponse>(json, web)!);
+
+        // Neither true nor false: nothing says whether it was checked, and no badge is shown for it.
+        var members = await beta.Groups.GetMembersAsync(TestSite.User("root", siteAdmin: true), group.Id);
+        Assert.Equal(3, members.Count);
+        Assert.All(members, m => Assert.Null(m.Verified));
     }
 
     // ---- searching ----

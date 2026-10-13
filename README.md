@@ -262,9 +262,10 @@ badge whose tooltip says it was not checked against the directory. That is a
 deliberate choice, not a fallback that hides a fault: the service account is
 optional, adding members has to keep working for deployments without one, and
 whether verification is enforced is the operator's decision, made by
-configuring it. Memberships made before this check existed carry the same
-badge — Harpo cannot tell them apart from unverified ones, so it labels both
-"not checked against the directory" rather than claim either was. Removing and
+configuring it. Memberships made before this check existed are recorded as
+*not known*, not as unverified, and show no badge — an upgrade does not flag
+every existing member; the same goes for memberships that arrive from a site
+still on an older version, which does not send the field. Removing and
 re-adding a member while the directory answers verifies them. The group's
 creator (and a site admin taking over a personal vault) is never marked: their
 identity came from their own sign-in. In Development mode the configured

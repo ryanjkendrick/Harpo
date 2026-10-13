@@ -77,13 +77,15 @@ public class GroupMember : IReplicatedRow
     public DateTime CreatedAtUtc { get; set; }
     /// <summary>
     /// Whether the directory vouched for <see cref="Username"/> when the
-    /// membership was made: the account existed, was enabled, and the display
-    /// name is the directory's (or the member's own sign-in made the row). False
-    /// when the directory could not be asked — and for every row from before
-    /// Harpo checked, or relayed by a peer too old to send the flag: nothing
-    /// says those were checked, so they are not claimed to be.
+    /// membership was made. True: the account existed, was enabled, and the
+    /// display name is the directory's (or the member's own sign-in made the
+    /// row). False: the directory could not be asked, so the name is as typed.
+    /// Null: not known — a row from before Harpo checked, or one that arrived
+    /// from a peer too old to send the field. Only false is flagged in the UI;
+    /// marking every pre-existing membership after an upgrade would be noise
+    /// that says nothing about any of them.
     /// </summary>
-    public bool Verified { get; set; }
+    public bool? Verified { get; set; }
 
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }

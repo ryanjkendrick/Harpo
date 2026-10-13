@@ -100,10 +100,10 @@
                                         {
                                             <span class="muted"> · @member.DisplayName</span>
                                         }
-                                        @if (!member.Verified)
+                                        @if (member.Verified == false)
                                         {
-                                            @* One flag covers both cases: added while the directory
-                                               could not be asked, and rows from before Harpo asked. *@
+                                            @* Only a membership made while the directory could not be
+                                               asked. Null (from before Harpo asked) is not flagged. *@
                                             <span class="badge badge-unverified" title="@UnverifiedTitle">unverified</span>
                                         }
                                     </td>
@@ -246,8 +246,8 @@
     private const int MinSearchLength = 2;
     private static readonly TimeSpan SearchDebounce = TimeSpan.FromMilliseconds(250);
     private const string UnverifiedTitle =
-        "Not checked against the directory: added while the directory could not be asked, " +
-        "or before Harpo checked new members. The name is as it was typed.";
+        "Not checked against the directory: added while the directory could not be asked. " +
+        "The account name and display name are as they were typed.";
 
     private ElementReference _usernameInput;
     private ElementReference _firstSuggestion;

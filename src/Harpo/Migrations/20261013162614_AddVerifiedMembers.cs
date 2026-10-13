@@ -14,8 +14,7 @@ namespace Harpo.Migrations
                 name: "Verified",
                 table: "GroupMembers",
                 type: "INTEGER",
-                nullable: false,
-                defaultValue: false);
+                nullable: true);
         }
 
         /// <inheritdoc />

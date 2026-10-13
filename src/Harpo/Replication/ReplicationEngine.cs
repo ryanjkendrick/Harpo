@@ -252,8 +252,8 @@ public class ReplicationEngine
                 local.Role = incoming.Role;
                 local.AddedBy = incoming.AddedBy;
                 local.CreatedAtUtc = incoming.CreatedAtUtc;
-                // A peer older than member verification sends no flag, which reads
-                // as false: "not checked", the honest answer for a row it wrote.
+                // A peer older than member verification sends no field, which
+                // reads as null ("not known"), and is copied as such.
                 local.Verified = incoming.Verified;
                 CopyStamps(incoming, local);
                 accepted++;

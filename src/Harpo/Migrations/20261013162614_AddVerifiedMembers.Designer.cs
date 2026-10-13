@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Harpo.Migrations
 {
     [DbContext(typeof(HarpoDbContext))]
-    [Migration("20261013161257_AddVerifiedMembers")]
+    [Migration("20261013162614_AddVerifiedMembers")]
     partial class AddVerifiedMembers
     {
         /// <inheritdoc />
@@ -213,7 +213,7 @@ namespace Harpo.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<bool>("Verified")
+                    b.Property<bool?>("Verified")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
