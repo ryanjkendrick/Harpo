@@ -24,7 +24,8 @@ public class LdapOptions
 
 /// <summary>
 /// Validates credentials by performing an LDAP simple bind against Active Directory
-/// as the user, then reads the user's entry for display name and group membership.
+/// as the user, asks the directory which account that bind authenticated, then reads
+/// that account's entry for its name, display name and group membership.
 /// Works cross-platform (Linux containers included) via System.DirectoryServices.Protocols.
 /// </summary>
 public class LdapAuthenticator : IAuthenticator
@@ -68,23 +69,7 @@ public class LdapAuthenticator : IAuthenticator
             return null; // AD treats an empty password bind as anonymous — never allow it.
         }
 
-        // Users may type "jsmith", "jsmith@corp.example.com" or "CORP\jsmith".
-        var bareUsername = username;
-        var slash = bareUsername.LastIndexOf('\\');
-        if (slash >= 0)
-        {
-            bareUsername = bareUsername[(slash + 1)..];
-        }
-        var at = bareUsername.IndexOf('@');
-        if (at >= 0)
-        {
-            bareUsername = bareUsername[..at];
-        }
-        bareUsername = bareUsername.ToLowerInvariant();
-
-        var bindUser = username.Contains('@') || username.Contains('\\')
-            ? username
-            : string.IsNullOrWhiteSpace(_options.UpnSuffix) ? username : $"{username}@{_options.UpnSuffix}";
+        var bindUser = BindName(username, _options.UpnSuffix);
 
         try
         {
@@ -92,12 +77,25 @@ public class LdapAuthenticator : IAuthenticator
             connection.Credential = new NetworkCredential(bindUser, password);
             connection.Bind(); // throws LdapException 49 on bad credentials
 
-            var (displayName, isAdmin) = LookupUser(connection, bareUsername);
-            return new AuthResult(bareUsername, displayName, isAdmin);
+            // The directory accepts many names for one account — its UPN, a UPN
+            // under an alternate suffix, name@domain, DOMAIN\name, its DN — and the
+            // text before an "@" need not be that account's name, or may be someone
+            // else's. So the typed text never decides who signed in: the directory
+            // says which account this connection is bound as, and the identity,
+            // display name and admin flag all come from that one object.
+            var account = WhoAmI(connection);
+            var result = account is null ? null : LookupUser(connection, account);
+            if (result is null)
+            {
+                // The password was right, but we cannot say for certain whose it
+                // was. Refuse rather than guess; the user sees the usual message.
+                _logger.LogWarning("Could not resolve the signed-in account for {Username}; sign-in refused", username);
+            }
+            return result;
         }
         catch (LdapException ex) when (ex.ErrorCode == 49) // invalid credentials
         {
-            _logger.LogInformation("Failed login attempt for {Username}", bareUsername);
+            _logger.LogInformation("Failed login attempt for {Username}", username);
             return null;
         }
         catch (LdapException ex)
@@ -135,29 +133,108 @@ public class LdapAuthenticator : IAuthenticator
         return connection;
     }
 
-    private (string DisplayName, bool IsAdmin) LookupUser(LdapConnection connection, string bareUsername)
+    /// <summary>
+    /// The name to bind with for what the user typed ("jsmith", "jsmith@corp.example.com"
+    /// or "CORP\jsmith"): a bare name gets the configured UPN suffix, anything already
+    /// qualified is passed through for the directory to interpret.
+    /// </summary>
+    internal static string BindName(string typed, string? upnSuffix)
     {
-        var displayName = bareUsername;
-        var isAdmin = false;
+        typed = typed.Trim();
+        if (typed.Contains('@') || typed.Contains('\\') || string.IsNullOrWhiteSpace(upnSuffix))
+        {
+            return typed;
+        }
+        return $"{typed}@{upnSuffix.Trim()}";
+    }
+
+    internal const string WhoAmIOid = "1.3.6.1.4.1.4203.1.11.3";
+
+    /// <summary>
+    /// Asks the directory which account the connection is bound as — the LDAP
+    /// "Who am I?" operation (RFC 4532), which AD and Samba answer with
+    /// "u:DOMAIN\sAMAccountName". Null when it gives no usable answer.
+    /// </summary>
+    private string? WhoAmI(LdapConnection connection)
+    {
+        try
+        {
+            var response = (ExtendedResponse)connection.SendRequest(new ExtendedRequest(WhoAmIOid));
+            var authzId = response.ResponseValue is { Length: > 0 } value ? Encoding.UTF8.GetString(value) : null;
+            var account = AccountFromAuthzId(authzId);
+            if (account is null)
+            {
+                _logger.LogWarning("The directory's Who am I answer {AuthzId} names no account", authzId ?? "(empty)");
+            }
+            return account;
+        }
+        catch (DirectoryOperationException ex)
+        {
+            // The server refused the operation (it is not unreachable — the bind
+            // just succeeded), so this is a failed sign-in, not an outage.
+            _logger.LogWarning(ex, "The directory refused the Who am I operation ({Result})", ex.Response?.ResultCode);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The account name in a Who am I answer: "u:HARPO\grace" → "grace". Anything
+    /// else — anonymous (empty), a "dn:" form, a malformed value — is null, so the
+    /// sign-in fails rather than falling back to the typed name. The domain part is
+    /// dropped because Harpo's identity is the bare sAMAccountName, which assumes
+    /// one domain (see README, "Active Directory settings").
+    /// </summary>
+    internal static string? AccountFromAuthzId(string? authzId)
+    {
+        if (authzId is null || !authzId.StartsWith("u:", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var name = authzId[2..];
+        var slash = name.LastIndexOf('\\');
+        if (slash >= 0)
+        {
+            name = name[(slash + 1)..];
+        }
+        name = name.Trim();
+        return name.Length == 0 || name.Contains('@') ? null : name;
+    }
+
+    /// <summary>
+    /// Reads the bound account's entry. Exactly one entry must match: none (the
+    /// account is outside SearchBase) or several (an ambiguous name) fails the
+    /// sign-in rather than signing in someone the directory did not vouch for.
+    /// </summary>
+    private AuthResult? LookupUser(LdapConnection connection, string account)
+    {
         if (string.IsNullOrWhiteSpace(_options.SearchBase))
         {
-            return (displayName, isAdmin);
+            // Nothing to read display name or groups from; the name still comes
+            // from the directory's answer, not from what was typed.
+            var name = account.ToLowerInvariant();
+            return new AuthResult(name, name, false);
         }
 
-        var filter = $"(&(objectClass=user)(sAMAccountName={EscapeFilterValue(bareUsername)}))";
+        var filter = $"(&(objectClass=user)(sAMAccountName={EscapeFilterValue(account)}))";
         var request = new SearchRequest(
             _options.SearchBase,
             filter,
             SearchScope.Subtree,
-            "displayName", "cn", "memberOf");
+            "sAMAccountName", "displayName", "cn", "memberOf");
         var response = (SearchResponse)connection.SendRequest(request);
-        if (response.Entries.Count == 0)
+        if (response.Entries.Count != 1)
         {
-            return (displayName, isAdmin);
+            _logger.LogWarning(
+                "Expected one directory entry for the signed-in account {Account} under {SearchBase}, found {Count}",
+                account, _options.SearchBase, response.Entries.Count);
+            return null;
         }
 
         var entry = response.Entries[0];
-        displayName = GetString(entry, "displayName") ?? GetString(entry, "cn") ?? bareUsername;
+        // Existing memberships are keyed on the lower-cased sAMAccountName.
+        var username = (GetString(entry, "sAMAccountName") ?? account).ToLowerInvariant();
+        var displayName = GetString(entry, "displayName") ?? GetString(entry, "cn") ?? username;
+        var isAdmin = false;
 
         if (!string.IsNullOrWhiteSpace(_options.AdminGroup) && entry.Attributes.Contains("memberOf"))
         {
@@ -172,7 +249,7 @@ public class LdapAuthenticator : IAuthenticator
                 }
             }
         }
-        return (displayName, isAdmin);
+        return new AuthResult(username, displayName, isAdmin);
     }
 
     private static string? GetString(SearchResultEntry entry, string attribute)
