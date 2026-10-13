@@ -59,6 +59,7 @@ public class HealthService
     private readonly TimeProvider _time;
     private readonly AuditService _audit;
     private readonly ILogger<HealthService> _logger;
+    private readonly SessionService _sessions;
 
     public HealthService(
         IDbContextFactory<HarpoDbContext> dbFactory,
@@ -66,7 +67,8 @@ public class HealthService
         IOptions<HealthOptions> options,
         TimeProvider time,
         AuditService audit,
-        ILogger<HealthService> logger)
+        ILogger<HealthService> logger,
+        SessionService sessions)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
@@ -74,6 +76,7 @@ public class HealthService
         _time = time;
         _audit = audit;
         _logger = logger;
+        _sessions = sessions;
     }
 
     public bool Enabled => _options.Enabled;
@@ -86,6 +89,7 @@ public class HealthService
             throw new InvalidOperationException("The vault health report is disabled on this site.");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
         // The caller's scope: everything for site admins, administered groups

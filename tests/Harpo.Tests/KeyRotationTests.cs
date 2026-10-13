@@ -21,9 +21,9 @@ public class KeyRotationTests
     {
         var crypto = new CryptoService(masterKey, previousKeys);
         var audit = new AuditService(site.Db, Options.Create(new AuditOptions()), site.Time,
-            NullLogger<AuditService>.Instance);
+            NullLogger<AuditService>.Instance, site.Sessions);
         var vault = new VaultService(site.Db, crypto, site.Time, NullLogger<VaultService>.Instance,
-            audit, Options.Create(new HealthOptions()));
+            audit, Options.Create(new HealthOptions()), site.Sessions);
         return (crypto, vault, audit);
     }
 

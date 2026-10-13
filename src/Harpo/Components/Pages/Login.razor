@@ -3,6 +3,7 @@
 @layout Harpo.Components.Layout.AuthLayout
 @inject IAuthenticator Authenticator
 @inject LoginThrottle Throttle
+@inject Harpo.Services.SessionService Sessions
 @inject NavigationManager Navigation
 @inject ILogger<Login> Logger
 @using Microsoft.AspNetCore.Authentication
@@ -90,7 +91,8 @@
             }
             Throttle.RecordSuccess(Model.Username);
 
-            var principal = HarpoClaims.CreatePrincipal(result);
+            var sessionId = await Sessions.CreateAsync(result, HttpContext.RequestAborted);
+            var principal = HarpoClaims.CreatePrincipal(result, sessionId);
             await HttpContext.SignInAsync(
                 CookieAuthenticationDefaults.AuthenticationScheme,
                 principal,

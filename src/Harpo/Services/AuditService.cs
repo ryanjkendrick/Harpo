@@ -24,6 +24,7 @@ public class AuditService
     private readonly AuditOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger<AuditService> _logger;
+    private readonly SessionService _sessions;
     private readonly IHttpContextAccessor? _httpContextAccessor;
 
     public AuditService(
@@ -31,12 +32,14 @@ public class AuditService
         IOptions<AuditOptions> options,
         TimeProvider time,
         ILogger<AuditService> logger,
+        SessionService sessions,
         IHttpContextAccessor? httpContextAccessor = null)
     {
         _dbFactory = dbFactory;
         _options = options.Value;
         _time = time;
         _logger = logger;
+        _sessions = sessions;
         _httpContextAccessor = httpContextAccessor;
     }
 
@@ -81,6 +84,7 @@ public class AuditService
         AuditCategory category = AuditCategory.All, CancellationToken ct = default)
     {
         RequireSiteAdmin(user);
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var query = db.AuditEvents.AsNoTracking();
         if (before is { } cursor)
@@ -111,6 +115,7 @@ public class AuditService
     public async Task<int> CountAsync(UserContext user, CancellationToken ct = default)
     {
         RequireSiteAdmin(user);
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         return await db.AuditEvents.CountAsync(ct);
     }

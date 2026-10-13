@@ -37,10 +37,11 @@ public class VaultService
     private readonly ILogger<VaultService> _logger;
     private readonly AuditService _audit;
     private readonly HealthOptions _health;
+    private readonly SessionService _sessions;
 
     public VaultService(
         IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time,
-        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health)
+        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health, SessionService sessions)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
@@ -48,6 +49,7 @@ public class VaultService
         _logger = logger;
         _audit = audit;
         _health = health.Value;
+        _sessions = sessions;
     }
 
     public async Task<List<EntryView>> GetEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
@@ -370,6 +372,7 @@ public class VaultService
     public async Task<(List<Offline.OfflineGroup> Groups, List<Offline.OfflineEntry> Entries)> GetOfflineDataAsync(
         UserContext user, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
         var groupIds = await db.GroupMembers
@@ -455,9 +458,16 @@ public class VaultService
             .FirstOrDefault();
     }
 
-    private static async Task RequireMemberAsync(
+    /// <summary>
+    /// The access check every entry operation goes through (directly or via
+    /// <see cref="RequireEntryAsync"/>) before anything is decrypted or written:
+    /// first that the caller's session is still live — a page open since before
+    /// a sign-out elsewhere must not get another secret — then group membership.
+    /// </summary>
+    private async Task RequireMemberAsync(
         HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct, bool requireWrite = false)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Group not found.");
         GroupService.RequireNotSomeoneElsesPersonalVault(group, user);
@@ -496,7 +506,7 @@ public class VaultService
         return "https://" + url;
     }
 
-    private static async Task<PasswordEntry> RequireEntryAsync(
+    private async Task<PasswordEntry> RequireEntryAsync(
         HarpoDbContext db, UserContext user, Guid entryId, CancellationToken ct, bool requireWrite = false)
     {
         var entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && !e.IsDeleted, ct)

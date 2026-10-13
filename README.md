@@ -173,12 +173,35 @@ running with an empty key.
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
 | `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups | `DC=corp,DC=example,DC=com` |
 | `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
+| `Auth__Ldap__ServiceUser` | *Optional.* Read-only account used only to re-check signed-in users (see below) — UPN, `DOMAIN\name` or DN | `svc-harpo@corp.example.com` |
+| `Auth__Ldap__ServicePassword` | Its password — prefer `Auth__Ldap__ServicePassword__File` | — |
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
 the user** to validate them, then reads `displayName` and `memberOf` from their
-directory entry. No service account is required. Inside Harpo, people are
-identified by their `sAMAccountName` — that's the username group admins type
-when adding members.
+directory entry. No service account is required to sign in. Inside Harpo,
+people are identified by their `sAMAccountName` — that's the username group
+admins type when adding members.
+
+**Disabling someone in AD, and the service account.** Harpo never keeps a
+user's password, so once they are signed in it cannot ask the directory about
+them on its own. With `Auth__Ldap__ServiceUser` set, it re-checks every
+signed-in account every `Auth__RevalidateMinutes` (15): it binds as the service
+account and reads the user's `userAccountControl` and `memberOf`. An account
+that is **disabled** (or deleted, or moved out of `SearchBase`) loses all its
+sessions — every tab, every request, the offline snapshot API — within that
+interval plus 30 seconds; one whose **site-admin membership changed** is
+signed out so the new role applies at the next sign-in. Any domain user can
+read those attributes, so an ordinary unprivileged account will do — give it a
+long random password that does not expire, and nothing else. If the directory
+refuses the service account (wrong or expired password), Harpo logs an error
+at every check and treats it like an unreachable directory: sessions carry on
+for `Auth__RevalidateGraceMinutes`, then end. Without a service account, a disabled
+user keeps a session they already have until it expires (`Auth__SessionHours`,
+8 hours idle by default) or they sign out; a fresh sign-in is refused
+immediately either way. If that is too long for you and a service account is
+not an option, shorten `Auth__SessionHours` or set
+`Auth__SlidingExpiration=false`. Only the disabled flag is read: an account
+that is merely locked out or whose password expired keeps its session.
 
 ## Offline access (PWA)
 
@@ -192,7 +215,9 @@ How it works, honestly:
 - While online and signed in, the device downloads the user's entries from
   `/api/offline/snapshot` (an audited, rate-limited bulk decrypt, scoped to the
   groups the user is **an explicit member of** — site admins don't get an
-  everything-snapshot).
+  everything-snapshot). A signed-out, expired or disabled session gets no
+  snapshot (see "Security model"); a copy the device already holds stays
+  until it expires or is wiped.
 - The browser re-encrypts the snapshot locally with WebCrypto — a random
   AES-256-GCM data key wrapped by a key derived from the offline passphrase
   (PBKDF2-SHA256, 600k iterations) — and stores it in IndexedDB. **The server's
@@ -577,6 +602,11 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`) |
+| `Auth__SessionHours` | `8` | How long a sign-in lasts: idle time when sliding, total time otherwise. Also the cookie's lifetime |
+| `Auth__SlidingExpiration` | `true` | Activity extends the session; `false` ends it `SessionHours` after sign-in however busy |
+| `Auth__RevalidateMinutes` | `15` | How often each signed-in account is re-checked against the directory (disabled? admin role changed?); `0` = never |
+| `Auth__RevalidateGraceMinutes` | `240` | While the directory cannot be reached, how long past a missed re-check a session survives before it ends |
+| `Auth__Ldap__ServiceUser` / `ServicePassword` | *(empty)* | Optional read-only account that makes LDAP re-checks possible — see "Active Directory settings" |
 | `Auth__Lockout__Enabled` | `true` | Brute-force lockout on the sign-in form |
 | `Auth__Lockout__MaxFailuresPerAccount` | `5` | Failures against one account before it is blocked |
 | `Auth__Lockout__MaxFailuresPerIp` | `20` | Failures from one address (any accounts) before it is blocked |
@@ -644,6 +674,26 @@ All settings can be given as environment variables (`Section__Key` form).
   for as long as it stays open; without a session there is nothing to open,
   and one account — or one runaway browser — cannot exhaust it. A tab over the
   limit loads but does not respond until another is closed.
+- **Signing out ends the session on the server, not just in one tab.** Each
+  sign-in is recorded server-side and the cookie names that record; every
+  request, every reveal, copy or change made from an open page, and the
+  offline snapshot API check it is still there. Sign out in one tab and the
+  others can no longer reveal anything — an attempt says the session has
+  ended — and within 30 seconds they move to the sign-in page, clearing
+  whatever was on screen. Sessions end after `Auth__SessionHours` (8) of
+  inactivity, or that long after sign-in with `Auth__SlidingExpiration=false`.
+  An account **disabled in the directory**, or whose **site-admin membership
+  changed**, loses its sessions within `Auth__RevalidateMinutes` (15) plus
+  30 seconds — in LDAP mode only when a read-only `Auth__Ldap__ServiceUser` is
+  configured, because Harpo binds as the user and keeps no password to ask
+  with later. Without one, a disabled account keeps the session it already has
+  until it expires or signs out (new sign-ins are refused at once); shorten
+  `Auth__SessionHours` if that is too long. If the directory **cannot be
+  reached**, sessions carry on and the check is retried every 30 seconds for
+  up to `Auth__RevalidateGraceMinutes` (240) past the missed check; after that
+  they end, as sign-ins already fail while the directory is down. Sessions are
+  per site and survive a restart. What none of this can do is reach an
+  offline copy already on a device — see "Offline access".
 - **The cookie/antiforgery key ring is encrypted at rest** with the master key
   (it lives in `Harpo__DataProtectionKeysPath`, i.e. `/data/keys`, which
   SQLCipher does *not* cover). So a stolen volume or backup cannot be used to
@@ -752,6 +802,9 @@ one.
   once more (the log says so), which restores the mark on vaults it received
   while it was behind; allow for one pass over the peers' data. Upgraded sites
   exchanging rows with each other are unaffected.
+- **Upgrading from 0.5.0 or earlier: everyone signs in again once.** Cookies
+  issued before server-side sessions existed name no session, so they are
+  refused (and cleared) on the first request after the upgrade.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read

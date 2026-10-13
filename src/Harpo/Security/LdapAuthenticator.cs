@@ -20,6 +20,17 @@ public class LdapOptions
     /// <summary>AD group whose members are Harpo site admins. Either a plain CN ("Harpo Admins") or a full DN.</summary>
     public string AdminGroup { get; set; } = "";
     public int TimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Optional, read-only directory account used only to re-check signed-in
+    /// users (enabled? still in the admin group?) without their passwords —
+    /// a UPN ("svc-harpo@corp.example.com"), DOMAIN\name, or DN. Sign-in itself
+    /// never uses it. Without it, a disabled account keeps its existing Harpo
+    /// session until that session expires or the user signs out.
+    /// </summary>
+    public string ServiceUser { get; set; } = "";
+    /// <summary>Password of <see cref="ServiceUser"/> (or <c>Auth:Ldap:ServicePassword__File</c>).</summary>
+    public string ServicePassword { get; set; } = "";
 }
 
 /// <summary>
@@ -41,6 +52,22 @@ public class LdapAuthenticator : IAuthenticator
             throw new InvalidOperationException(
                 "Auth:Mode is 'Ldap' but Auth:Ldap:Server is not configured. " +
                 "Set the Auth:Ldap:* settings, or use Auth:Mode=Development for local testing.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_options.ServiceUser))
+        {
+            if (string.IsNullOrEmpty(_options.ServicePassword))
+            {
+                // AD treats a bind with an empty password as anonymous — which
+                // would "succeed" and then read nothing useful. Refuse to start.
+                throw new InvalidOperationException(
+                    "Auth:Ldap:ServiceUser is set but Auth:Ldap:ServicePassword is empty.");
+            }
+            if (string.IsNullOrWhiteSpace(_options.SearchBase))
+            {
+                throw new InvalidOperationException(
+                    "Auth:Ldap:ServiceUser is set but Auth:Ldap:SearchBase is empty — revalidation needs somewhere to look users up.");
+            }
         }
 
         if (_options.SkipCertificateValidation && !OperatingSystem.IsWindows())
@@ -158,21 +185,100 @@ public class LdapAuthenticator : IAuthenticator
 
         var entry = response.Entries[0];
         displayName = GetString(entry, "displayName") ?? GetString(entry, "cn") ?? bareUsername;
+        isAdmin = IsInAdminGroup(entry);
+        return (displayName, isAdmin);
+    }
 
-        if (!string.IsNullOrWhiteSpace(_options.AdminGroup) && entry.Attributes.Contains("memberOf"))
+    private bool IsInAdminGroup(SearchResultEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(_options.AdminGroup) || !entry.Attributes.Contains("memberOf"))
         {
-            var wanted = _options.AdminGroup;
-            foreach (var value in entry.Attributes["memberOf"].GetValues(typeof(string)).Cast<string>())
+            return false;
+        }
+        var wanted = _options.AdminGroup;
+        foreach (var value in entry.Attributes["memberOf"].GetValues(typeof(string)).Cast<string>())
+        {
+            if (string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(FirstRdnValue(value), wanted, StringComparison.OrdinalIgnoreCase))
             {
-                if (string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(FirstRdnValue(value), wanted, StringComparison.OrdinalIgnoreCase))
-                {
-                    isAdmin = true;
-                    break;
-                }
+                return true;
             }
         }
-        return (displayName, isAdmin);
+        return false;
+    }
+
+    /// <summary>AD's ACCOUNTDISABLE bit in userAccountControl.</summary>
+    private const long AccountDisabledFlag = 0x2;
+
+    /// <summary>
+    /// Harpo binds as the user and keeps no password, so it cannot ask the
+    /// directory about a signed-in user on its own. With a service account
+    /// configured it can: bind as that account, read the user's
+    /// userAccountControl and memberOf. Without one the answer is Unknown and
+    /// sessions are bounded only by their lifetime (see README, Security model).
+    /// </summary>
+    public Task<RevalidationResult> RevalidateAsync(string username, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ServiceUser))
+        {
+            return Task.FromResult(RevalidationResult.Unknown);
+        }
+        // S.DS.P is synchronous; run it off the caller's thread.
+        return Task.Run(() => Revalidate(username), cancellationToken);
+    }
+
+    private RevalidationResult Revalidate(string username)
+    {
+        var bareUsername = username.Trim().ToLowerInvariant();
+        try
+        {
+            using var connection = CreateConnection();
+            connection.Credential = new NetworkCredential(ServiceBindName(), _options.ServicePassword);
+            connection.Bind();
+
+            var filter = $"(&(objectClass=user)(sAMAccountName={EscapeFilterValue(bareUsername)}))";
+            var request = new SearchRequest(
+                _options.SearchBase, filter, SearchScope.Subtree, "userAccountControl", "memberOf");
+            var response = (SearchResponse)connection.SendRequest(request);
+            if (response.Entries.Count == 0)
+            {
+                // Deleted, renamed, or moved out of the search base: whoever
+                // signed in under this name is no longer someone we can vouch for.
+                return RevalidationResult.Disabled;
+            }
+            var entry = response.Entries[0];
+            if (!long.TryParse(GetString(entry, "userAccountControl"), out var flags))
+            {
+                // The service account cannot read the attribute; we learned nothing.
+                _logger.LogWarning(
+                    "Revalidating {User}: userAccountControl not readable by Auth:Ldap:ServiceUser", bareUsername);
+                return RevalidationResult.Unavailable;
+            }
+            if ((flags & AccountDisabledFlag) != 0)
+            {
+                return RevalidationResult.Disabled;
+            }
+            return RevalidationResult.Active(IsInAdminGroup(entry));
+        }
+        catch (LdapException ex) when (ex.ErrorCode == 49)
+        {
+            _logger.LogError(
+                "The directory rejected Auth:Ldap:ServiceUser's credentials; signed-in users cannot be revalidated");
+            return RevalidationResult.Unavailable;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Revalidating {User}: directory server {Server} unavailable", bareUsername, _options.Server);
+            return RevalidationResult.Unavailable;
+        }
+    }
+
+    private string ServiceBindName()
+    {
+        var name = _options.ServiceUser.Trim();
+        return name.Contains('@') || name.Contains('\\') || name.Contains('=') || string.IsNullOrWhiteSpace(_options.UpnSuffix)
+            ? name
+            : $"{name}@{_options.UpnSuffix}";
     }
 
     private static string? GetString(SearchResultEntry entry, string attribute)

@@ -44,6 +44,18 @@ public class DevAuthenticator : IAuthenticator
         return Task.FromResult<AuthResult?>(null);
     }
 
+    /// <summary>
+    /// The configured user list is the "directory": a user still listed is
+    /// active (with their current admin flag), a user no longer listed counts as
+    /// disabled. This is what the session tests drive.
+    /// </summary>
+    public Task<RevalidationResult> RevalidateAsync(string username, CancellationToken cancellationToken)
+    {
+        var normalized = username.Trim().ToLowerInvariant();
+        var user = _options.DevUsers.FirstOrDefault(u => u.Username.ToLowerInvariant() == normalized);
+        return Task.FromResult(user is null ? RevalidationResult.Disabled : RevalidationResult.Active(user.IsSiteAdmin));
+    }
+
     private static bool FixedTimeEquals(string a, string b)
     {
         var ba = Encoding.UTF8.GetBytes(a);

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Harpo;
 using Harpo.Components;
 using Harpo.Data;
@@ -36,6 +37,7 @@ builder.Services.Configure<IconOptions>(builder.Configuration.GetSection("Harpo:
 builder.Services.Configure<ReplicationOptions>(builder.Configuration.GetSection("Replication"));
 builder.Services.Configure<LdapOptions>(builder.Configuration.GetSection("Auth:Ldap"));
 builder.Services.Configure<DevAuthOptions>(builder.Configuration.GetSection("Auth"));
+builder.Services.Configure<AuthSessionOptions>(builder.Configuration.GetSection("Auth"));
 builder.Services.Configure<LoginThrottleOptions>(builder.Configuration.GetSection("Auth:Lockout"));
 
 // ---- Data ----
@@ -70,6 +72,16 @@ else
 
 builder.Services.AddSingleton<LoginThrottle>();
 
+// ---- Sessions: a server-side record behind every cookie (see SessionService) ----
+builder.Services.AddSingleton<SessionService>();
+builder.Services.AddHostedService<SessionMaintenanceService>();
+// Open pages re-check their session every 30 s and fall back to the sign-in page once it ends.
+builder.Services.AddScoped<Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider,
+    SessionAuthenticationStateProvider>();
+builder.Services.AddScoped<CircuitConnection>();
+builder.Services.AddScoped<Microsoft.AspNetCore.Components.Server.Circuits.CircuitHandler>(
+    services => services.GetRequiredService<CircuitConnection>());
+
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
     {
@@ -78,8 +90,26 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.LoginPath = "/login";
         options.AccessDeniedPath = "/denied";
-        options.ExpireTimeSpan = TimeSpan.FromHours(8);
-        options.SlidingExpiration = true;
+        // A cookie is only as good as its server-side session: signed out,
+        // expired, disabled in the directory, or issued before sessions
+        // existed (no session claim) — refused, and cleared from the browser.
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var sessions = context.HttpContext.RequestServices.GetRequiredService<SessionService>();
+            var sessionId = context.Principal?.FindFirstValue(HarpoClaims.SessionId);
+            if (!await sessions.IsLiveAsync(sessionId, touch: true, context.HttpContext.RequestAborted))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
+    });
+// Cookie lifetime follows the session's (Auth:SessionHours, Auth:SlidingExpiration).
+builder.Services.AddOptions<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme)
+    .Configure<SessionService>((options, sessions) =>
+    {
+        options.ExpireTimeSpan = sessions.Lifetime;
+        options.SlidingExpiration = sessions.SlidingExpiration;
     });
 builder.Services.AddAuthorization();
 
@@ -182,7 +212,7 @@ app.MapGet("/api/icons/{id:guid}", async (Guid id, IconService icons, HttpContex
     return Results.File(icon.Value.Data, icon.Value.ContentType);
 }).RequireAuthorization();
 
-app.MapPost("/logout", async (HttpContext context, IAntiforgery antiforgery) =>
+app.MapPost("/logout", async (HttpContext context, IAntiforgery antiforgery, SessionService sessions) =>
 {
     try
     {
@@ -192,6 +222,9 @@ app.MapPost("/logout", async (HttpContext context, IAntiforgery antiforgery) =>
     {
         return Results.BadRequest();
     }
+    // Ending the session, not just deleting this browser's cookie, is what signs
+    // out every other tab and every page still open on it.
+    await sessions.EndAsync(context.User.FindFirstValue(HarpoClaims.SessionId));
     await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
     return Results.LocalRedirect("/login");
 }).AllowAnonymous();

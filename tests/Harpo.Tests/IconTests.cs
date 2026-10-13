@@ -134,7 +134,7 @@ public class IconTests : IDisposable
     private static IconService ImportingIconService(TestSite site, string path) => new(
         site.Db, site.Time, site.Audit,
         Microsoft.Extensions.Options.Options.Create(new IconOptions { ImportPath = path }),
-        Microsoft.Extensions.Logging.Abstractions.NullLogger<IconService>.Instance);
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<IconService>.Instance, site.Sessions);
 
     [Fact]
     public async Task Server_folder_import_is_idempotent_and_respects_curation()

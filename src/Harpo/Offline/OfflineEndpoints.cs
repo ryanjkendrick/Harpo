@@ -42,6 +42,7 @@ public static class OfflineEndpoints
             ClaimsPrincipal principal,
             HttpContext http,
             VaultService vault,
+            SessionService sessions,
             AuditService audit,
             OfflineSnapshotThrottle throttle,
             IOptions<OfflineOptions> options,
@@ -59,6 +60,15 @@ public static class OfflineEndpoints
             }
 
             var user = UserContext.FromPrincipal(principal);
+            // The cookie handler checked the session a moment ago; checked again
+            // here because a snapshot decrypts the whole vault, and a sign-out (or
+            // a disabled account) in between must not get one. 401 is what the
+            // offline page reads as "sign in again". VaultService checks too.
+            if (!await sessions.IsLiveAsync(user.SessionId, touch: true, ct))
+            {
+                return Results.Json(new { error = SessionService.SessionEndedMessage },
+                    statusCode: StatusCodes.Status401Unauthorized);
+            }
             if (IsForAnotherAccount(http.Request.Headers[ExpectedUserHeader], user.Username))
             {
                 // Someone else is signed in to this browser now. Refuse before

@@ -1,7 +1,7 @@
 # Harpo end-to-end tests
 
-Three scripts, all driving the live two-site demo with a real headless Chrome.
-Each creates its own throwaway group and entries and deletes the group
+Four scripts, all driving the live two-site demo with a real headless Chrome.
+Each creates its own throwaway entries (and groups) and deletes them
 afterwards.
 
 - **`offline-vault.e2e.js`** — the PWA offline vault. Registers the service
@@ -21,6 +21,18 @@ afterwards.
   offers no unlock. It leaves the stack with offline access disabled; restore
   it yourself. Run it on a throwaway stack, never the demo:
   `HARPO_RESTART_CMD='...' npm run test:disable`.
+- **`session.e2e.js`** — signing out ends the session on the server. One tab
+  opens the vault and reveals a password; a second tab of the same browser
+  signs out; the first tab, whose live connection still holds the signed-in
+  user, clicks Reveal and Copy again and must be told the session has ended
+  without being shown the password, then must move to the sign-in page by
+  itself within 30 seconds. The cookie, copied before the sign-out, is then
+  replayed: it must get neither a page, nor an offline snapshot, nor a live
+  connection. Needs only a single site with offline access on; it adds one
+  entry to the first account's personal vault and deletes it. A disabled
+  directory account is not covered here (Development-mode users cannot be
+  disabled without a restart): the unit tests cover it with a controllable
+  clock, and it was checked by hand against the Samba AD lab.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,
@@ -50,7 +62,8 @@ afterwards.
 npm install
 npm test          # offline vault — expect 22/22 checks passed
 npm run test:ui   # interactive UI — expect 39/39 checks passed
-npm run test:all  # both
+npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
+npm run test:all  # all three
 ```
 
 Environment overrides: `HARPO_BASE_URL`, `HARPO_CONTAINER`, `HARPO_USER`
