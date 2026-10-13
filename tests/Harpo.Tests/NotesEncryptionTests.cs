@@ -236,39 +236,30 @@ public class NotesEncryptionTests
         }
 
         // Everything SQLite keeps for this database: the main file, its write-ahead
-        // log, any journal. The log and shared-memory files come and go — SQLite
-        // removes them when the last pooled connection closes, and the pool does
-        // that on its own schedule, so one listed here may be gone, or mid-removal,
-        // by the time it is opened (seen as sporadic failures under the full
-        // suite's load). A side file that cannot be read holds nothing the check
-        // needs: whatever it carried was checkpointed into the main file, which
-        // must always be readable.
-        static string FileText(string directory) => string.Concat(
-            Directory.GetFiles(directory).OrderBy(f => f).Select(f => ReadFile(f, Path.GetFileName(f) == "harpo.db")));
-
-        static string ReadFile(string path, bool required)
+        // log, any journal — read as one consistent snapshot. The pool closes an
+        // idle connection on its own schedule, and that checkpoints the log into
+        // the main file and deletes it. If that happens between reading the main
+        // file (still old) and the log (gone), the text is in neither read and the
+        // check fails for no reason (seen as sporadic failures under the full
+        // suite's load). So when a file vanishes mid-read, the whole set is read
+        // again: its content is in the main file by then.
+        static string FileText(string directory)
         {
             for (var attempt = 1; ; attempt++)
             {
                 try
                 {
-                    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                    using var memory = new MemoryStream();
-                    stream.CopyTo(memory);
-                    return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+                    return string.Concat(Directory.GetFiles(directory).OrderBy(f => f).Select(f =>
+                    {
+                        using var stream = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        using var memory = new MemoryStream();
+                        stream.CopyTo(memory);
+                        return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+                    }));
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                catch (Exception ex) when (attempt < 5 && ex is IOException or UnauthorizedAccessException)
                 {
-                    if (attempt < 3)
-                    {
-                        Thread.Sleep(50);
-                        continue;
-                    }
-                    if (required)
-                    {
-                        throw;
-                    }
-                    return "";
+                    Thread.Sleep(50);
                 }
             }
         }
