@@ -96,6 +96,22 @@ public sealed class CommandHook : DbCommandInterceptor
 }
 
 /// <summary>
+/// A directory that answers from <paramref name="inner"/> until a test sets
+/// <see cref="Unavailable"/> — then it behaves like LDAP without a service
+/// account (or with the DC down): every lookup and search is Unavailable.
+/// </summary>
+public sealed class SwitchableDirectory(IDirectory inner) : IDirectory
+{
+    public bool Unavailable { get; set; }
+
+    public Task<DirectoryLookup> LookupAccountAsync(string username, CancellationToken cancellationToken) =>
+        Unavailable ? Task.FromResult(DirectoryLookup.Unavailable) : inner.LookupAccountAsync(username, cancellationToken);
+
+    public Task<DirectorySearchResult> SearchAccountsAsync(string term, int limit, CancellationToken cancellationToken) =>
+        Unavailable ? Task.FromResult(DirectorySearchResult.Unavailable) : inner.SearchAccountsAsync(term, limit, cancellationToken);
+}
+
+/// <summary>
 /// A complete Harpo "site": its own SQLite database, clock, and service
 /// instances. Replication tests wire several of these together. In-memory by
 /// default; pass <c>databasePath</c> for a real WAL-mode file where every
@@ -117,6 +133,29 @@ public sealed class TestSite : IDisposable
     public IconService Icons { get; }
     public ReplicationEngine Engine { get; }
 
+    /// <summary>
+    /// The site's "directory" (Development-mode users): alice, a site admin, bob
+    /// and carol. Sessions revalidate against it — remove a user to disable
+    /// them — and group admins' member lookups ask it (through <see cref="Directory"/>).
+    /// </summary>
+    public DevAuthOptions DevDirectory { get; } = new()
+    {
+        DevUsers =
+        {
+            new DevAuthOptions.DevUser { Username = "alice", Password = "alice", IsSiteAdmin = true },
+            new DevAuthOptions.DevUser { Username = "bob", Password = "bob" },
+            new DevAuthOptions.DevUser { Username = "carol", Password = "carol" },
+        },
+    };
+
+    /// <summary>What <see cref="Groups"/> asks about new members: <see cref="DevDirectory"/>, unless switched off.</summary>
+    public SwitchableDirectory Directory { get; }
+
+    /// <summary>Session settings, read live by <see cref="Sessions"/> — tests may change them.</summary>
+    public AuthSessionOptions SessionOptions { get; } = new();
+
+    public SessionService Sessions { get; }
+
     private readonly SqliteConnection? _connection;
     private readonly bool _fileBacked;
 
@@ -136,7 +175,11 @@ public sealed class TestSite : IDisposable
         else
         {
             _fileBacked = true;
-            builder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
+            // Not pooled: the pool is process-wide, and other test classes clear
+            // it when they dispose (to release their own files). That closed this
+            // site's idle connections mid-test, and the last close of a file
+            // checkpoints and deletes its write-ahead log.
+            builder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString());
         }
         if (interceptors.Length > 0)
         {
@@ -155,14 +198,17 @@ public sealed class TestSite : IDisposable
         }
 
         Crypto = new CryptoService(masterKey, previousMasterKeys);
-        Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance);
-        Groups = new GroupService(Db, Time, Audit);
+        Sessions = new SessionService(Db, new DevAuthenticator(Options.Create(DevDirectory)), Options.Create(SessionOptions),
+            Time, NullLogger<SessionService>.Instance);
+        Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance, Sessions);
+        Directory = new SwitchableDirectory(new DevAuthenticator(Options.Create(DevDirectory)));
+        Groups = new GroupService(Db, Time, Audit, Sessions, Directory);
         Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
-            Options.Create(new HealthOptions()));
+            Options.Create(new HealthOptions()), Sessions);
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
-            NullLogger<HealthService>.Instance);
+            NullLogger<HealthService>.Instance, Sessions);
         Icons = new IconService(Db, Time, Audit, Options.Create(new IconOptions()),
-            NullLogger<IconService>.Instance);
+            NullLogger<IconService>.Instance, Sessions);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),
@@ -208,6 +254,26 @@ public sealed class TestSite : IDisposable
         }
     }
 
+    /// <summary>
+    /// An in-process caller with no session (like the startup icon import): the
+    /// services skip the session check for it. For a signed-in caller whose
+    /// session can end, use <see cref="SignInAsync"/>.
+    /// </summary>
     public static UserContext User(string username, bool siteAdmin = false) =>
         new(username, char.ToUpperInvariant(username[0]) + username[1..], siteAdmin);
+
+    /// <summary>
+    /// Signs <paramref name="username"/> in against <see cref="DevDirectory"/> as the
+    /// login page does, and returns the caller exactly as an interactive page
+    /// would hold it: built from the cookie's principal, session id included.
+    /// </summary>
+    public async Task<UserContext> SignInAsync(string username)
+    {
+        var dev = DevDirectory.DevUsers.Single(u => u.Username == username);
+        var result = await new DevAuthenticator(Options.Create(DevDirectory))
+            .AuthenticateAsync(dev.Username, dev.Password, CancellationToken.None)
+            ?? throw new InvalidOperationException($"{username} could not sign in");
+        var sessionId = await Sessions.CreateAsync(result);
+        return UserContext.FromPrincipal(HarpoClaims.CreatePrincipal(result, sessionId));
+    }
 }

@@ -1,0 +1,37 @@
+@* Placed on every interactive page. The router is rendered statically (pages
+   choose their own interactivity), so when an open page's session ends —
+   SessionAuthenticationStateProvider checks every 30 s — nothing would re-render
+   it as "not signed in". This does: it sends the browser to the sign-in page,
+   which also clears whatever secrets were on screen. Renders nothing. *@
+@implements IDisposable
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
+
+@code {
+    protected override void OnInitialized() =>
+        AuthenticationStateProvider.AuthenticationStateChanged += OnAuthenticationStateChanged;
+
+    private async void OnAuthenticationStateChanged(Task<AuthenticationState> stateTask)
+    {
+        try
+        {
+            var state = await stateTask;
+            if (state.User.Identity?.IsAuthenticated == true)
+            {
+                return;
+            }
+            await InvokeAsync(() =>
+            {
+                var returnUrl = Uri.EscapeDataString(new Uri(Navigation.Uri).PathAndQuery);
+                Navigation.NavigateTo($"/login?returnUrl={returnUrl}", forceLoad: true);
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The page closed in the meantime; nothing to leave.
+        }
+    }
+
+    public void Dispose() =>
+        AuthenticationStateProvider.AuthenticationStateChanged -= OnAuthenticationStateChanged;
+}

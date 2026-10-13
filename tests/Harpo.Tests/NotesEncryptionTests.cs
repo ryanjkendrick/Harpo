@@ -60,7 +60,7 @@ public class NotesEncryptionTests
         (await vault.GetEntriesAsync(Alice, groupId)).Single(v => v.Entry.Id == entryId);
 
     private static VaultService VaultWith(TestSite site, CryptoService crypto) =>
-        new(site.Db, crypto, site.Time, NullLogger<VaultService>.Instance, site.Audit, Options.Create(new HealthOptions()));
+        new(site.Db, crypto, site.Time, NullLogger<VaultService>.Instance, site.Audit, Options.Create(new HealthOptions()), site.Sessions);
 
     // ---- At rest ----
 
@@ -205,16 +205,19 @@ public class NotesEncryptionTests
             using (var site = new TestSite("a", databasePath: path))
             {
                 var (groupId, entryId) = await SeedAsync(site);
-                // Long notes spill into overflow pages, which SQLite hands back to
-                // its free list — content intact — when the row is rewritten.
+                // A long note spills into overflow pages. Its last page holds the
+                // marker, so that when the note is replaced by a short one those
+                // pages go to the free list with the marker intact — where it stays,
+                // whatever the write-ahead log does, until the file is rewritten.
+                // (A marker at the start of the value would sit inline in the table
+                // page, and survive only as an old page version in the log, which
+                // a checkpoint can drop at any moment: that made this test flaky.)
                 var padding = new string('.', 20_000);
-                // A note that was replaced long before the upgrade: no row holds it any more.
-                await WriteAsEarlierVersionAsync(site, "an older note, since removed: PIN 4471 " + padding);
-                await WriteAsEarlierVersionAsync(site, Secret + " " + padding);
+                await WriteAsEarlierVersionAsync(site, padding + " an older note, since removed: PIN 4471");
                 await WriteAsEarlierVersionAsync(site, Secret);
                 var beforeUpgrade = FileText(dir);
-                Assert.Contains("recovery codes 4F9K-22QX", beforeUpgrade); // the baseline
-                Assert.Contains("PIN 4471", beforeUpgrade);
+                Assert.True(beforeUpgrade.Contains("recovery codes 4F9K-22QX"), "baseline missing: " + Describe(dir)); // the baseline
+                Assert.True(beforeUpgrade.Contains("PIN 4471"), "old note missing: " + Describe(dir));
 
                 await EnsureAsync(site);
 
@@ -236,26 +239,53 @@ public class NotesEncryptionTests
         }
 
         // Everything SQLite keeps for this database: the main file, its write-ahead
-        // log, any journal. The log and shared-memory files come and go — SQLite
-        // removes them when the last pooled connection closes, and the pool does
-        // that on its own schedule — so a file listed here may be gone by the time
-        // it is opened. One that vanished holds nothing: whatever it carried was
-        // checkpointed into the main file, which is read.
-        static string FileText(string directory) => string.Concat(
+        // log, any journal — read as one consistent snapshot. The pool closes an
+        // idle connection on its own schedule, and that checkpoints the log into
+        // the main file and deletes it. If that happens between reading the main
+        // file (still old) and the log (gone), the text is in neither read and the
+        // check fails for no reason (seen as sporadic failures under the full
+        // suite's load). So when a file vanishes mid-read, the whole set is read
+        // again: its content is in the main file by then.
+        // For a failure message: each file, its size, and which markers it holds.
+        static string Describe(string directory) => string.Join(" | ",
             Directory.GetFiles(directory).OrderBy(f => f).Select(f =>
+            {
+                string text;
+                try
+                {
+                    text = ReadOne(f);
+                }
+                catch (Exception ex)
+                {
+                    return $"{Path.GetFileName(f)}: {ex.GetType().Name}";
+                }
+                return $"{Path.GetFileName(f)}: {text.Length} bytes" +
+                    (text.Contains("PIN 4471") ? " [PIN]" : "") + (text.Contains("recovery codes") ? " [codes]" : "") +
+                    (text.Contains(ProtectedNotes.Marker) ? " [enc]" : "");
+            }));
+
+        static string ReadOne(string path)
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+        }
+
+        static string FileText(string directory)
+        {
+            for (var attempt = 1; ; attempt++)
             {
                 try
                 {
-                    using var stream = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                    using var memory = new MemoryStream();
-                    stream.CopyTo(memory);
-                    return System.Text.Encoding.Latin1.GetString(memory.ToArray());
+                    return string.Concat(Directory.GetFiles(directory).OrderBy(f => f).Select(ReadOne));
                 }
-                catch (FileNotFoundException)
+                catch (Exception ex) when (attempt < 5 && ex is IOException or UnauthorizedAccessException)
                 {
-                    return "";
+                    Thread.Sleep(50);
                 }
-            }));
+            }
+        }
     }
 
     // ---- Replication ----

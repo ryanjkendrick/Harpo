@@ -1,9 +1,17 @@
 using Harpo.Data;
+using Harpo.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace Harpo.Services;
 
 public sealed record GroupSummary(Group Group, GroupRole? MyRole, int MemberCount, int EntryCount);
+
+/// <summary>
+/// The membership <see cref="GroupService.AddMemberAsync"/> stored. <see cref="Verified"/>
+/// is false when the directory could not be asked, so the page can say the name
+/// was taken as typed.
+/// </summary>
+public sealed record MemberAdded(string Username, string DisplayName, bool Verified);
 
 /// <summary>A personal vault as a site admin sees it: whose it is and how full, never what is in it.</summary>
 public sealed record PersonalVaultSummary(Group Group, string OwnerDisplayName, int EntryCount);
@@ -24,33 +32,34 @@ public class GroupService
     private readonly IDbContextFactory<HarpoDbContext> _dbFactory;
     private readonly TimeProvider _time;
     private readonly AuditService _audit;
+    private readonly SessionService _sessions;
+    private readonly IDirectory _directory;
 
-    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit)
+    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit,
+        SessionService sessions, IDirectory directory)
     {
         _dbFactory = dbFactory;
         _time = time;
         _audit = audit;
+        _sessions = sessions;
+        _directory = directory;
     }
+
+    // Every public method taking a UserContext first checks that the caller's
+    // session is still live (SessionService.RequireLiveAsync) — an open page
+    // keeps its user after a sign-out elsewhere. Always before taking the write
+    // gate, so the check never waits behind it.
 
     public async Task<List<GroupSummary>> GetMyGroupsAsync(UserContext user, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
         var memberships = await db.GroupMembers
             .Where(m => !m.IsDeleted && m.Username == user.Username)
             .ToDictionaryAsync(m => m.GroupId, m => m.Role, ct);
 
-        // A personal vault is listed for its owner alone — a site admin's
-        // see-everything right stops at it, and so would a membership row that
-        // somehow got attached to it.
-        var groupsQuery = db.Groups
-            .Where(g => !g.IsDeleted && (g.OwnerUsername == "" || g.OwnerUsername == user.Username));
-        if (!user.IsSiteAdmin)
-        {
-            var groupIds = memberships.Keys.ToList();
-            groupsQuery = groupsQuery.Where(g => groupIds.Contains(g.Id));
-        }
-        var groups = await groupsQuery
+        var groups = await VisibleGroups(db, user, memberships.Keys)
             .OrderBy(g => g.OwnerUsername == "" ? 1 : 0)
             .ThenBy(g => g.Name)
             .ToListAsync(ct);
@@ -76,6 +85,27 @@ public class GroupService
             .ToList();
     }
 
+    /// <summary>
+    /// The live groups a user may see in the vault: explicit memberships, every
+    /// shared group for a site admin, and their own personal vault. A personal
+    /// vault is listed for its owner alone — a site admin's see-everything
+    /// right stops at it, and so would a membership row that somehow got
+    /// attached to it. Shared with <see cref="VaultService.SearchEntriesAsync"/>
+    /// so that search can never reach a vault the listing would not show.
+    /// </summary>
+    internal static IQueryable<Group> VisibleGroups(
+        HarpoDbContext db, UserContext user, IEnumerable<Guid> memberGroupIds)
+    {
+        var groupsQuery = db.Groups
+            .Where(g => !g.IsDeleted && (g.OwnerUsername == "" || g.OwnerUsername == user.Username));
+        if (!user.IsSiteAdmin)
+        {
+            var groupIds = memberGroupIds.ToList();
+            groupsQuery = groupsQuery.Where(g => groupIds.Contains(g.Id));
+        }
+        return groupsQuery;
+    }
+
     public async Task<Group> CreateGroupAsync(UserContext user, string name, string description, CancellationToken ct = default)
     {
         name = name.Trim();
@@ -84,6 +114,7 @@ public class GroupService
             throw new VaultValidationException("Group name is required.", "name");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var now = _time.GetUtcNow().UtcDateTime;
         var group = new Group
@@ -104,6 +135,7 @@ public class GroupService
             Role = GroupRole.Admin,
             AddedBy = user.Username,
             CreatedAtUtc = now,
+            Verified = true, // the creator's identity came from the directory at sign-in
         });
         await db.SaveChangesAsync(ct);
         return group;
@@ -111,6 +143,7 @@ public class GroupService
 
     public async Task<(Group Group, GroupRole? MyRole)> GetGroupAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Group not found.");
@@ -131,6 +164,7 @@ public class GroupService
             throw new VaultValidationException("Group name is required.", "name");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var group = await RequireGroupAdminAsync(db, user, groupId, ct);
         group.Name = name;
@@ -140,6 +174,7 @@ public class GroupService
 
     public async Task DeleteGroupAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var group = await RequireGroupAdminAsync(db, user, groupId, ct);
         group.IsDeleted = true;
@@ -147,19 +182,32 @@ public class GroupService
         await _audit.RecordAsync(user, AuditActions.GroupDelete, group.Name, groupId: groupId);
     }
 
-    /// <summary>Tombstoned groups, newest first. Site admins only.</summary>
-    public async Task<List<Group>> GetDeletedGroupsAsync(UserContext user, CancellationToken ct = default)
+    public const int DeletedPageSize = 50;
+
+    /// <summary>
+    /// A page of tombstoned groups, newest first, plus the true total. Site admins only. Paged by the compound
+    /// (UpdatedAtUtc, Id) key so tied timestamps are neither skipped nor repeated.
+    /// </summary>
+    public async Task<DeletedPage<Group>> GetDeletedGroupsAsync(
+        UserContext user, DeletedCursor? after = null, int pageSize = DeletedPageSize, CancellationToken ct = default)
     {
         if (!user.IsSiteAdmin)
         {
             throw new VaultAccessDeniedException("Only site admins can see deleted groups.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        return await db.Groups
-            .Where(g => g.IsDeleted && g.OwnerUsername == "")
-            .OrderByDescending(g => g.UpdatedAtUtc)
-            .Take(50)
+        var deleted = db.Groups.Where(g => g.IsDeleted && g.OwnerUsername == "");
+        var total = await deleted.CountAsync(ct);
+        var page = after is null
+            ? deleted
+            : deleted.Where(g => g.UpdatedAtUtc < after.UpdatedAtUtc
+                || (g.UpdatedAtUtc == after.UpdatedAtUtc && g.Id.CompareTo(after.Id) < 0));
+        var items = await page
+            .OrderByDescending(g => g.UpdatedAtUtc).ThenByDescending(g => g.Id)
+            .Take(pageSize)
             .ToListAsync(ct);
+        return new DeletedPage<Group>(items, total);
     }
 
     /// <summary>Restores a deleted group; its entries that were not individually deleted come back with it.</summary>
@@ -169,6 +217,7 @@ public class GroupService
         {
             throw new VaultAccessDeniedException("Only site admins can restore deleted groups.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && g.IsDeleted && g.OwnerUsername == "", ct)
             ?? throw new VaultNotFoundException("Deleted group not found.");
@@ -187,7 +236,48 @@ public class GroupService
             .ToListAsync(ct);
     }
 
-    public async Task AddMemberAsync(UserContext user, Guid groupId, string username, string displayName, GroupRole role, CancellationToken ct = default)
+    /// <summary>Most suggestions <see cref="SearchAccountsAsync"/> returns.</summary>
+    public const int AccountSuggestionLimit = 10;
+
+    /// <summary>
+    /// Directory accounts matching <paramref name="term"/>, as suggestions for
+    /// the add-member field. Only someone who may add members to
+    /// <paramref name="groupId"/> may search, so the directory is not an open
+    /// phone book for every signed-in user. Unavailable when the directory
+    /// cannot be asked (LDAP without a service account, or the server is down).
+    /// </summary>
+    public async Task<DirectorySearchResult> SearchAccountsAsync(UserContext user, Guid groupId, string term, CancellationToken ct = default)
+    {
+        await _sessions.RequireLiveAsync(user, ct);
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            await RequireGroupAdminAsync(db, user, groupId, ct);
+        }
+        term = term.Trim();
+        if (term.Length == 0)
+        {
+            return new DirectorySearchResult(true, []);
+        }
+        return await _directory.SearchAccountsAsync(term, AccountSuggestionLimit, ct);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="username"/> to the group, after asking the directory
+    /// who that is. A name the directory does not know, or knows as disabled,
+    /// is refused — a typo would otherwise grant access to nobody today and to
+    /// whoever is given that name tomorrow. The display name stored is the
+    /// directory's, not what was typed.
+    /// <para>
+    /// When the directory cannot be asked, the membership is still made, from
+    /// the name and display name as typed, and recorded as unverified (on the
+    /// row, in the audit detail, and in the result). That is deliberate: in
+    /// LDAP mode the asking needs <c>Auth:Ldap:ServiceUser</c>, which is
+    /// optional, and deployments without one must still be able to add people.
+    /// Whether verification is enforced is the operator's choice, made by
+    /// configuring the service account.
+    /// </para>
+    /// </summary>
+    public async Task<MemberAdded> AddMemberAsync(UserContext user, Guid groupId, string username, string displayName, GroupRole role, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
         if (username.Length == 0)
@@ -195,7 +285,41 @@ public class GroupService
             throw new VaultValidationException("Username is required.");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
+        // Rights first, so the directory answers only those allowed to add
+        // members — the refusals below say whether an account exists. The
+        // lookup happens outside the write gate (it is a network round trip);
+        // the rights are checked again inside it.
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            await RequireGroupAdminAsync(db, user, groupId, ct);
+        }
+        var lookup = await _directory.LookupAccountAsync(username, ct);
+        bool verified;
+        switch (lookup.Status)
+        {
+            case DirectoryLookupStatus.Found:
+                var account = lookup.Account!;
+                if (account.Disabled)
+                {
+                    throw new VaultValidationException($"'{account.Username}' is disabled in the directory.");
+                }
+                username = account.Username;
+                displayName = account.DisplayName;
+                verified = true;
+                break;
+            case DirectoryLookupStatus.NotFound:
+                throw new VaultValidationException($"No account named '{username}' in the directory.");
+            case DirectoryLookupStatus.Ambiguous:
+                throw new VaultValidationException(
+                    $"More than one account in the directory is named '{username}'; ask an administrator to narrow Auth:Ldap:SearchBase.");
+            default:
+                verified = false;
+                break;
+        }
+
         Group group;
+        string storedDisplayName;
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
             // "Is this user already a member?" and the insert are one atomic step.
@@ -222,29 +346,36 @@ public class GroupService
                 existing.DisplayName = string.IsNullOrWhiteSpace(displayName) ? existing.DisplayName : displayName.Trim();
                 existing.AddedBy = user.Username;
                 existing.CreatedAtUtc = now;
+                existing.Verified = verified;
+                storedDisplayName = existing.DisplayName;
             }
             else
             {
+                storedDisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim();
                 db.GroupMembers.Add(new GroupMember
                 {
                     Id = id,
                     GroupId = groupId,
                     Username = username,
-                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim(),
+                    DisplayName = storedDisplayName,
                     Role = role,
                     AddedBy = user.Username,
                     CreatedAtUtc = now,
+                    Verified = verified,
                 });
             }
             await db.SaveChangesAsync(ct);
         }
         await _audit.RecordAsync(user, AuditActions.MemberAdd, group.Name,
-            detail: $"{username} as {role}", groupId: groupId);
+            detail: verified ? $"{username} as {role}" : $"{username} as {role} (unverified: directory not available)",
+            groupId: groupId);
+        return new MemberAdded(username, storedDisplayName, verified);
     }
 
     public async Task SetMemberRoleAsync(UserContext user, Guid groupId, string username, GroupRole role, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
+        await _sessions.RequireLiveAsync(user, ct);
         Group group;
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
@@ -273,6 +404,7 @@ public class GroupService
     public async Task RemoveMemberAsync(UserContext user, Guid groupId, string username, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
+        await _sessions.RequireLiveAsync(user, ct);
         Group group;
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
@@ -311,6 +443,7 @@ public class GroupService
         {
             throw new VaultAccessDeniedException("Only site administrators can do that.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var groupsWithAdmin = db.GroupMembers
             .Where(m => !m.IsDeleted && m.Role == GroupRole.Admin)
@@ -336,6 +469,7 @@ public class GroupService
     /// </summary>
     public async Task<Group> EnsurePersonalVaultAsync(UserContext user, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         // "Does it exist?" and the insert are one step: two pages of the same
         // person opening at once must not both try to create it.
@@ -372,6 +506,7 @@ public class GroupService
             Role = GroupRole.Admin,
             AddedBy = user.Username,
             CreatedAtUtc = now,
+            Verified = true, // the owner's own sign-in
         });
         await db.SaveChangesAsync(ct);
         return group;
@@ -398,6 +533,7 @@ public class GroupService
         {
             throw new VaultAccessDeniedException("Only site administrators can do that.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var vaults = await db.Groups
             .Where(g => !g.IsDeleted && g.OwnerUsername != "")
@@ -436,6 +572,7 @@ public class GroupService
             throw new VaultAccessDeniedException("Only site administrators can take over a personal vault.");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
         Group group;
         string owner;
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
@@ -466,6 +603,7 @@ public class GroupService
                     Role = GroupRole.Admin,
                     AddedBy = user.Username,
                     CreatedAtUtc = now,
+                    Verified = true, // the site admin's own sign-in
                 });
             }
             else
@@ -474,6 +612,7 @@ public class GroupService
                 membership.Role = GroupRole.Admin;
                 membership.AddedBy = user.Username;
                 membership.CreatedAtUtc = now;
+                membership.Verified = true;
             }
             await db.SaveChangesAsync(ct);
         }
@@ -498,6 +637,7 @@ public class GroupService
     /// <summary>Role of the user in the group, resolved fresh; null when not a member.</summary>
     public async Task<GroupRole?> GetMyRoleAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         return await GetRoleAsync(db, groupId, user.Username, ct);
     }

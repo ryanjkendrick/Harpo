@@ -14,6 +14,7 @@
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
+<SessionWatch />
 
 <div class="page-narrow">
     <h1>Administration</h1>
@@ -352,7 +353,7 @@
     {
         <section class="panel">
             <h2>Deleted groups</h2>
-            <p class="muted">Restoring a group brings back the passwords that were not deleted individually.</p>
+            <p class="muted">@_deletedGroupsTotal deleted. Restoring a group brings back the passwords that were not deleted individually.</p>
             <div class="card-list">
                 @foreach (var g in _showAllDeletedGroups ? _deletedGroups : _deletedGroups.Take(DeletedGroupsShown))
                 {
@@ -371,6 +372,12 @@
             {
                 <button class="btn btn-ghost btn-sm show-all" @onclick="() => _showAllDeletedGroups = !_showAllDeletedGroups">
                     @(_showAllDeletedGroups ? "Show fewer" : $"Show all {_deletedGroups.Count}")
+                </button>
+            }
+            @if (_showAllDeletedGroups && _deletedGroups.Count < _deletedGroupsTotal)
+            {
+                <button class="btn btn-ghost btn-sm show-all" @onclick="LoadOlderDeletedGroupsAsync">
+                    Show older (@(_deletedGroupsTotal - _deletedGroups.Count) more)
                 </button>
             }
         </section>
@@ -521,6 +528,7 @@
     private List<GroupSummary>? _groups;
     private List<AuditEvent>? _auditEvents;
     private List<Group>? _deletedGroups;
+    private int _deletedGroupsTotal;
     private List<Group>? _adminlessGroups;
     private const int DeletedGroupsShown = 5;
     private bool _showAllDeletedGroups;
@@ -710,8 +718,8 @@
         {
             return;
         }
-        var oldest = _auditEvents[^1].OccurredAtUtc;
-        var more = await Audit.GetEventsAsync(_user!, beforeUtc: oldest, take: AuditPageSize, category: _auditCategory);
+        var oldest = AuditCursor.Of(_auditEvents[^1]);
+        var more = await Audit.GetEventsAsync(_user!, before: oldest, take: AuditPageSize, category: _auditCategory);
         _auditEvents.AddRange(more);
         _auditHasMore = more.Count == AuditPageSize;
     }
@@ -727,7 +735,7 @@
         _groups = await Groups.GetMyGroupsAsync(_user);
         _status = await Engine.GetStatusAsync();
         await LoadAuditAsync();
-        _deletedGroups = await Groups.GetDeletedGroupsAsync(_user);
+        await LoadDeletedGroupsAsync();
         _adminlessGroups = await Groups.GetGroupsWithoutAdminAsync(_user);
         _personalVaults = await Groups.GetPersonalVaultsAsync(_user);
         _icons = await Icons.GetAllAsync();
@@ -765,11 +773,31 @@
         await RefreshIconsAsync();
     }
 
+    private async Task LoadDeletedGroupsAsync()
+    {
+        var page = await Groups.GetDeletedGroupsAsync(_user!);
+        _deletedGroups = page.Items;
+        _deletedGroupsTotal = page.Total;
+    }
+
+    /// <summary>Appends the next page; the cursor is the last group shown, so ties are not skipped.</summary>
+    private async Task LoadOlderDeletedGroupsAsync()
+    {
+        if (_deletedGroups is not { Count: > 0 })
+        {
+            return;
+        }
+        var last = _deletedGroups[^1];
+        var page = await Groups.GetDeletedGroupsAsync(_user!, new DeletedCursor(last.UpdatedAtUtc, last.Id));
+        _deletedGroups.AddRange(page.Items);
+        _deletedGroupsTotal = page.Total;
+    }
+
     private async Task RestoreGroupAsync(Group group)
     {
         await Groups.RestoreGroupAsync(_user!, group.Id);
         _groups = await Groups.GetMyGroupsAsync(_user!);
-        _deletedGroups = await Groups.GetDeletedGroupsAsync(_user!);
+        await LoadDeletedGroupsAsync();
         await LoadAuditAsync();
     }
 

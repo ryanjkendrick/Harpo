@@ -1,7 +1,7 @@
 # Harpo end-to-end tests
 
-Two suites, both driving the live two-site demo with a real headless Chrome.
-Each creates its own throwaway group and entries and deletes the group
+Four scripts, all driving the live two-site demo with a real headless Chrome.
+Each creates its own throwaway entries (and groups) and deletes them
 afterwards.
 
 - **`offline-vault.e2e.js`** — the PWA offline vault. Registers the service
@@ -10,16 +10,47 @@ afterwards.
   generates 2FA codes offline. It also proves that another account signing in
   to the same browser cannot take the vault over, and that a refresh still in
   flight when the vault is locked cannot undo the lock.
+- **`offline-disable.e2e.js`** — what a device does when the administrator
+  turns offline access off. Not part of `test:all`: the script cannot change
+  the container's environment, so you give it `HARPO_RESTART_CMD`, a shell
+  command that restarts the server with `Harpo__Offline__Enabled=false`
+  (for example a `docker compose ... up -d --force-recreate` with the offline
+  switch set to false). It syncs a copy, leaves the vault unlocked, runs the
+  command, clicks Refresh, and expects the disabled message, an empty entry
+  list, a deleted IndexedDB record, and an offline reload (network cut) that
+  offers no unlock. It leaves the stack with offline access disabled; restore
+  it yourself. Run it on a throwaway stack, never the demo:
+  `HARPO_RESTART_CMD='...' npm run test:disable` — expect 10/10 checks passed.
+  (Headless Chrome keeps `navigator.onLine` true while its network is cut, so
+  the page shows the setup screen rather than the "no offline data" message;
+  the script accepts either, since neither offers an unlock.)
+- **`session.e2e.js`** — signing out ends the session on the server. One tab
+  opens the vault and reveals a password; a second tab of the same browser
+  signs out; the first tab, whose live connection still holds the signed-in
+  user, clicks Reveal and Copy again and must be told the session has ended
+  without being shown the password, then must move to the sign-in page by
+  itself within 30 seconds. The cookie, copied before the sign-out, is then
+  replayed: it must get neither a page, nor an offline snapshot, nor a live
+  connection. Needs only a single site with offline access on; it adds one
+  entry to the first account's personal vault and deletes it. A disabled
+  directory account is not covered here (Development-mode users cannot be
+  disabled without a restart): the unit tests cover it with a controllable
+  clock, and it was checked by hand against the Samba AD lab.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,
-  copying from history, the entries layout at seven widths (nothing may
+  copying from history, the entry details dialog as a Viewer on a 390px touch
+  screen (notes as selectable text with a copy button, a notes indicator on
+  the row, "No notes" when empty), the entries layout at seven widths (nothing may
   overflow or sit under another element, at rest or with secrets revealed),
-  links from the health report, the Administration page's navigation and
+  links from the health report, the vault search finding an entry in another
+  vault (the personal vault, named and linked, with no secret in the result,
+  fitting at 1280px and 390px, and the link opening that vault filtered), the Administration page's navigation and
   audit-log filters, and personal vaults as two accounts see them: one each,
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
-  — after which the second account gets a fresh one. It also holds the
+  — after which the second account gets a fresh one — plus a site admin who
+  is given an explicit Viewer membership keeping the edit controls. It also holds the
   content security policy to its word:
   every page must be served with it, nothing the app does may be blocked by
   it, and an injected inline script or style must have no effect — so a
@@ -37,8 +68,9 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 38/38 checks passed
-npm run test:all  # both
+npm run test:ui   # interactive UI — expect 52/52 checks passed
+npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
+npm run test:all  # all three
 ```
 
 Environment overrides: `HARPO_BASE_URL`, `HARPO_CONTAINER`, `HARPO_USER`

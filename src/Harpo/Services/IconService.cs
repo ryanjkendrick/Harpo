@@ -53,16 +53,19 @@ public class IconService
     private readonly AuditService _audit;
     private readonly Microsoft.Extensions.Options.IOptions<IconOptions> _options;
     private readonly ILogger<IconService> _logger;
+    private readonly SessionService _sessions;
 
     public IconService(
         IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit,
-        Microsoft.Extensions.Options.IOptions<IconOptions> options, ILogger<IconService> logger)
+        Microsoft.Extensions.Options.IOptions<IconOptions> options, ILogger<IconService> logger,
+        SessionService sessions)
     {
         _dbFactory = dbFactory;
         _time = time;
         _audit = audit;
         _options = options;
         _logger = logger;
+        _sessions = sessions;
     }
 
     public string ImportPath => _options.Value.ImportPath;
@@ -109,6 +112,7 @@ public class IconService
         }
         ValidateImage(contentType, data);
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var icon = new CustomIcon
         {
@@ -200,6 +204,7 @@ public class IconService
         {
             throw new VaultAccessDeniedException("Only site admins can edit catalogue icons.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var icon = await db.CustomIcons.SingleOrDefaultAsync(i => i.Id == id && !i.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Icon not found.");
@@ -246,6 +251,7 @@ public class IconService
         {
             throw new VaultAccessDeniedException("Only site admins can remove catalogue icons.");
         }
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var icon = await db.CustomIcons.SingleOrDefaultAsync(i => i.Id == id && !i.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Icon not found.");

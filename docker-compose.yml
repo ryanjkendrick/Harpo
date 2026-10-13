@@ -15,7 +15,7 @@ services:
     # you have read that version's notes. Pin an exact version (e.g. :0.4.0) to
     # freeze it completely. To build from source instead, replace the `image:`
     # line with `build: .`
-    image: ryanjkendrick/harpo:0.5
+    image: ryanjkendrick/harpo:0.6
     container_name: harpo
     restart: unless-stopped
     ports:

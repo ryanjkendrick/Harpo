@@ -19,8 +19,11 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   direct LDAP(S) bind from the app; membership of a configurable AD group grants
   site-admin rights. Works from Linux containers (no domain-joined host needed).
 - **Groups gate access** — passwords live inside groups, and only users who have
-  been added to a group can see its passwords. Group admins manage membership;
-  any user can create a group and becomes its admin.
+  been added to a group, and site administrators, can see its passwords. Group admins manage membership;
+  any user can create a group and becomes its admin. New members are picked
+  from directory suggestions and checked before they are added — an unknown or
+  disabled account is refused, and the directory's display name is stored
+  (see "Active Directory settings" for what that needs).
 - **Personal vaults** — everyone also gets a vault of their own, created the
   first time they open Harpo, for the passwords that are theirs alone. Only
   its owner can open it: site admins' see-everything right stops at it, and
@@ -28,7 +31,13 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   leaves, a site admin can take their vault over as an ordinary group — an
   audited, one-way step the owner would see.
 - **Named, decorated entries** — every password has a name, an icon, the URL it
-  belongs to, an account username, and free-text notes. Icons come from emoji
+  belongs to, an account username, and free-text notes. A **details view**,
+  open to read-only members too, shows the full URL and the notes as
+  selectable, copyable text; a small mark on the row says an entry has notes.
+  The vault's search box also looks in your **other vaults** (from two
+  characters on), listing matches below the open group's with the vault named
+  and linked, so an account can be found without remembering its group.
+  Icons come from emoji
   or an org-wide **custom icon catalogue**: anyone can upload small images
   (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
   picker, they replicate to every site, and site admins fully manage the
@@ -81,8 +90,8 @@ the replication high-watermark vector.
 
 ## Testing real AD logins — the Samba AD lab
 
-To exercise the genuine LDAP code path (bind, `sAMAccountName` lookup, `memberOf`
-→ site-admin mapping) without touching a real domain controller, the repo ships a
+To exercise the genuine LDAP code path (bind, "Who am I?", `sAMAccountName`
+lookup, `memberOf` → site-admin mapping) without touching a real domain controller, the repo ships a
 lab compose file with a **Samba Active Directory DC**:
 
 ```bash
@@ -171,14 +180,100 @@ running with an empty key.
 | `Auth__Ldap__UseSsl` | Use LDAPS (strongly recommended — plain LDAP sends the bind password in clear text) | `true` |
 | `Auth__Ldap__SkipCertificateValidation` | Accept any DC certificate (labs only) | `false` |
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
-| `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups | `DC=corp,DC=example,DC=com` |
+| `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups — must contain every account that signs in | `DC=corp,DC=example,DC=com` |
 | `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
+| `Auth__Ldap__ServiceUser` | *Optional.* Read-only account used to re-check signed-in users and to look up the accounts group admins add (see below) — UPN, `DOMAIN\name` or DN | `svc-harpo@corp.example.com` |
+| `Auth__Ldap__ServicePassword` | Its password — prefer `Auth__Ldap__ServicePassword__File` | — |
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
 the user** to validate them, then reads `displayName` and `memberOf` from their
-directory entry. No service account is required. Inside Harpo, people are
-identified by their `sAMAccountName` — that's the username group admins type
-when adding members.
+directory entry. No service account is required to sign in. Inside Harpo,
+people are identified by their `sAMAccountName` — that's the username group
+admins type when adding members.
+
+How a sign-in becomes that identity:
+
+- The sign-in form takes `jsmith`, `jsmith@corp.example.com` (any UPN the
+  directory accepts, including alternate UPN suffixes) or `CORP\jsmith`. A bare
+  name is bound as `name@UpnSuffix`; anything with `@` or `\` is bound exactly as
+  typed.
+- What was typed is used **only for the bind**. After the bind succeeds, Harpo
+  asks the domain controller which account it just authenticated (the LDAP
+  "Who am I?" operation, which AD answers with `CORP\sAMAccountName`) and reads
+  that account's entry under `SearchBase`. The identity, display name and
+  site-admin membership all come from that one entry. A UPN's prefix is never
+  taken as an account name: `ada.admin@corp.example.com` signs in as `ada` if
+  that is the account it belongs to, and a UPN such as `ada@other.example` that
+  belongs to someone else signs in as *them*, not as `ada`.
+- It fails closed: if the directory gives no usable answer, or the account is
+  not found under `SearchBase` exactly once, the sign-in is refused with the
+  normal "Invalid username or password" message and a log line
+  ("Could not resolve the signed-in account …"). So `SearchBase` must cover
+  everyone who signs in — accounts outside it can no longer sign in as a plain
+  user.
+- Because the identity is the bare `sAMAccountName`, accounts with the same
+  `sAMAccountName` in different domains of one forest would be the same Harpo
+  user. Point Harpo at a single domain's DC and `SearchBase`.
+
+**Disabling someone in AD, and the service account.** Harpo never keeps a
+user's password, so once they are signed in it cannot ask the directory about
+them on its own. With `Auth__Ldap__ServiceUser` set, it re-checks every
+signed-in account every `Auth__RevalidateMinutes` (15): it binds as the service
+account and reads the user's `userAccountControl` and `memberOf`. An account
+that is **disabled** (or deleted, or moved out of `SearchBase`) loses all its
+sessions — every tab, every request, the offline snapshot API — within that
+interval plus 30 seconds; one whose **site-admin membership changed** is
+signed out so the new role applies at the next sign-in. Any domain user can
+read those attributes, so an ordinary unprivileged account will do — give it a
+long random password that does not expire, and nothing else. If the directory
+refuses the service account (wrong or expired password), Harpo logs an error
+at every check and treats it like an unreachable directory: sessions carry on
+for `Auth__RevalidateGraceMinutes`, then end. Without a service account, a disabled
+user keeps a session they already have until it expires (`Auth__SessionHours`,
+8 hours idle by default) or they sign out; a fresh sign-in is refused
+immediately either way. If that is too long for you and a service account is
+not an option, shorten `Auth__SessionHours` or set
+`Auth__SlidingExpiration=false`. Only the disabled flag is read: an account
+that is merely locked out or whose password expired keeps its session.
+
+**Adding members, and the service account.** The same service account lets
+Harpo check who a group admin is adding. As the admin types two or more
+characters of a username, the field suggests up to ten directory accounts
+whose `sAMAccountName` starts with, or whose `displayName` contains, what was
+typed (computer accounts are left out; disabled accounts are shown with a
+"disabled" badge). Choosing one fills in the account name and its display
+name. Whether chosen or typed, the name is looked up again when **Add member**
+is pressed, under `SearchBase`, and:
+
+- an account that exists and is enabled is added under its `sAMAccountName`
+  with the **directory's display name** — a display name typed in the form is
+  ignored;
+- an account that does not exist is refused ("No account named '…' in the
+  directory."), and so is a disabled one ("'…' is disabled in the
+  directory.") — a typo can no longer grant access to nobody today and to
+  whoever is given that name tomorrow;
+- only group admins and site admins can search or get those answers, so the
+  feature does not turn Harpo into a directory browser for every user.
+
+Without a service account (or while the directory cannot be reached, or
+refuses the service account) the directory cannot be asked. The page says so
+in one line under the form, and members are added as before: the name and
+display name exactly as typed. Such a membership is recorded as **unverified**:
+its audit entry reads `jsmith as Member (unverified: directory not available)`
+instead of `jsmith as Member`, and the members table shows an "unverified"
+badge whose tooltip says it was not checked against the directory. That is a
+deliberate choice, not a fallback that hides a fault: the service account is
+optional, adding members has to keep working for deployments without one, and
+whether verification is enforced is the operator's decision, made by
+configuring it. Memberships made before this check existed are recorded as
+*not known*, not as unverified, and show no badge — an upgrade does not flag
+every existing member; the same goes for memberships that arrive from a site
+still on an older version, which does not send the field. Removing and
+re-adding a member while the directory answers verifies them. The group's
+creator (and a site admin taking over a personal vault) is never marked: their
+identity came from their own sign-in. In Development mode the configured
+`Auth__DevUsers` are the directory (`Auth__DevUsers__N__Disabled=true` stands in
+for a disabled account).
 
 ## Offline access (PWA)
 
@@ -192,7 +287,9 @@ How it works, honestly:
 - While online and signed in, the device downloads the user's entries from
   `/api/offline/snapshot` (an audited, rate-limited bulk decrypt, scoped to the
   groups the user is **an explicit member of** — site admins don't get an
-  everything-snapshot).
+  everything-snapshot). A signed-out, expired or disabled session gets no
+  snapshot (see "Security model"); a copy the device already holds stays
+  until it expires or is wiped.
 - The browser re-encrypts the snapshot locally with WebCrypto — a random
   AES-256-GCM data key wrapped by a key derived from the offline passphrase
   (PBKDF2-SHA256, 600k iterations) — and stores it in IndexedDB. **The server's
@@ -216,7 +313,13 @@ Harpo__Offline__Enabled: "false"   # forbid offline password storage org-wide
 ```
 
 Disabling it hides the feature, turns the snapshot API dark (404), and makes
-devices **wipe their local copy the next time they contact the server**. Be
+devices **wipe their local copy the next time they contact the server**: a
+device opening the offline page, or refreshing a vault it already has
+unlocked, is told offline access is off, drops the keys and passwords from
+memory and the screen, deletes the stored copy, and stops any sync still in
+flight from writing it back. A sign-in prompt, a network failure or a
+different account being signed in do not count as that answer and wipe
+nothing. Be
 honest about the physics: a device that never reconnects keeps its encrypted
 copy until it expires — no server can remotely erase a disconnected laptop.
 That copy is protected by the user's passphrase (and their disk encryption),
@@ -570,7 +673,12 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
-| `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`) |
+| `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`, `Disabled`) |
+| `Auth__SessionHours` | `8` | How long a sign-in lasts: idle time when sliding, total time otherwise. Also the cookie's lifetime |
+| `Auth__SlidingExpiration` | `true` | Activity extends the session; `false` ends it `SessionHours` after sign-in however busy |
+| `Auth__RevalidateMinutes` | `15` | How often each signed-in account is re-checked against the directory (disabled? admin role changed?); `0` = never |
+| `Auth__RevalidateGraceMinutes` | `240` | While the directory cannot be reached, how long past a missed re-check a session survives before it ends |
+| `Auth__Ldap__ServiceUser` / `ServicePassword` | *(empty)* | Optional read-only account that makes LDAP re-checks and verified member selection possible — see "Active Directory settings" |
 | `Auth__Lockout__Enabled` | `true` | Brute-force lockout on the sign-in form |
 | `Auth__Lockout__MaxFailuresPerAccount` | `5` | Failures against one account before it is blocked |
 | `Auth__Lockout__MaxFailuresPerIp` | `20` | Failures from one address (any accounts) before it is blocked |
@@ -596,8 +704,11 @@ All settings can be given as environment variables (`Section__Key` form).
   answers — so they get the same treatment as passwords at rest and between
   sites. Unlike a password they are part of what a member sees when opening a
   group, so they are decrypted with the list rather than on a reveal click.
+  Every member, Viewers included, reads them in the entry's details view.
   Entry names, URLs and usernames stay plain text in the database (they are
-  searched and matched on); turn on file encryption if those matter too.
+  searched and matched on, across every vault you can see and never another
+  user's personal vault; notes and passwords are not searched); turn on file
+  encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions
   only**, and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
@@ -610,6 +721,11 @@ All settings can be given as environment variables (`Section__Key` form).
   — is one-way, audited, and visible to the owner.
 - The AD bind sends the user's password to the DC — use LDAPS (`UseSsl=true`).
   Failed logins are logged; invalid and unreachable-DC cases are distinguished.
+- **Who signed in is decided by the directory, not by what was typed.** After
+  the bind, Harpo asks the DC which account it authenticated and takes the
+  identity and site-admin rights from that account's entry; if that cannot be
+  resolved to exactly one entry, the sign-in is refused (see "Active Directory
+  settings").
 - **Brute-force lockout** is on by default: 5 failures against an account (or 20
   from one address across any accounts) within 15 minutes blocks further
   attempts for 5 minutes — tune via `Auth__Lockout__*`. Only *failures* count;
@@ -638,6 +754,26 @@ All settings can be given as environment variables (`Section__Key` form).
   for as long as it stays open; without a session there is nothing to open,
   and one account — or one runaway browser — cannot exhaust it. A tab over the
   limit loads but does not respond until another is closed.
+- **Signing out ends the session on the server, not just in one tab.** Each
+  sign-in is recorded server-side and the cookie names that record; every
+  request, every reveal, copy or change made from an open page, and the
+  offline snapshot API check it is still there. Sign out in one tab and the
+  others can no longer reveal anything — an attempt says the session has
+  ended — and within 30 seconds they move to the sign-in page, clearing
+  whatever was on screen. Sessions end after `Auth__SessionHours` (8) of
+  inactivity, or that long after sign-in with `Auth__SlidingExpiration=false`.
+  An account **disabled in the directory**, or whose **site-admin membership
+  changed**, loses its sessions within `Auth__RevalidateMinutes` (15) plus
+  30 seconds — in LDAP mode only when a read-only `Auth__Ldap__ServiceUser` is
+  configured, because Harpo binds as the user and keeps no password to ask
+  with later. Without one, a disabled account keeps the session it already has
+  until it expires or signs out (new sign-ins are refused at once); shorten
+  `Auth__SessionHours` if that is too long. If the directory **cannot be
+  reached**, sessions carry on and the check is retried every 30 seconds for
+  up to `Auth__RevalidateGraceMinutes` (240) past the missed check; after that
+  they end, as sign-ins already fail while the directory is down. Sessions are
+  per site and survive a restart. What none of this can do is reach an
+  offline copy already on a device — see "Offline access".
 - **The cookie/antiforgery key ring is encrypted at rest** with the master key
   (it lives in `Harpo__DataProtectionKeysPath`, i.e. `/data/keys`, which
   SQLCipher does *not* cover). So a stolen volume or backup cannot be used to
@@ -711,7 +847,7 @@ for testing. Forks: change the `IMAGE` name in
 `.github/workflows/release.yml` and in `docker-compose.yml`.
 
 Two things are pinned on purpose and move only by hand. `docker-compose.yml`
-names a release line (`:0.5`) rather than `latest`, so a new minor version
+names a release line (`:0.6`) rather than `latest`, so a new minor version
 means updating that tag as part of the release. And the workflow's actions are
 pinned to commit SHAs rather than tags — the file's header says how to update
 one.
@@ -746,6 +882,9 @@ one.
   once more (the log says so), which restores the mark on vaults it received
   while it was behind; allow for one pass over the peers' data. Upgraded sites
   exchanging rows with each other are unaffected.
+- **Upgrading from 0.5.0 or earlier: everyone signs in again once.** Cookies
+  issued before server-side sessions existed name no session, so they are
+  refused (and cleared) on the first request after the upgrade.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read

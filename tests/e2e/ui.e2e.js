@@ -27,6 +27,7 @@ const ENTRY = `E2E Router ${RUN_ID}`;
 const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
 const PERSONAL_ENTRY = `E2E Personal ${RUN_ID}`;
 const OTHER_PERSONAL_ENTRY = `E2E Other Personal ${RUN_ID}`;
+const OTHER_GROUP = `E2E Other Group ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
@@ -184,6 +185,7 @@ async function groupId(page) {
     let takenOverId = null;
     let personalId = null;
     let otherContext = null;
+    let otherGroupId = null;
 
     try {
         await signIn(page);
@@ -447,6 +449,94 @@ async function groupId(page) {
         await page.waitForSelector(".entries-table .revealed", { timeout: 10000 });
         check("a personal entry is created and revealed like any other", true);
 
+        // ---- 7a. Global search: an entry in another vault is found from this one ----
+        // The shared test group is open and holds nothing called PERSONAL_ENTRY;
+        // the personal vault does. Typing keeps retrying until the circuit has
+        // attached, since an input event sent before that is lost.
+        await page.setViewport({ width: 1280, height: 860 });
+        await page.goto(`${BASE}/vault/${id}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".vault-toolbar .search");
+        const typeSearch = async (text, waitFor) => {
+            for (let i = 0; i < 12; i++) {
+                await setValue(page, ".vault-toolbar .search", text);
+                try {
+                    await page.waitForFunction(waitFor, { timeout: 2500 });
+                    return true;
+                } catch { /* not attached yet */ }
+            }
+            return false;
+        };
+        const found = await typeSearch(PERSONAL_ENTRY, () => !!document.querySelector(".search-others .search-hit"));
+        const searchHit = await page.evaluate((name) => {
+            const hit = [...document.querySelectorAll(".search-others .search-hit")].find((h) => h.textContent.includes(name));
+            const link = hit?.querySelector("a.search-hit-vault");
+            return {
+                heading: document.querySelector(".search-others-title")?.textContent.trim(),
+                hit: !!hit,
+                vault: link?.textContent.trim(),
+                href: link?.getAttribute("href") ?? "",
+                buttons: hit ? hit.querySelectorAll("button").length : -1,
+                text: document.querySelector(".search-others")?.textContent ?? "",
+                // The open group's own results are untouched: nothing matches here.
+                openGroupSays: document.querySelector(".vault-entries .empty-state")?.textContent.trim() ?? "",
+            };
+        }, PERSONAL_ENTRY);
+        check("searching from a shared group lists a match in the personal vault under 'Also in other vaults', named Personal",
+            found && searchHit.heading === "Also in other vaults" && searchHit.hit && searchHit.vault === "Personal"
+            && searchHit.href === `/vault/${personalId}?q=${encodeURIComponent(PERSONAL_ENTRY)}`
+            && searchHit.openGroupSays.includes("Nothing matches your search."), JSON.stringify(searchHit));
+        check("a search result shows no password and offers no reveal",
+            !searchHit.text.includes("Pv7$kq2!Lm9#xW4e") && searchHit.buttons === 0 && !(await page.$(".search-others .revealed, .search-others .mask")));
+
+        // One character is not enough to search elsewhere; the section goes away.
+        await setValue(page, ".vault-toolbar .search", "E");
+        await page.waitForFunction(() => !document.querySelector(".search-others"), { timeout: 5000 });
+        check("a single character does not search other vaults", true);
+
+        const none = await typeSearch(`zz-no-such-entry-${RUN_ID}`,
+            () => document.querySelector(".search-others .search-none"));
+        check("a term nothing else matches says so quietly instead of listing", none
+            && (await page.evaluate(() => document.querySelectorAll(".search-others .search-hit").length)) === 0);
+
+        // The result card fits a phone and the wide layout alike.
+        await typeSearch(PERSONAL_ENTRY, () => !!document.querySelector(".search-others .search-hit"));
+        const fits = [];
+        for (const width of [1280, 390]) {
+            // Width alone: toggling isMobile reloads the page, which would drop the typed search.
+            await page.setViewport({ width, height: 860 });
+            await sleep(500);
+            fits.push(await page.evaluate((w) => {
+                const root = document.documentElement;
+                const hit = document.querySelector(".search-others .search-hit");
+                const link = hit?.querySelector("a.search-hit-vault");
+                if (!hit || !link) {
+                    return `${w}: missing`;
+                }
+                const h = hit.getBoundingClientRect();
+                const l = link.getBoundingClientRect();
+                const inside = h.left >= 0 && h.right <= root.clientWidth + 1 && l.left >= h.left - 1 && l.right <= h.right + 1;
+                return inside && root.scrollWidth <= root.clientWidth + 1
+                    ? "ok" : `${w}: overflow ${JSON.stringify({ hl: h.left, hr: h.right, ll: l.left, lr: l.right, sw: root.scrollWidth, cw: root.clientWidth })}`;
+            }, width));
+        }
+        await page.setViewport({ width: 1280, height: 860 });
+        check("the other-vaults result fits at 1280px and at 390px with no sideways scroll", fits.every((f) => f === "ok"), fits.join(" | "));
+
+        // Clicking the vault name opens it already filtered to the entry.
+        await page.evaluate(() => document.querySelector(".search-others a.search-hit-vault").click());
+        await page.waitForFunction((pid) => location.pathname === `/vault/${pid}`, { timeout: 15000 }, personalId);
+        await page.waitForFunction(
+            (n) => document.querySelector(".vault-toolbar h1")?.textContent.trim() === "Personal"
+                && document.querySelector(".vault-toolbar .search")?.value === n
+                && document.querySelectorAll(".entries-table tbody .entry-name").length === 1,
+            { timeout: 15000 }, PERSONAL_ENTRY);
+        check("clicking the vault name opens the personal vault filtered to that entry",
+            await page.evaluate((n) => document.querySelector(".entries-table tbody .entry-name").textContent.trim() === n, PERSONAL_ENTRY));
+        // The vault we landed in is the match's own, so nothing is "elsewhere".
+        await sleep(800);
+        check("the vault the result led to does not list its own entry again under 'Also in other vaults'",
+            !(await page.evaluate((n) => [...document.querySelectorAll(".search-others .search-hit")].some((h) => h.textContent.includes(n)), PERSONAL_ENTRY)));
+
         await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
         await page.waitForSelector(".card-list, .empty-state", { timeout: 15000 });
         await sleep(600);
@@ -548,7 +638,141 @@ async function groupId(page) {
             theirsAfter.groups.includes(`${OTHER_USER}'s personal vault`)
             && !!theirsAfter.personal && theirsAfter.personal !== otherPersonalId,
             JSON.stringify(theirsAfter));
+        // A site admin given an explicit Viewer membership keeps the edit
+        // controls: the service lets site admins write to any shared group,
+        // and the page must not hide what the service allows (this regressed once).
+        await other.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+        await other.waitForSelector(".page-header .btn-primary");
+        await openDialog(other, ".page-header .btn-primary", "New group");
+        await setValue(other, ".modal-panel form > label:nth-of-type(1) input", OTHER_GROUP);
+        await sleep(300);
+        await submitDialog(other);
+        await other.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        for (let i = 0; i < 15 && !otherGroupId; i++) {
+            await other.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+            await sleep(800);
+            otherGroupId = await other.evaluate((g) =>
+                [...document.querySelectorAll('a[href^="/groups/"]')].find((a) => a.textContent.includes(g))?.getAttribute("href").split("/").pop() ?? null, OTHER_GROUP);
+        }
+        await other.goto(`${BASE}/groups/${otherGroupId}`, { waitUntil: "networkidle2" });
+        await other.waitForSelector(".add-member-row", { timeout: 15000 });
+        await sleep(600);
+        await setValue(other, ".add-member-row input:nth-of-type(1), .add-member-row label:nth-of-type(1) input", USER);
+        await other.evaluate(() => { const s = document.querySelector(".add-member-row select"); s.value = "Viewer"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+        await sleep(300);
+        await clickText(other, ".add-member-row button", "Add member");
+        await other.waitForFunction((u) => [...document.querySelectorAll(".members-table .mono")].some((e) => e.textContent.trim() === u), { timeout: 15000 }, USER);
+        const membership = await other.evaluate((u) => {
+            const row = [...document.querySelectorAll(".members-table tbody tr")].find((r) => r.querySelector(".mono")?.textContent.trim() === u);
+            return row?.querySelector("select")?.value ?? row?.querySelector(".badge")?.textContent.trim();
+        }, USER);
         await other.close();
+        await page.bringToFront();
+        const asViewerAdmin = await visitVault(page, otherGroupId);
+        check("a site admin with an explicit Viewer membership keeps the edit controls",
+            membership === "Viewer" && asViewerAdmin.canAdd && asViewerAdmin.toast === "",
+            JSON.stringify({ membership, asViewerAdmin }));
+
+        // ---- 7b. Entry details: a Viewer can read, select and copy the notes, on a phone ----
+        // The notes used to live only in a hover tooltip on the name cell, so a
+        // read-only member on a touch device could not reach them at all.
+        await page.goto(`${BASE}/groups/${id}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".add-member-row", { timeout: 15000 });
+        await sleep(600);
+        await setValue(page, ".add-member-row input:nth-of-type(1), .add-member-row label:nth-of-type(1) input", OTHER_USER);
+        await page.evaluate(() => { const s = document.querySelector(".add-member-row select"); s.value = "Viewer"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+        await sleep(300);
+        await clickText(page, ".add-member-row button", "Add member");
+        await page.waitForFunction((u) => [...document.querySelectorAll(".members-table .mono")].some((e) => e.textContent.trim() === u), { timeout: 15000 }, OTHER_USER);
+
+        const viewer = await otherContext.newPage();
+        await viewer.evaluateOnNewDocument(() => { window.confirm = () => true; });
+        await viewer.setViewport({ width: 390, height: 860, isMobile: true, hasTouch: true });
+        // Bob is still signed in: his context kept the cookie from section 7.
+        await viewer.goto(`${BASE}/vault/${id}`, { waitUntil: "networkidle2" });
+        await viewer.waitForSelector(".entries-table", { timeout: 15000 });
+        await sleep(1200);
+        const viewerRow = await viewer.evaluate((name) => {
+            const row = [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name));
+            const button = row.querySelector('button[aria-label="Details and notes"]');
+            const r = button?.getBoundingClientRect();
+            const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+            return {
+                cards: getComputedStyle(row).display === "grid",
+                canEdit: !!row.querySelector('button[aria-label="Edit"]'),
+                indicator: row.querySelector(".notes-indicator")?.getAttribute("aria-label") ?? null,
+                detailsButton: !!button,
+                visible: !!r && r.width > 0 && r.left >= 0 && r.right <= window.innerWidth,
+                clickable: !!button && !!hit && button.contains(hit),
+                pageFits: document.documentElement.scrollWidth <= window.innerWidth + 1,
+            };
+        }, ENTRY);
+        check("a Viewer on a 390px touch screen sees a card with a notes indicator and a visible, unobstructed Details button",
+            viewerRow.cards && !viewerRow.canEdit && viewerRow.indicator === "Has notes" && viewerRow.detailsButton
+            && viewerRow.visible && viewerRow.clickable && viewerRow.pageFits, JSON.stringify(viewerRow));
+
+        await viewer.evaluate((name) => [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name))
+            .querySelector('button[aria-label="Details and notes"]').focus(), ENTRY);
+        for (let i = 0; i < 12 && !(await viewer.$(".modal-panel")); i++) {
+            await rowAction(viewer, ENTRY, "Details and notes");
+            await sleep(1500);
+        }
+        await viewer.waitForSelector(".modal-panel .details-notes", { timeout: 8000 });
+        await sleep(500);
+        const details = await viewer.evaluate(() => {
+            const panel = document.querySelector(".modal-panel");
+            const notes = panel.querySelector(".details-notes");
+            const box = notes.getBoundingClientRect();
+            const style = getComputedStyle(notes);
+            return {
+                role: panel.getAttribute("role"),
+                title: document.getElementById(panel.getAttribute("aria-labelledby"))?.textContent,
+                notes: notes.textContent,
+                tag: notes.tagName,
+                preWrap: style.whiteSpace === "pre-wrap",
+                selectable: style.userSelect !== "none",
+                notInTitleOnly: !notes.closest("[title]"),
+                shown: box.width > 0 && box.left >= 0 && box.right <= window.innerWidth,
+                copyNotes: !!panel.querySelector('button[aria-label="Copy notes"]'),
+                labels: [...panel.querySelectorAll("dt")].map((e) => e.textContent).join(","),
+                twoFa: [...panel.querySelectorAll("dt")].find((e) => e.textContent === "2FA")?.nextElementSibling.textContent.trim(),
+                updatedBy: panel.querySelector(".details-list dd .mono:not(.details-username)")?.textContent.trim(),
+                insideDialog: panel.contains(document.activeElement),
+            };
+        });
+        check("the Viewer's details dialog is a labelled dialog showing the notes as selectable text, with a copy button",
+            details.role === "dialog" && details.title === `Details · ${ENTRY}` && details.notes === NOTES
+            && details.tag === "PRE" && details.preWrap && details.selectable && details.notInTitleOnly
+            && details.shown && details.copyNotes && details.insideDialog, JSON.stringify(details));
+        check("the details also give the password's last editor, 2FA state and the other fields",
+            details.labels === "Name,URL,Username,Password last changed,2FA"
+            && details.updatedBy === USER && details.twoFa === "Configured", JSON.stringify(details));
+
+        await viewer.evaluate(() => document.querySelector('.modal-panel button[aria-label="Copy notes"]').click());
+        await viewer.waitForFunction(() => /copied|Copy failed/.test(document.querySelector(".toast")?.textContent ?? ""), { timeout: 8000 });
+        check("Copy notes answers with a toast", true);
+
+        await viewer.evaluate(() => document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+        await viewer.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        await sleep(400);
+        check("Escape closes the details and focus returns to the Details button",
+            (await focused(viewer)) === "button:Details and notes", await focused(viewer));
+
+        // An entry without notes says so, and its row carries no indicator.
+        const weakIndicator = await viewer.evaluate((name) =>
+            !![...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name)).querySelector(".notes-indicator"), WEAK_ENTRY);
+        for (let i = 0; i < 12 && !(await viewer.$(".modal-panel")); i++) {
+            await rowAction(viewer, WEAK_ENTRY, "Details and notes");
+            await sleep(1500);
+        }
+        await viewer.waitForSelector(".modal-panel .details-notes-state", { timeout: 8000 });
+        const noNotes = await viewer.evaluate(() => document.querySelector(".modal-panel .details-notes-state").textContent.trim());
+        check("an entry without notes shows no indicator and the details say \"No notes\"",
+            !weakIndicator && noNotes === "No notes", JSON.stringify({ weakIndicator, noNotes }));
+        await viewer.evaluate(() => document.querySelector(".modal-close").click());
+        await viewer.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        await viewer.close();
 
         // ---- 8. Content security policy: on every page, in nobody's way, and enforced ----
         const unprotected = [...policies].filter(([, policy]) =>
@@ -593,6 +817,9 @@ async function groupId(page) {
             let cleaned = await deleteGroup(id);
             if (takenOverId) {
                 cleaned = (await deleteGroup(takenOverId)) && cleaned;
+            }
+            if (otherGroupId) {
+                cleaned = (await deleteGroup(otherGroupId)) && cleaned;
             }
             if (personalId) {
                 await visitVault(page, personalId);

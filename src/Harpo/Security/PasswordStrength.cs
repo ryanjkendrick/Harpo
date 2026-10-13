@@ -73,8 +73,8 @@ public static class PasswordStrength
         _ => "unscored",
     };
 
-    /// <summary>Detects runs of identical ("aaaa") or consecutive ("abcd", "4321") characters.</summary>
-    private static bool HasRun(string password, int minLength)
+    /// <summary>Four or more identical, ascending or descending characters in a row ("aaaa", "2345", "dcba").</summary>
+    internal static bool HasRun(string password, int minLength)
     {
         var same = 1;
         var up = 1;

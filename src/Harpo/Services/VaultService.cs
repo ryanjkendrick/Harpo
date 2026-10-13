@@ -15,6 +15,15 @@ namespace Harpo.Services;
 public sealed record EntryView(
     PasswordEntry Entry, string Notes, bool NotesUnreadable, string PasswordUpdatedBy, DateTime? PasswordUpdatedAtUtc);
 
+/// <summary>
+/// One hit of <see cref="VaultService.SearchEntriesAsync"/>: the plain-text
+/// fields a result list shows and the vault it lives in. Deliberately not an
+/// <see cref="EntryView"/> — no notes and no secrets travel with a search.
+/// </summary>
+public sealed record EntryMatch(
+    Guid EntryId, string Name, string Icon, string Url, string Username,
+    Guid GroupId, string GroupName, bool GroupIsPersonal);
+
 public sealed record RevisionView(Guid RevisionId, string CreatedBy, DateTime CreatedAtUtc, bool IsCurrent);
 
 public enum RevealPurpose
@@ -37,10 +46,11 @@ public class VaultService
     private readonly ILogger<VaultService> _logger;
     private readonly AuditService _audit;
     private readonly HealthOptions _health;
+    private readonly SessionService _sessions;
 
     public VaultService(
         IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time,
-        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health)
+        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health, SessionService sessions)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
@@ -48,6 +58,7 @@ public class VaultService
         _logger = logger;
         _audit = audit;
         _health = health.Value;
+        _sessions = sessions;
     }
 
     public async Task<List<EntryView>> GetEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
@@ -82,6 +93,68 @@ public class VaultService
                     ? new EntryView(e, notes, !readable, latest.CreatedBy, latest.CreatedAtUtc)
                     : new EntryView(e, notes, !readable, e.CreatedBy, null);
             })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Finds entries by name, URL or username across every vault the user can
+    /// see (the groups <see cref="GroupService.GetMyGroupsAsync"/> lists — never
+    /// someone else's personal vault). Case-insensitive; notes are encrypted at
+    /// rest and are not searched. Like listing a group, it is not audited.
+    /// <paramref name="excludeGroupId"/> leaves one vault out — the page already
+    /// shows the open vault's matches, and its many hits must not crowd the
+    /// other vaults' out of <paramref name="limit"/>.
+    /// </summary>
+    public async Task<List<EntryMatch>> SearchEntriesAsync(
+        UserContext user, string term, int limit = 50, CancellationToken ct = default, Guid? excludeGroupId = null)
+    {
+        await _sessions.RequireLiveAsync(user, ct);
+        term = (term ?? "").Trim();
+        if (term.Length == 0 || limit <= 0)
+        {
+            return [];
+        }
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var memberOf = await db.GroupMembers
+            .Where(m => !m.IsDeleted && m.Username == user.Username)
+            .Select(m => m.GroupId)
+            .ToListAsync(ct);
+        var visible = GroupService.VisibleGroups(db, user, memberOf);
+        if (excludeGroupId is { } excluded)
+        {
+            visible = visible.Where(g => g.Id != excluded);
+        }
+        var groups = await visible
+            .Select(g => new { g.Id, g.Name, g.OwnerUsername })
+            .ToListAsync(ct);
+        if (groups.Count == 0)
+        {
+            return [];
+        }
+
+        // Matched in memory rather than with LIKE/instr: SQLite folds case for
+        // ASCII only, and this must agree with the vault page's own filter
+        // (OrdinalIgnoreCase). Only the plain-text columns are read.
+        var groupIds = groups.Select(g => g.Id).ToList();
+        var candidates = await db.PasswordEntries
+            .Where(e => !e.IsDeleted && groupIds.Contains(e.GroupId))
+            .Select(e => new { e.Id, e.Name, e.Icon, e.Url, e.Username, e.GroupId })
+            .ToListAsync(ct);
+        var groupById = groups.ToDictionary(g => g.Id);
+
+        return candidates
+            .Where(e => e.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || e.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || e.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .Select(e => (Entry: e, Group: groupById[e.GroupId]))
+            .OrderBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Group.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Entry.Id)
+            .Take(limit)
+            .Select(x => new EntryMatch(
+                x.Entry.Id, x.Entry.Name, x.Entry.Icon, x.Entry.Url, x.Entry.Username,
+                x.Group.Id, x.Group.Name, x.Group.OwnerUsername.Length > 0))
             .ToList();
     }
 
@@ -246,16 +319,29 @@ public class VaultService
             groupId: entry.GroupId, entryId: entry.Id);
     }
 
-    /// <summary>Tombstoned entries of a live group, newest first. Requires write rights (viewers have no trash).</summary>
-    public async Task<List<PasswordEntry>> GetDeletedEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
+    public const int DeletedPageSize = 50;
+
+    /// <summary>
+    /// A page of tombstoned entries of a live group, newest first, plus the true total. Requires write rights
+    /// (viewers have no trash). Ordered by (UpdatedAtUtc, Id) descending and continued from a cursor holding both,
+    /// so rows sharing a timestamp are neither skipped nor repeated between pages.
+    /// </summary>
+    public async Task<DeletedPage<PasswordEntry>> GetDeletedEntriesAsync(
+        UserContext user, Guid groupId, DeletedCursor? after = null, int pageSize = DeletedPageSize, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
-        return await db.PasswordEntries
-            .Where(e => e.GroupId == groupId && e.IsDeleted)
-            .OrderByDescending(e => e.UpdatedAtUtc)
-            .Take(50)
+        var deleted = db.PasswordEntries.Where(e => e.GroupId == groupId && e.IsDeleted);
+        var total = await deleted.CountAsync(ct);
+        var page = after is null
+            ? deleted
+            : deleted.Where(e => e.UpdatedAtUtc < after.UpdatedAtUtc
+                || (e.UpdatedAtUtc == after.UpdatedAtUtc && e.Id.CompareTo(after.Id) < 0));
+        var items = await page
+            .OrderByDescending(e => e.UpdatedAtUtc).ThenByDescending(e => e.Id)
+            .Take(pageSize)
             .ToListAsync(ct);
+        return new DeletedPage<PasswordEntry>(items, total);
     }
 
     /// <summary>Undoes a delete — tombstones replicate, so this works on any site and syncs everywhere.</summary>
@@ -357,6 +443,7 @@ public class VaultService
     public async Task<(List<Offline.OfflineGroup> Groups, List<Offline.OfflineEntry> Entries)> GetOfflineDataAsync(
         UserContext user, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
         var groupIds = await db.GroupMembers
@@ -442,9 +529,16 @@ public class VaultService
             .FirstOrDefault();
     }
 
-    private static async Task RequireMemberAsync(
+    /// <summary>
+    /// The access check every entry operation goes through (directly or via
+    /// <see cref="RequireEntryAsync"/>) before anything is decrypted or written:
+    /// first that the caller's session is still live — a page open since before
+    /// a sign-out elsewhere must not get another secret — then group membership.
+    /// </summary>
+    private async Task RequireMemberAsync(
         HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct, bool requireWrite = false)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
             ?? throw new VaultNotFoundException("Group not found.");
         GroupService.RequireNotSomeoneElsesPersonalVault(group, user);
@@ -483,7 +577,7 @@ public class VaultService
         return "https://" + url;
     }
 
-    private static async Task<PasswordEntry> RequireEntryAsync(
+    private async Task<PasswordEntry> RequireEntryAsync(
         HarpoDbContext db, UserContext user, Guid entryId, CancellationToken ct, bool requireWrite = false)
     {
         var entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && !e.IsDeleted, ct)

@@ -10,6 +10,7 @@
 @implements IDisposable
 
 <PageTitle>Vault · Harpo</PageTitle>
+<SessionWatch />
 
 <div class="vault">
     <div class="vault-groups">
@@ -93,7 +94,8 @@
                           title="Your personal vault: nobody else can open it, site administrators included. If you leave, an administrator can turn it into a group — you would see that happen here.">only you</span>
                 }
                 <input class="search" type="search" placeholder="Search name, URL, username…"
-                       @bind="_search" @bind:event="oninput" />
+                       aria-label="Search name, URL, username"
+                       @bind="_search" @bind:event="oninput" @bind:after="OnSearchTyped" />
                 @if (CanEdit)
                 {
                     <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
@@ -141,6 +143,12 @@
                                     <td class="cell-name" title="@NotesTooltip(view)">
                                         <EntryIcon Icon="@entry.Icon" />
                                         <span class="entry-name">@entry.Name</span>
+                                        @if (view.NotesUnreadable || view.Notes.Length > 0)
+                                        {
+                                            @* The tooltip is a bonus for mouse users; the Details button is the way in. *@
+                                            <span class="notes-indicator" role="img"
+                                                  aria-label="@(view.NotesUnreadable ? "Has notes this site cannot read" : "Has notes")"><Lucide Name="sticky-note" Size="14" /></span>
+                                        }
                                     </td>
                                     <td class="cell-username">
                                         @if (!string.IsNullOrEmpty(entry.Username))
@@ -218,6 +226,7 @@
                                         {
                                             <button class="btn btn-icon" title="Edit" aria-label="Edit" @onclick="() => OpenEditEntry(view)"><Lucide Name="pencil" Size="16" /></button>
                                         }
+                                        <button class="btn btn-icon" title="Details and notes" aria-label="Details and notes" @onclick="() => _detailsId = entry.Id"><Lucide Name="info" Size="16" /></button>
                                         <button class="btn btn-icon" title="Password history" aria-label="Password history" @onclick="() => OpenHistoryAsync(entry)"><Lucide Name="history" Size="16" /></button>
                                         @if (CanEdit)
                                         {
@@ -230,12 +239,16 @@
                     </table>
                 </div>
             }
+            @if (OtherMatches is { } others)
+            {
+                <SearchResults Matches="others" Term="@_otherHitsTerm" />
+            }
             @if (CanEdit && _deletedEntries is not null)
             {
                 <details class="trash">
-                    <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedEntries.Count)</summary>
+                    <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedTotal)</summary>
                     <p class="muted small trash-note">
-                        @(_deletedEntries.Count == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
+                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
                         nothing is purged automatically.
                     </p>
                     <div class="table-scroll">
@@ -257,6 +270,12 @@
                             </tbody>
                         </table>
                     </div>
+                    @if (_deletedEntries.Count < _deletedTotal)
+                    {
+                        <button class="btn btn-ghost btn-sm show-all" @onclick="LoadOlderDeletedAsync">
+                            Show older (@(_deletedTotal - _deletedEntries.Count) more)
+                        </button>
+                    }
                 </details>
             }
         }
@@ -425,6 +444,8 @@
     }
 </Modal>
 
+<EntryDetails View="DetailsView" Updated="@DetailsUpdated" OnClose="CloseDetails" CopyText="CopyFromDetailsAsync" />
+
 <div class="toast-region" role="status" aria-live="polite">
     @if (_toast is not null)
     {
@@ -445,6 +466,7 @@
     private List<GroupSummary>? _groups;
     private List<EntryView>? _entries;
     private List<PasswordEntry>? _deletedEntries;
+    private int _deletedTotal;
     private string _selectedGroupName = "";
     private string _search = "";
     private readonly Dictionary<Guid, string> _revealed = new();
@@ -502,6 +524,17 @@
         }
     }
 
+    // The details dialog follows the entry's id rather than a copy of its view,
+    // so a reload (or the entry being deleted elsewhere) is reflected or closes it.
+    private Guid? _detailsId;
+    private EntryView? DetailsView => _detailsId is { } did ? _entries?.FirstOrDefault(v => v.Entry.Id == did) : null;
+    private string DetailsUpdated => DetailsView is { PasswordUpdatedAtUtc: { } at }
+        ? $"{FullTime(at)} ({Relative(at)})" : "";
+
+    private void CloseDetails() => _detailsId = null;
+
+    private Task CopyFromDetailsAsync((string Text, string Message) copy) => CopyTextAsync(copy.Text, copy.Message);
+
     private PasswordEntry? _historyEntry;
     private List<RevisionView>? _history;
     private readonly Dictionary<Guid, string> _revealedRevisions = new();
@@ -525,9 +558,12 @@
 
     // A group the listing does not contain (someone else's personal vault, a
     // group that no longer exists) gets no edit controls, whoever is asking.
+    // For a listed group a site admin may always write, even with an explicit
+    // Viewer membership: the service (RequireMemberAsync) lets them, so the UI
+    // must not hide what the service allows.
     private bool CanEdit =>
         SelectedSummary is { } selected
-        && (selected.MyRole?.CanWrite() ?? _user?.IsSiteAdmin == true);
+        && (_user?.IsSiteAdmin == true || selected.MyRole?.CanWrite() == true);
 
     private List<EntryView> FilteredEntries
     {
@@ -559,12 +595,103 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Query != _appliedQuery)
+        var queryChanged = Query != _appliedQuery;
+        if (queryChanged)
         {
             _appliedQuery = Query;
             _search = Query ?? "";
         }
         await LoadEntriesAsync();
+        // The other-vaults list is "everything but the open vault", so it is
+        // stale once the open vault changes, and a ?q= deep link needs its own
+        // search. Not while prerendering: nothing there could receive the result.
+        if (RendererInfo.IsInteractive && (queryChanged || SelectedGroupId != _searchedExcluding))
+        {
+            ScheduleOtherVaultSearch(delayMs: 0);
+        }
+    }
+
+    // ---- search in the user's other vaults ----
+
+    private const int OtherSearchMinChars = 2;
+    private const int OtherSearchDebounceMs = 250;
+
+    private List<EntryMatch>? _otherHits;
+    private string _otherHitsTerm = "";
+    private Guid? _searchedExcluding;
+    private CancellationTokenSource? _otherSearchCts;
+
+    // Shown only while the box holds enough to search on. Until the first answer
+    // arrives the section is absent, and a newer answer replaces an older one in
+    // place, so typing does not make the section blink in and out.
+    private List<EntryMatch>? OtherMatches =>
+        _otherHits is not null && _search.Trim().Length >= OtherSearchMinChars
+            ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
+            : null;
+
+    private void OnSearchTyped() => ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+
+    /// <summary>
+    /// Debounced, and latest-wins: every call cancels the one before, and an
+    /// answer is applied only if it still belongs to the newest call when it
+    /// lands, so a slow early response cannot overwrite a later one.
+    /// </summary>
+    private void ScheduleOtherVaultSearch(int delayMs)
+    {
+        _otherSearchCts?.Cancel();
+        _otherSearchCts?.Dispose();
+        _otherSearchCts = null;
+
+        var term = _search.Trim();
+        _searchedExcluding = SelectedGroupId;
+        if (term.Length < OtherSearchMinChars || _user is null)
+        {
+            _otherHits = null;
+            return;
+        }
+        var cts = _otherSearchCts = new CancellationTokenSource();
+        // The token is read now: the source is disposed by the next keystroke.
+        _ = SearchOtherVaultsAsync(term, SelectedGroupId, delayMs, cts.Token);
+    }
+
+    private async Task SearchOtherVaultsAsync(string term, Guid? excluding, int delayMs, CancellationToken token)
+    {
+        try
+        {
+            if (delayMs > 0)
+            {
+                await Task.Delay(delayMs, token);
+            }
+            var hits = await Passwords.SearchEntriesAsync(_user!, term, ct: token, excludeGroupId: excluding);
+            await InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return; // a later keystroke owns the result now
+                }
+                _otherHits = hits;
+                _otherHitsTerm = term;
+                StateHasChanged();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+            // The page went away mid-search.
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            await InvokeAsync(() =>
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    _otherHits = null;
+                    ShowToast(ex.Message, isError: true);
+                }
+            });
+        }
     }
 
     private async Task LoadEntriesAsync()
@@ -583,7 +710,16 @@
         {
             _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
             _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
-            _deletedEntries = CanEdit ? await Passwords.GetDeletedEntriesAsync(_user, groupId.Value) : null;
+            if (CanEdit)
+            {
+                var trash = await Passwords.GetDeletedEntriesAsync(_user, groupId.Value);
+                _deletedEntries = trash.Items;
+                _deletedTotal = trash.Total;
+            }
+            else
+            {
+                _deletedEntries = null;
+            }
             _revealed.Clear();
         }
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
@@ -656,6 +792,8 @@
         _revealTimers.Clear();
         _totpTimer?.Dispose();
         _toastCts?.Cancel();
+        _otherSearchCts?.Cancel();
+        _otherSearchCts?.Dispose();
     }
 
     private async Task CopyPasswordAsync(Guid entryId)
@@ -934,6 +1072,26 @@
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
         {
             _editorError = ex.Message;
+        }
+    }
+
+    /// <summary>Appends the next page of tombstones; the cursor is the last row shown, so ties are not skipped.</summary>
+    private async Task LoadOlderDeletedAsync()
+    {
+        if (_deletedEntries is not { Count: > 0 } || SelectedGroupId is not { } groupId)
+        {
+            return;
+        }
+        try
+        {
+            var last = _deletedEntries[^1];
+            var page = await Passwords.GetDeletedEntriesAsync(_user!, groupId, new DeletedCursor(last.UpdatedAtUtc, last.Id));
+            _deletedEntries.AddRange(page.Items);
+            _deletedTotal = page.Total;
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
         }
     }
 

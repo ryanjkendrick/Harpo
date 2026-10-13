@@ -4,6 +4,7 @@
 @inject GroupService Groups
 
 <PageTitle>Groups · Harpo</PageTitle>
+<SessionWatch />
 
 <div class="page-narrow">
     <div class="page-header">
@@ -11,9 +12,9 @@
         <button class="btn btn-primary" @onclick="OpenCreate"><Lucide Name="plus" Size="16" /> New group</button>
     </div>
     <p class="muted">
-        Passwords live inside groups. Only members of a group can see its passwords;
-        group admins decide who is a member. Passwords that are yours alone go in
-        your <a href="/">personal vault</a>, which is not a group and has no members.
+        Passwords live inside groups. Only the members of a group and the site administrators
+        can see its passwords; group admins decide who is a member. Passwords that are yours alone go in
+        your <a href="@PersonalHref">personal vault</a>, which is not a group and has no members.
     </p>
 
     @if (_groups is null)
@@ -60,6 +61,7 @@
 
 <Modal Visible="_showCreate" Title="New group" OnClose="() => _showCreate = false">
     <form class="form-grid" novalidate @onsubmit="CreateAsync">
+        <p class="muted">Members and site administrators can see this group's passwords. For something only you should see, use your personal vault.</p>
         <label class="field">
             <span class="field-label">Name</span>
             <input @ref="_nameInput" @bind="_newName" @bind:after="() => _nameError = null"
@@ -97,6 +99,8 @@
     private string? _error;
     private string? _nameError;
     private ElementReference _nameInput;
+    // Resolved per visit: a takeover gives the user a new personal vault id.
+    private string PersonalHref { get; set; } = "/";
 
     private void OpenCreate()
     {
@@ -109,6 +113,9 @@
     {
         _user = UserContext.FromPrincipal((await AuthState).User);
         _groups = await SharedGroupsAsync();
+        // "/" opens the first shared group, so link the personal vault by id.
+        var personal = await Groups.EnsurePersonalVaultAsync(_user);
+        PersonalHref = $"/vault/{personal.Id}";
     }
 
     private async Task<List<GroupSummary>> SharedGroupsAsync() =>

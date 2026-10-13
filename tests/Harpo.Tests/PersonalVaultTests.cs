@@ -51,7 +51,7 @@ public class PersonalVaultTests : IDisposable
         Assert.Equal("pw-1", await _site.Vault.RevealPasswordAsync(_alice, entry.Id));
         await _site.Vault.UpdateEntryAsync(_alice, entry.Id, "Bank!", "🏦", "", "me", "note");
         await _site.Vault.DeleteEntryAsync(_alice, entry.Id);
-        Assert.Single(await _site.Vault.GetDeletedEntriesAsync(_alice, first.Id));
+        Assert.Single((await _site.Vault.GetDeletedEntriesAsync(_alice, first.Id)).Items);
         await _site.Vault.RestoreEntryAsync(_alice, entry.Id);
         Assert.Equal("Bank!", Assert.Single(await _site.Vault.GetEntriesAsync(_alice, first.Id)).Entry.Name);
     }
@@ -128,7 +128,7 @@ public class PersonalVaultTests : IDisposable
             }); // no membership row at all: not "a group without an admin" either
             await db.SaveChangesAsync();
         }
-        Assert.Empty(await _site.Groups.GetDeletedGroupsAsync(_root));
+        Assert.Empty((await _site.Groups.GetDeletedGroupsAsync(_root)).Items);
         Assert.Empty(await _site.Groups.GetGroupsWithoutAdminAsync(_root));
         await Assert.ThrowsAsync<VaultNotFoundException>(
             () => _site.Groups.RestoreGroupAsync(_root, DeterministicGuid.For("personal", "carol")));
@@ -292,7 +292,7 @@ public class PersonalVaultTests : IDisposable
         await _site.Groups.AddMemberAsync(_root, entry.GroupId, "bob", "Bob", GroupRole.Viewer);
         Assert.Equal("pw-1", await _site.Vault.RevealPasswordAsync(_bob, entry.Id));
         await _site.Groups.DeleteGroupAsync(_root, entry.GroupId);
-        Assert.Single(await _site.Groups.GetDeletedGroupsAsync(_root));
+        Assert.Single((await _site.Groups.GetDeletedGroupsAsync(_root)).Items);
     }
 }
 

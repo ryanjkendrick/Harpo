@@ -36,6 +36,7 @@ public class HarpoDbContext : DbContext
     public DbSet<SiteCounter> SiteCounters => Set<SiteCounter>();
     public DbSet<PeerCursor> PeerCursors => Set<PeerCursor>();
     public DbSet<SiteSetting> SiteSettings => Set<SiteSetting>();
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
 
     /// <summary>
     /// Set by the replication engine while applying rows received from a peer, so
@@ -136,6 +137,12 @@ public class HarpoDbContext : DbContext
         modelBuilder.Entity<SiteSetting>(b =>
         {
             b.HasKey(x => x.Id);
+        });
+
+        modelBuilder.Entity<UserSession>(b =>
+        {
+            b.HasKey(x => x.Id);
+            b.HasIndex(x => x.Username);
         });
     }
 

@@ -30,9 +30,22 @@ public static class PasswordGenerator
     /// <summary>
     /// Generates with a cryptographic RNG, guaranteeing at least one character
     /// from every enabled class. Length is clamped to 8–128; with every class
-    /// disabled it falls back to lowercase rather than failing.
+    /// disabled it falls back to lowercase rather than failing. A draw that
+    /// happens to contain a run ("2345", "stuv") is thrown away: the strength
+    /// score docks such passwords, and a generated password that the editor
+    /// then rates below "strong" would look like a bug — which it was.
     /// </summary>
     public static string Generate(PasswordGeneratorOptions options)
+    {
+        string candidate;
+        do
+        {
+            candidate = Draw(options);
+        } while (PasswordStrength.HasRun(candidate, minLength: 4));
+        return candidate;
+    }
+
+    private static string Draw(PasswordGeneratorOptions options)
     {
         var length = Math.Clamp(options.Length, 8, 128);
 

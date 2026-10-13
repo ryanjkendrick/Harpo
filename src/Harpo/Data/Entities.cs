@@ -75,6 +75,17 @@ public class GroupMember : IReplicatedRow
     public GroupRole Role { get; set; }
     public string AddedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
+    /// <summary>
+    /// Whether the directory vouched for <see cref="Username"/> when the
+    /// membership was made. True: the account existed, was enabled, and the
+    /// display name is the directory's (or the member's own sign-in made the
+    /// row). False: the directory could not be asked, so the name is as typed.
+    /// Null: not known — a row from before Harpo checked, or one that arrived
+    /// from a peer too old to send the field. Only false is flagged in the UI;
+    /// marking every pre-existing membership after an upgrade would be noise
+    /// that says nothing about any of them.
+    /// </summary>
+    public bool? Verified { get; set; }
 
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }
@@ -164,6 +175,28 @@ public class SiteSetting
 {
     public string Id { get; set; } = "";
     public string Value { get; set; } = "";
+}
+
+/// <summary>
+/// One sign-in, server-side. The auth cookie carries <see cref="Id"/>; the
+/// cookie (and every open page that signed in with it) is honoured only while
+/// this row exists. Signing out, the account being disabled in the directory,
+/// a change of site-admin role, and expiry all delete the row. Site-local and
+/// never replicated: a session belongs to the site that issued the cookie.
+/// </summary>
+public class UserSession
+{
+    /// <summary>256 random bits, base64url.</summary>
+    public string Id { get; set; } = "";
+    /// <summary>Normalized account name, as in <see cref="GroupMember.Username"/>.</summary>
+    public string Username { get; set; } = "";
+    /// <summary>The site-admin flag the cookie was issued with.</summary>
+    public bool IsSiteAdmin { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    /// <summary>Last request or interactive action using the session (updated at most once a minute).</summary>
+    public DateTime LastSeenAtUtc { get; set; }
+    /// <summary>When the directory last vouched for the account (sign-in, or a successful revalidation).</summary>
+    public DateTime LastValidatedAtUtc { get; set; }
 }
 
 /// <summary>Single-row table holding this site's next replication sequence number.</summary>

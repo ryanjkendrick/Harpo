@@ -97,7 +97,7 @@ public class AuditTests : IDisposable
         // "Older events" pages through the category, not through everything.
         var newest = await _site.Audit.GetEventsAsync(_admin, take: 1, category: AuditCategory.Reveals);
         var older = await _site.Audit.GetEventsAsync(
-            _admin, beforeUtc: newest[0].OccurredAtUtc, take: 1, category: AuditCategory.Reveals);
+            _admin, before: AuditCursor.Of(newest[0]), take: 1, category: AuditCategory.Reveals);
         Assert.Equal(AuditActions.PasswordReveal, Assert.Single(older).Action);
     }
 
@@ -140,9 +140,9 @@ public class AuditTests : IDisposable
     {
         var disabledAudit = new AuditService(
             _site.Db, Options.Create(new AuditOptions { Enabled = false }), _site.Time,
-            NullLogger<AuditService>.Instance);
+            NullLogger<AuditService>.Instance, _site.Sessions);
         var vault = new VaultService(_site.Db, _site.Crypto, _site.Time, NullLogger<VaultService>.Instance, disabledAudit,
-            Options.Create(new HealthOptions()));
+            Options.Create(new HealthOptions()), _site.Sessions);
 
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
         var entry = await vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
@@ -175,8 +175,46 @@ public class AuditTests : IDisposable
         Assert.Equal(2, firstPage.Count);
         Assert.True(firstPage[0].OccurredAtUtc >= firstPage[1].OccurredAtUtc);
 
-        var secondPage = await _site.Audit.GetEventsAsync(_admin, beforeUtc: firstPage[^1].OccurredAtUtc, take: 2);
+        var secondPage = await _site.Audit.GetEventsAsync(_admin, before: AuditCursor.Of(firstPage[^1]), take: 2);
         Assert.Single(secondPage);
+    }
+
+    [Theory]
+    [InlineData(AuditCategory.All)]
+    [InlineData(AuditCategory.Reveals)]
+    public async Task Paging_by_cursor_sees_every_event_once_even_when_timestamps_tie(AuditCategory category)
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
+        // 2 reveals at one old instant, then 49 at a later one, so the tie
+        // straddles the 50-row page boundary (the old timestamp-only cursor lost one).
+        for (var batch = 0; batch < 2; batch++)
+        {
+            _site.Time.Advance(TimeSpan.FromMinutes(1));
+            for (var i = 0; i < (batch == 0 ? 2 : 49); i++)
+            {
+                await _site.Vault.RevealPasswordAsync(_alice, entry.Id);
+            }
+        }
+
+        var expected = (await _site.Audit.GetEventsAsync(_admin, take: 500, category: category)).Select(e => e.Id).ToList();
+        Assert.True(expected.Count >= 51);
+
+        var seen = new List<Guid>();
+        AuditCursor? cursor = null;
+        while (true)
+        {
+            var page = await _site.Audit.GetEventsAsync(_admin, cursor, take: 50, category: category);
+            seen.AddRange(page.Select(e => e.Id));
+            if (page.Count < 50)
+            {
+                break;
+            }
+            cursor = AuditCursor.Of(page[^1]);
+        }
+
+        Assert.Equal(expected.Count, seen.Count);
+        Assert.Equal(expected, seen);
     }
 
     [Fact]

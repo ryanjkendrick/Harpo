@@ -9,7 +9,7 @@
 // it is what makes installed service workers refresh their cached shell. The
 // cache keeps each response's headers too, so a change to the headers the shell
 // is served with (its content security policy) needs a bump just the same.
-const CACHE = "harpo-v11";
+const CACHE = "harpo-v12";
 const PRECACHE = [
     "/offline.html",
     "/offline.js",
