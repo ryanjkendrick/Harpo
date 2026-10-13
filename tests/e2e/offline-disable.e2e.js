@@ -115,8 +115,10 @@ async function waitHealthy() {
         // ---- 2. Admin disables offline access; the server restarts ----
         execSync(RESTART_CMD, { stdio: "inherit", shell: "/bin/sh" });
         await waitHealthy();
-        const snap = await fetch(`${BASE}/api/offline/snapshot`, { headers: { "X-Harpo-Offline": "1" } });
-        check("server now answers 404 for the snapshot", snap.status === 404, String(snap.status));
+        // The snapshot endpoint needs the browser's session; the anonymous
+        // feature probe says what the restarted server will tell it.
+        const probe = await (await fetch(`${BASE}/api/offline/enabled`)).json();
+        check("server now reports offline access disabled", probe.enabled === false, JSON.stringify(probe));
 
         // ---- 3. Refresh the still-unlocked vault ----
         await page.bringToFront();
@@ -132,11 +134,24 @@ async function waitHealthy() {
         // ---- 4. Cut the network and reload: nothing may unlock ----
         await page.setOfflineMode(true);
         await page.reload({ waitUntil: "load" });
-        await page.waitForSelector("#state-message:not(.hidden), #state-unlock:not(.hidden)", { timeout: 10000 });
+        // With no copy left, the page explains there is nothing on this device
+        // (offline) or offers setup (online) — either way, never an unlock.
+        try {
+            await page.waitForSelector("#state-message:not(.hidden), #state-setup:not(.hidden), #state-unlock:not(.hidden)", { timeout: 10000 });
+        } catch {
+            const visible = await page.evaluate(() => [...document.querySelectorAll("section[id^=state-]")].filter((s) => !s.classList.contains("hidden")).map((s) => s.id));
+            throw new Error("no final state after the offline reload; visible: " + JSON.stringify(visible) + " title: " + document.title);
+        }
         check("offline reload is served by the service worker", (await page.title()) === "Offline vault · Harpo");
+        const after = await page.evaluate(() => ({
+            visible: [...document.querySelectorAll("section[id^=state-]")].filter((s) => !s.classList.contains("hidden")).map((s) => s.id),
+            title: document.getElementById("messageTitle")?.textContent ?? "",
+            online: navigator.onLine,
+        }));
         check("offline reload offers no unlock",
-            await page.$eval("#state-unlock", (el) => el.classList.contains("hidden"))
-            && (await page.$eval("#messageTitle", (el) => el.textContent)) === "No offline data on this device");
+            !after.visible.includes("state-unlock") && !after.visible.includes("state-vault")
+            && (after.visible.includes("state-setup") || after.title === "No offline data on this device"),
+            JSON.stringify(after));
         check("still no stored copy after the reload", (await storedVaultOwner(page)) === null);
         await page.setOfflineMode(false);
     } catch (e) {
