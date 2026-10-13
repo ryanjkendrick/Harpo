@@ -142,6 +142,12 @@
                                     <td class="cell-name" title="@NotesTooltip(view)">
                                         <EntryIcon Icon="@entry.Icon" />
                                         <span class="entry-name">@entry.Name</span>
+                                        @if (view.NotesUnreadable || view.Notes.Length > 0)
+                                        {
+                                            @* The tooltip is a bonus for mouse users; the Details button is the way in. *@
+                                            <span class="notes-indicator" role="img"
+                                                  aria-label="@(view.NotesUnreadable ? "Has notes this site cannot read" : "Has notes")"><Lucide Name="sticky-note" Size="14" /></span>
+                                        }
                                     </td>
                                     <td class="cell-username">
                                         @if (!string.IsNullOrEmpty(entry.Username))
@@ -219,6 +225,7 @@
                                         {
                                             <button class="btn btn-icon" title="Edit" aria-label="Edit" @onclick="() => OpenEditEntry(view)"><Lucide Name="pencil" Size="16" /></button>
                                         }
+                                        <button class="btn btn-icon" title="Details and notes" aria-label="Details and notes" @onclick="() => _detailsId = entry.Id"><Lucide Name="info" Size="16" /></button>
                                         <button class="btn btn-icon" title="Password history" aria-label="Password history" @onclick="() => OpenHistoryAsync(entry)"><Lucide Name="history" Size="16" /></button>
                                         @if (CanEdit)
                                         {
@@ -432,6 +439,8 @@
     }
 </Modal>
 
+<EntryDetails View="DetailsView" Updated="@DetailsUpdated" OnClose="CloseDetails" CopyText="CopyFromDetailsAsync" />
+
 <div class="toast-region" role="status" aria-live="polite">
     @if (_toast is not null)
     {
@@ -509,6 +518,17 @@
             // The dialog closed in the meantime.
         }
     }
+
+    // The details dialog follows the entry's id rather than a copy of its view,
+    // so a reload (or the entry being deleted elsewhere) is reflected or closes it.
+    private Guid? _detailsId;
+    private EntryView? DetailsView => _detailsId is { } did ? _entries?.FirstOrDefault(v => v.Entry.Id == did) : null;
+    private string DetailsUpdated => DetailsView is { PasswordUpdatedAtUtc: { } at }
+        ? $"{FullTime(at)} ({Relative(at)})" : "";
+
+    private void CloseDetails() => _detailsId = null;
+
+    private Task CopyFromDetailsAsync((string Text, string Message) copy) => CopyTextAsync(copy.Text, copy.Message);
 
     private PasswordEntry? _historyEntry;
     private List<RevisionView>? _history;

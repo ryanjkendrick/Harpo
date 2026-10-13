@@ -585,6 +585,107 @@ async function groupId(page) {
             membership === "Viewer" && asViewerAdmin.canAdd && asViewerAdmin.toast === "",
             JSON.stringify({ membership, asViewerAdmin }));
 
+        // ---- 7b. Entry details: a Viewer can read, select and copy the notes, on a phone ----
+        // The notes used to live only in a hover tooltip on the name cell, so a
+        // read-only member on a touch device could not reach them at all.
+        await page.goto(`${BASE}/groups/${id}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".add-member-row", { timeout: 15000 });
+        await sleep(600);
+        await setValue(page, ".add-member-row input:nth-of-type(1), .add-member-row label:nth-of-type(1) input", OTHER_USER);
+        await page.evaluate(() => { const s = document.querySelector(".add-member-row select"); s.value = "Viewer"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+        await sleep(300);
+        await clickText(page, ".add-member-row button", "Add member");
+        await page.waitForFunction((u) => [...document.querySelectorAll(".members-table .mono")].some((e) => e.textContent.trim() === u), { timeout: 15000 }, OTHER_USER);
+
+        const viewer = await otherContext.newPage();
+        await viewer.evaluateOnNewDocument(() => { window.confirm = () => true; });
+        await viewer.setViewport({ width: 390, height: 860, isMobile: true, hasTouch: true });
+        // Bob is still signed in: his context kept the cookie from section 7.
+        await viewer.goto(`${BASE}/vault/${id}`, { waitUntil: "networkidle2" });
+        await viewer.waitForSelector(".entries-table", { timeout: 15000 });
+        await sleep(1200);
+        const viewerRow = await viewer.evaluate((name) => {
+            const row = [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name));
+            const button = row.querySelector('button[aria-label="Details and notes"]');
+            const r = button?.getBoundingClientRect();
+            const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+            return {
+                cards: getComputedStyle(row).display === "grid",
+                canEdit: !!row.querySelector('button[aria-label="Edit"]'),
+                indicator: row.querySelector(".notes-indicator")?.getAttribute("aria-label") ?? null,
+                detailsButton: !!button,
+                visible: !!r && r.width > 0 && r.left >= 0 && r.right <= window.innerWidth,
+                clickable: !!button && !!hit && button.contains(hit),
+                pageFits: document.documentElement.scrollWidth <= window.innerWidth + 1,
+            };
+        }, ENTRY);
+        check("a Viewer on a 390px touch screen sees a card with a notes indicator and a visible, unobstructed Details button",
+            viewerRow.cards && !viewerRow.canEdit && viewerRow.indicator === "Has notes" && viewerRow.detailsButton
+            && viewerRow.visible && viewerRow.clickable && viewerRow.pageFits, JSON.stringify(viewerRow));
+
+        await viewer.evaluate((name) => [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name))
+            .querySelector('button[aria-label="Details and notes"]').focus(), ENTRY);
+        for (let i = 0; i < 12 && !(await viewer.$(".modal-panel")); i++) {
+            await rowAction(viewer, ENTRY, "Details and notes");
+            await sleep(1500);
+        }
+        await viewer.waitForSelector(".modal-panel .details-notes", { timeout: 8000 });
+        await sleep(500);
+        const details = await viewer.evaluate(() => {
+            const panel = document.querySelector(".modal-panel");
+            const notes = panel.querySelector(".details-notes");
+            const box = notes.getBoundingClientRect();
+            const style = getComputedStyle(notes);
+            return {
+                role: panel.getAttribute("role"),
+                title: document.getElementById(panel.getAttribute("aria-labelledby"))?.textContent,
+                notes: notes.textContent,
+                tag: notes.tagName,
+                preWrap: style.whiteSpace === "pre-wrap",
+                selectable: style.userSelect !== "none",
+                notInTitleOnly: !notes.closest("[title]"),
+                shown: box.width > 0 && box.left >= 0 && box.right <= window.innerWidth,
+                copyNotes: !!panel.querySelector('button[aria-label="Copy notes"]'),
+                labels: [...panel.querySelectorAll("dt")].map((e) => e.textContent).join(","),
+                twoFa: [...panel.querySelectorAll("dt")].find((e) => e.textContent === "2FA")?.nextElementSibling.textContent.trim(),
+                updatedBy: panel.querySelector(".details-list dd .mono:not(.details-username)")?.textContent.trim(),
+                insideDialog: panel.contains(document.activeElement),
+            };
+        });
+        check("the Viewer's details dialog is a labelled dialog showing the notes as selectable text, with a copy button",
+            details.role === "dialog" && details.title === `Details · ${ENTRY}` && details.notes === NOTES
+            && details.tag === "PRE" && details.preWrap && details.selectable && details.notInTitleOnly
+            && details.shown && details.copyNotes && details.insideDialog, JSON.stringify(details));
+        check("the details also give the password's last editor, 2FA state and the other fields",
+            details.labels === "Name,URL,Username,Password last changed,2FA"
+            && details.updatedBy === USER && details.twoFa === "Configured", JSON.stringify(details));
+
+        await viewer.evaluate(() => document.querySelector('.modal-panel button[aria-label="Copy notes"]').click());
+        await viewer.waitForFunction(() => /copied|Copy failed/.test(document.querySelector(".toast")?.textContent ?? ""), { timeout: 8000 });
+        check("Copy notes answers with a toast", true);
+
+        await viewer.evaluate(() => document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+        await viewer.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        await sleep(400);
+        check("Escape closes the details and focus returns to the Details button",
+            (await focused(viewer)) === "button:Details and notes", await focused(viewer));
+
+        // An entry without notes says so, and its row carries no indicator.
+        const weakIndicator = await viewer.evaluate((name) =>
+            !![...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name)).querySelector(".notes-indicator"), WEAK_ENTRY);
+        for (let i = 0; i < 12 && !(await viewer.$(".modal-panel")); i++) {
+            await rowAction(viewer, WEAK_ENTRY, "Details and notes");
+            await sleep(1500);
+        }
+        await viewer.waitForSelector(".modal-panel .details-notes-state", { timeout: 8000 });
+        const noNotes = await viewer.evaluate(() => document.querySelector(".modal-panel .details-notes-state").textContent.trim());
+        check("an entry without notes shows no indicator and the details say \"No notes\"",
+            !weakIndicator && noNotes === "No notes", JSON.stringify({ weakIndicator, noNotes }));
+        await viewer.evaluate(() => document.querySelector(".modal-close").click());
+        await viewer.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        await viewer.close();
+
         // ---- 8. Content security policy: on every page, in nobody's way, and enforced ----
         const unprotected = [...policies].filter(([, policy]) =>
             !/script-src 'self';/.test(policy) || !/style-src 'self';/.test(policy) || !/frame-ancestors 'none'/.test(policy));

@@ -497,6 +497,45 @@ tbody tr:hover { background: var(--bg); }
 
 .history-caption { margin-top: 0; }
 
+/* A small mark after the name of an entry that has notes — the tooltip alone
+   was invisible, and on touch it never appeared. */
+.notes-indicator {
+    display: inline-flex;
+    vertical-align: middle;
+    margin-left: .35rem;
+    color: var(--muted);
+}
+
+/* The details dialog: label and value pairs, then the notes as literal,
+   selectable text that keeps its line breaks and wraps long codes. */
+.details-list {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: .55rem 1rem;
+    margin: 0 0 1rem;
+    align-items: baseline;
+}
+.details-list dt { color: var(--muted); font-size: .85rem; }
+.details-list dd { margin: 0; overflow-wrap: anywhere; }
+.details-name { font-weight: 600; }
+.details-name .entry-icon { font-size: 1.15rem; vertical-align: middle; }
+.details-name .entry-icon-img { vertical-align: middle; }
+.details-notes-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .4rem; }
+.details-notes-head h3 { margin: 0; font-size: 1rem; }
+.details-notes {
+    margin: 0;
+    padding: .7rem .8rem;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: .92em;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.details-notes-state { margin: 0; }
+
 .panel > .search { width: 100%; margin-bottom: .7rem; }
 .gen-options {
     display: flex;
@@ -885,4 +924,10 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
     .entries-table td.cell-updated { font-size: .8rem; }
     .entries-table td.cell-password { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: center; }
     .secret-group:not(:last-child) { margin-right: 0; }
+}
+
+/* Narrow dialogs stack each label over its value. */
+@media (max-width: 520px) {
+    .details-list { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
+    .details-list dd { margin-bottom: .5rem; }
 }
