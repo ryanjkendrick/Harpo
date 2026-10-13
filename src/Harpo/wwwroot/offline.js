@@ -727,7 +727,9 @@ async function doUnlock() {
                 return;
             }
             if (refreshed === null) {
-                if (failure?.message === "WRONG_USER") {
+                if (failure?.message === "DISABLED") {
+                    await disableOffline();
+                } else if (failure?.message === "WRONG_USER") {
                     showMessage("Signed in as someone else", wrongUserText(base, failure), { loginLink: true, wipe: true });
                 } else {
                     showMessage("Snapshot expired",
@@ -817,8 +819,8 @@ function handleFlowError(err, errorElementId) {
             "You need to be signed in to Harpo (online) before syncing an offline copy.",
             { loginLink: true });
     } else if (err.message === "DISABLED") {
-        showMessage("Offline access is disabled",
-            "Your administrator has turned off offline password storage for this Harpo.");
+        // The server said so: the same cleanup as on startup, not just a message.
+        disableOffline();
     } else if (err.message === "WRONG_USER" && record !== null) {
         // The vault on screen is untouched; say why the refresh was refused.
         setError(errorElementId || "vaultError", wrongUserText(record, err));
@@ -829,18 +831,57 @@ function handleFlowError(err, errorElementId) {
     }
 }
 
-async function doWipe() {
-    if (!confirm("Wipe the offline copy from this device? You can re-sync while online.")) {
-        return;
-    }
-    epoch++; // a refresh or unlock still in flight must not write the copy back
+// Drops everything the page holds in memory or on screen and invalidates work
+// still in flight, so a refresh or unlock that finishes later cannot put the
+// vault (or the stored copy) back. Does not touch IndexedDB.
+function dropLocalState() {
+    epoch++;
     dek = null;
     vaultData = null;
     record = null;
     clearTimeout(idleTimer);
+    $("entryList").replaceChildren();
+    $("unlockPass").value = "";
+    $("search").value = "";
+}
+
+async function doWipe() {
+    if (!confirm("Wipe the offline copy from this device? You can re-sync while online.")) {
+        return;
+    }
+    dropLocalState();
     await idbWipe();
     toast("Offline data wiped");
     init();
+}
+
+// The single path for a confirmed "offline access is disabled" answer from the
+// server (startup probe or a snapshot request answering 404). Removes the stored
+// copy as well as the in-memory one. Network failures, sign-in prompts and
+// wrong-account answers are NOT proof of this and never come through here.
+async function disableOffline() {
+    const hadCopy = record !== null || dek !== null || vaultData !== null;
+    dropLocalState();
+    let removed = true;
+    try {
+        await idbWipe();
+    } catch {
+        removed = false;
+    }
+    if (!removed) {
+        showMessage("Offline access is disabled",
+            "Your administrator turned off offline password storage, but the local copy on this device " +
+            "could not be removed. Use the wipe button or clear this site's data in your browser.",
+            { wipe: true });
+        // The record is still stored; keep the wipe button usable.
+        record = await idbGet().catch(() => null);
+    } else if (hadCopy) {
+        showMessage("Offline access is disabled",
+            "Your administrator turned off offline password storage, so the local copy on this device has been removed.");
+    } else {
+        showMessage("Offline access is disabled",
+            "Your administrator has turned off offline password storage for this Harpo.");
+    }
 }
 
 // ---------- boot ----------
@@ -858,19 +899,8 @@ async function init() {
     if (navigator.onLine) {
         const enabled = await probeEnabled();
         if (enabled === false) {
-            if (record) {
-                // Admin turned the feature off: honour it on next contact.
-                epoch++;
-                dek = null;
-                vaultData = null;
-                await idbWipe();
-                record = null;
-                showMessage("Offline access is disabled",
-                    "Your administrator turned off offline password storage, so the local copy on this device has been removed.");
-            } else {
-                showMessage("Offline access is disabled",
-                    "Your administrator has turned off offline password storage for this Harpo.");
-            }
+            // Admin turned the feature off: honour it on next contact.
+            await disableOffline();
             return;
         }
     }
