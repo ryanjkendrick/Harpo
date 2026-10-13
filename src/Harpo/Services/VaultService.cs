@@ -246,16 +246,29 @@ public class VaultService
             groupId: entry.GroupId, entryId: entry.Id);
     }
 
-    /// <summary>Tombstoned entries of a live group, newest first. Requires write rights (viewers have no trash).</summary>
-    public async Task<List<PasswordEntry>> GetDeletedEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
+    public const int DeletedPageSize = 50;
+
+    /// <summary>
+    /// A page of tombstoned entries of a live group, newest first, plus the true total. Requires write rights
+    /// (viewers have no trash). Ordered by (UpdatedAtUtc, Id) descending and continued from a cursor holding both,
+    /// so rows sharing a timestamp are neither skipped nor repeated between pages.
+    /// </summary>
+    public async Task<DeletedPage<PasswordEntry>> GetDeletedEntriesAsync(
+        UserContext user, Guid groupId, DeletedCursor? after = null, int pageSize = DeletedPageSize, CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
-        return await db.PasswordEntries
-            .Where(e => e.GroupId == groupId && e.IsDeleted)
-            .OrderByDescending(e => e.UpdatedAtUtc)
-            .Take(50)
+        var deleted = db.PasswordEntries.Where(e => e.GroupId == groupId && e.IsDeleted);
+        var total = await deleted.CountAsync(ct);
+        var page = after is null
+            ? deleted
+            : deleted.Where(e => e.UpdatedAtUtc < after.UpdatedAtUtc
+                || (e.UpdatedAtUtc == after.UpdatedAtUtc && e.Id.CompareTo(after.Id) < 0));
+        var items = await page
+            .OrderByDescending(e => e.UpdatedAtUtc).ThenByDescending(e => e.Id)
+            .Take(pageSize)
             .ToListAsync(ct);
+        return new DeletedPage<PasswordEntry>(items, total);
     }
 
     /// <summary>Undoes a delete — tombstones replicate, so this works on any site and syncs everywhere.</summary>
