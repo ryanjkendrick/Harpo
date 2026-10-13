@@ -39,7 +39,9 @@ afterwards.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,
-  copying from history, the entries layout at seven widths (nothing may
+  copying from history, the entry details dialog as a Viewer on a 390px touch
+  screen (notes as selectable text with a copy button, a notes indicator on
+  the row, "No notes" when empty), the entries layout at seven widths (nothing may
   overflow or sit under another element, at rest or with secrets revealed),
   links from the health report, the Administration page's navigation and
   audit-log filters, and personal vaults as two accounts see them: one each,
@@ -64,7 +66,7 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 39/39 checks passed
+npm run test:ui   # interactive UI — expect 45/45 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
 ```

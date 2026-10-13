@@ -28,7 +28,10 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   leaves, a site admin can take their vault over as an ordinary group — an
   audited, one-way step the owner would see.
 - **Named, decorated entries** — every password has a name, an icon, the URL it
-  belongs to, an account username, and free-text notes. Icons come from emoji
+  belongs to, an account username, and free-text notes. A **details view**,
+  open to read-only members too, shows the full URL and the notes as
+  selectable, copyable text; a small mark on the row says an entry has notes.
+  Icons come from emoji
   or an org-wide **custom icon catalogue**: anyone can upload small images
   (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
   picker, they replicate to every site, and site admins fully manage the
@@ -656,6 +659,7 @@ All settings can be given as environment variables (`Section__Key` form).
   answers — so they get the same treatment as passwords at rest and between
   sites. Unlike a password they are part of what a member sees when opening a
   group, so they are decrypted with the list rather than on a reveal click.
+  Every member, Viewers included, reads them in the entry's details view.
   Entry names, URLs and usernames stay plain text in the database (they are
   searched and matched on); turn on file encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions

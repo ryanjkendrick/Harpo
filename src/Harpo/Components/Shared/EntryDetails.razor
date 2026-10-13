@@ -1,0 +1,111 @@
+@* Read-only details of one entry: everything the row shows plus the parts it
+   cannot — the full URL and the notes. Any member who can see the entry can
+   open it, Viewers included, so notes (where people keep recovery codes) never
+   depend on a hover tooltip or on being allowed into the editor. Passwords stay
+   behind the row's reveal and copy buttons so each reveal is still audited. *@
+<Modal Visible="View is not null" Title="@($"Details · {View?.Entry.Name}")" OnClose="OnClose">
+    @if (View is { } view)
+    {
+        var entry = view.Entry;
+        <dl class="details-list">
+            <dt>Name</dt>
+            <dd class="details-name"><EntryIcon Icon="@entry.Icon" /> <span>@entry.Name</span></dd>
+
+            <dt>URL</dt>
+            <dd class="details-url">
+                @if (string.IsNullOrEmpty(entry.Url))
+                {
+                    <span class="muted">None</span>
+                }
+                else if (IsLinkable(entry.Url))
+                {
+                    <a href="@entry.Url" target="_blank" rel="noopener noreferrer">@entry.Url</a>
+                }
+                else
+                {
+                    <span>@entry.Url</span>
+                }
+            </dd>
+
+            <dt>Username</dt>
+            <dd>
+                @if (string.IsNullOrEmpty(entry.Username))
+                {
+                    <span class="muted">None</span>
+                }
+                else
+                {
+                    <span class="mono details-username">@entry.Username</span>
+                    <button type="button" class="btn btn-icon" title="Copy username" aria-label="Copy username"
+                            @onclick='() => CopyText.InvokeAsync((entry.Username, "Username copied"))'><Lucide Name="copy" Size="15" /></button>
+                }
+            </dd>
+
+            <dt>Password last changed</dt>
+            <dd>
+                <span class="mono">@view.PasswordUpdatedBy</span>
+                @if (!string.IsNullOrEmpty(Updated))
+                {
+                    <span class="muted"> · @Updated</span>
+                }
+            </dd>
+
+            <dt>2FA</dt>
+            <dd>
+                @if (entry.EncryptedTotpSecret is not null)
+                {
+                    <span>Configured</span>
+                }
+                else
+                {
+                    <span class="muted">Not configured</span>
+                }
+            </dd>
+        </dl>
+
+        <div class="details-notes-head">
+            <h3 id="details-notes-label">Notes</h3>
+            @if (!view.NotesUnreadable && view.Notes.Length > 0)
+            {
+                <button type="button" class="btn btn-ghost btn-sm" aria-label="Copy notes"
+                        @onclick='() => CopyText.InvokeAsync((view.Notes, "Notes copied"))'><Lucide Name="copy" Size="14" /> Copy notes</button>
+            }
+        </div>
+        @if (view.NotesUnreadable)
+        {
+            <p class="muted small details-notes-state">
+                This entry has notes that this site cannot decrypt — its master key
+                differs from the site that wrote them.
+            </p>
+        }
+        else if (view.Notes.Length == 0)
+        {
+            <p class="muted details-notes-state">No notes</p>
+        }
+        else
+        {
+            @* Plain text on purpose: Razor encodes it, and pre-wrap keeps the author's line breaks. *@
+            <pre class="details-notes" aria-labelledby="details-notes-label">@view.Notes</pre>
+        }
+    }
+</Modal>
+
+@code {
+    /// <summary>The entry to show; null keeps the dialog closed.</summary>
+    [Parameter] public EntryView? View { get; set; }
+
+    /// <summary>When the password last changed, already worded ("2026-10-13 09:00:00 UTC (3d ago)").</summary>
+    [Parameter] public string Updated { get; set; } = "";
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>
+    /// Asks the vault page to copy text and say so — it owns the clipboard call and the toast. An
+    /// EventCallback rather than a delegate so the page re-renders and the toast actually appears.
+    /// </summary>
+    [Parameter, EditorRequired] public EventCallback<(string Text, string Message)> CopyText { get; set; }
+
+    private static bool IsLinkable(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+}
