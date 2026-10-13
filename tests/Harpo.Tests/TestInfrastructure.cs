@@ -154,7 +154,11 @@ public sealed class TestSite : IDisposable
         else
         {
             _fileBacked = true;
-            builder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
+            // Not pooled: the pool is process-wide, and other test classes clear
+            // it when they dispose (to release their own files). That closed this
+            // site's idle connections mid-test, and the last close of a file
+            // checkpoints and deletes its write-ahead log.
+            builder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString());
         }
         if (interceptors.Length > 0)
         {
