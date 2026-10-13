@@ -6,6 +6,7 @@
 @inject IJSRuntime JS
 
 <PageTitle>@(_group?.Name ?? "Group") · Harpo</PageTitle>
+<SessionWatch />
 
 <div class="page-narrow">
     @if (_loadError is not null)

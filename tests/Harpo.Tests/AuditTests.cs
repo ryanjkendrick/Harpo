@@ -140,9 +140,9 @@ public class AuditTests : IDisposable
     {
         var disabledAudit = new AuditService(
             _site.Db, Options.Create(new AuditOptions { Enabled = false }), _site.Time,
-            NullLogger<AuditService>.Instance);
+            NullLogger<AuditService>.Instance, _site.Sessions);
         var vault = new VaultService(_site.Db, _site.Crypto, _site.Time, NullLogger<VaultService>.Instance, disabledAudit,
-            Options.Create(new HealthOptions()));
+            Options.Create(new HealthOptions()), _site.Sessions);
 
         var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
         var entry = await vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");

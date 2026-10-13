@@ -117,6 +117,24 @@ public sealed class TestSite : IDisposable
     public IconService Icons { get; }
     public ReplicationEngine Engine { get; }
 
+    /// <summary>
+    /// The site's "directory" (Development-mode users): alice, a site admin, and
+    /// bob. Sessions revalidate against it — remove a user to disable them.
+    /// </summary>
+    public DevAuthOptions DevDirectory { get; } = new()
+    {
+        DevUsers =
+        {
+            new DevAuthOptions.DevUser { Username = "alice", Password = "alice", IsSiteAdmin = true },
+            new DevAuthOptions.DevUser { Username = "bob", Password = "bob" },
+        },
+    };
+
+    /// <summary>Session settings, read live by <see cref="Sessions"/> — tests may change them.</summary>
+    public AuthSessionOptions SessionOptions { get; } = new();
+
+    public SessionService Sessions { get; }
+
     private readonly SqliteConnection? _connection;
     private readonly bool _fileBacked;
 
@@ -155,14 +173,16 @@ public sealed class TestSite : IDisposable
         }
 
         Crypto = new CryptoService(masterKey, previousMasterKeys);
-        Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance);
-        Groups = new GroupService(Db, Time, Audit);
+        Sessions = new SessionService(Db, new DevAuthenticator(Options.Create(DevDirectory)), Options.Create(SessionOptions),
+            Time, NullLogger<SessionService>.Instance);
+        Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance, Sessions);
+        Groups = new GroupService(Db, Time, Audit, Sessions);
         Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
-            Options.Create(new HealthOptions()));
+            Options.Create(new HealthOptions()), Sessions);
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
-            NullLogger<HealthService>.Instance);
+            NullLogger<HealthService>.Instance, Sessions);
         Icons = new IconService(Db, Time, Audit, Options.Create(new IconOptions()),
-            NullLogger<IconService>.Instance);
+            NullLogger<IconService>.Instance, Sessions);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),
@@ -208,6 +228,26 @@ public sealed class TestSite : IDisposable
         }
     }
 
+    /// <summary>
+    /// An in-process caller with no session (like the startup icon import): the
+    /// services skip the session check for it. For a signed-in caller whose
+    /// session can end, use <see cref="SignInAsync"/>.
+    /// </summary>
     public static UserContext User(string username, bool siteAdmin = false) =>
         new(username, char.ToUpperInvariant(username[0]) + username[1..], siteAdmin);
+
+    /// <summary>
+    /// Signs <paramref name="username"/> in against <see cref="DevDirectory"/> as the
+    /// login page does, and returns the caller exactly as an interactive page
+    /// would hold it: built from the cookie's principal, session id included.
+    /// </summary>
+    public async Task<UserContext> SignInAsync(string username)
+    {
+        var dev = DevDirectory.DevUsers.Single(u => u.Username == username);
+        var result = await new DevAuthenticator(Options.Create(DevDirectory))
+            .AuthenticateAsync(dev.Username, dev.Password, CancellationToken.None)
+            ?? throw new InvalidOperationException($"{username} could not sign in");
+        var sessionId = await Sessions.CreateAsync(result);
+        return UserContext.FromPrincipal(HarpoClaims.CreatePrincipal(result, sessionId));
+    }
 }

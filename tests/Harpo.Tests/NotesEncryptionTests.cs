@@ -60,7 +60,7 @@ public class NotesEncryptionTests
         (await vault.GetEntriesAsync(Alice, groupId)).Single(v => v.Entry.Id == entryId);
 
     private static VaultService VaultWith(TestSite site, CryptoService crypto) =>
-        new(site.Db, crypto, site.Time, NullLogger<VaultService>.Instance, site.Audit, Options.Create(new HealthOptions()));
+        new(site.Db, crypto, site.Time, NullLogger<VaultService>.Instance, site.Audit, Options.Create(new HealthOptions()), site.Sessions);
 
     // ---- At rest ----
 
