@@ -20,7 +20,10 @@ afterwards.
   list, a deleted IndexedDB record, and an offline reload (network cut) that
   offers no unlock. It leaves the stack with offline access disabled; restore
   it yourself. Run it on a throwaway stack, never the demo:
-  `HARPO_RESTART_CMD='...' npm run test:disable`.
+  `HARPO_RESTART_CMD='...' npm run test:disable` — expect 10/10 checks passed.
+  (Headless Chrome keeps `navigator.onLine` true while its network is cut, so
+  the page shows the setup screen rather than the "no offline data" message;
+  the script accepts either, since neither offers an unlock.)
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,
