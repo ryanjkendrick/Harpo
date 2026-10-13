@@ -20,7 +20,10 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   site-admin rights. Works from Linux containers (no domain-joined host needed).
 - **Groups gate access** — passwords live inside groups, and only users who have
   been added to a group, and site administrators, can see its passwords. Group admins manage membership;
-  any user can create a group and becomes its admin.
+  any user can create a group and becomes its admin. New members are picked
+  from directory suggestions and checked before they are added — an unknown or
+  disabled account is refused, and the directory's display name is stored
+  (see "Active Directory settings" for what that needs).
 - **Personal vaults** — everyone also gets a vault of their own, created the
   first time they open Harpo, for the passwords that are theirs alone. Only
   its owner can open it: site admins' see-everything right stops at it, and
@@ -179,7 +182,7 @@ running with an empty key.
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
 | `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups — must contain every account that signs in | `DC=corp,DC=example,DC=com` |
 | `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
-| `Auth__Ldap__ServiceUser` | *Optional.* Read-only account used only to re-check signed-in users (see below) — UPN, `DOMAIN\name` or DN | `svc-harpo@corp.example.com` |
+| `Auth__Ldap__ServiceUser` | *Optional.* Read-only account used to re-check signed-in users and to look up the accounts group admins add (see below) — UPN, `DOMAIN\name` or DN | `svc-harpo@corp.example.com` |
 | `Auth__Ldap__ServicePassword` | Its password — prefer `Auth__Ldap__ServicePassword__File` | — |
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
@@ -232,6 +235,45 @@ immediately either way. If that is too long for you and a service account is
 not an option, shorten `Auth__SessionHours` or set
 `Auth__SlidingExpiration=false`. Only the disabled flag is read: an account
 that is merely locked out or whose password expired keeps its session.
+
+**Adding members, and the service account.** The same service account lets
+Harpo check who a group admin is adding. As the admin types two or more
+characters of a username, the field suggests up to ten directory accounts
+whose `sAMAccountName` starts with, or whose `displayName` contains, what was
+typed (computer accounts are left out; disabled accounts are shown with a
+"disabled" badge). Choosing one fills in the account name and its display
+name. Whether chosen or typed, the name is looked up again when **Add member**
+is pressed, under `SearchBase`, and:
+
+- an account that exists and is enabled is added under its `sAMAccountName`
+  with the **directory's display name** — a display name typed in the form is
+  ignored;
+- an account that does not exist is refused ("No account named '…' in the
+  directory."), and so is a disabled one ("'…' is disabled in the
+  directory.") — a typo can no longer grant access to nobody today and to
+  whoever is given that name tomorrow;
+- only group admins and site admins can search or get those answers, so the
+  feature does not turn Harpo into a directory browser for every user.
+
+Without a service account (or while the directory cannot be reached, or
+refuses the service account) the directory cannot be asked. The page says so
+in one line under the form, and members are added as before: the name and
+display name exactly as typed. Such a membership is recorded as **unverified**:
+its audit entry reads `jsmith as Member (unverified: directory not available)`
+instead of `jsmith as Member`, and the members table shows an "unverified"
+badge whose tooltip says it was not checked against the directory. That is a
+deliberate choice, not a fallback that hides a fault: the service account is
+optional, adding members has to keep working for deployments without one, and
+whether verification is enforced is the operator's decision, made by
+configuring it. Memberships made before this check existed are recorded as
+*not known*, not as unverified, and show no badge — an upgrade does not flag
+every existing member; the same goes for memberships that arrive from a site
+still on an older version, which does not send the field. Removing and
+re-adding a member while the directory answers verifies them. The group's
+creator (and a site admin taking over a personal vault) is never marked: their
+identity came from their own sign-in. In Development mode the configured
+`Auth__DevUsers` are the directory (`Auth__DevUsers__N__Disabled=true` stands in
+for a disabled account).
 
 ## Offline access (PWA)
 
@@ -631,12 +673,12 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
-| `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`) |
+| `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`, `Disabled`) |
 | `Auth__SessionHours` | `8` | How long a sign-in lasts: idle time when sliding, total time otherwise. Also the cookie's lifetime |
 | `Auth__SlidingExpiration` | `true` | Activity extends the session; `false` ends it `SessionHours` after sign-in however busy |
 | `Auth__RevalidateMinutes` | `15` | How often each signed-in account is re-checked against the directory (disabled? admin role changed?); `0` = never |
 | `Auth__RevalidateGraceMinutes` | `240` | While the directory cannot be reached, how long past a missed re-check a session survives before it ends |
-| `Auth__Ldap__ServiceUser` / `ServicePassword` | *(empty)* | Optional read-only account that makes LDAP re-checks possible — see "Active Directory settings" |
+| `Auth__Ldap__ServiceUser` / `ServicePassword` | *(empty)* | Optional read-only account that makes LDAP re-checks and verified member selection possible — see "Active Directory settings" |
 | `Auth__Lockout__Enabled` | `true` | Brute-force lockout on the sign-in form |
 | `Auth__Lockout__MaxFailuresPerAccount` | `5` | Failures against one account before it is blocked |
 | `Auth__Lockout__MaxFailuresPerIp` | `20` | Failures from one address (any accounts) before it is blocked |

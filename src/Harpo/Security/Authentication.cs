@@ -61,6 +61,72 @@ public interface IAuthenticator
     Task<RevalidationResult> RevalidateAsync(string username, CancellationToken cancellationToken);
 }
 
+/// <summary>An account as the directory describes it.</summary>
+/// <param name="Username">The lower-cased <c>sAMAccountName</c> (the dev user name in Development mode).</param>
+/// <param name="DisplayName">The directory's display name, or the account name when it has none.</param>
+/// <param name="Disabled">Whether the account is disabled (AD's ACCOUNTDISABLE flag).</param>
+public sealed record DirectoryAccount(string Username, string DisplayName, bool Disabled);
+
+public enum DirectoryLookupStatus
+{
+    /// <summary>Exactly one account has that name; see <see cref="DirectoryLookup.Account"/>.</summary>
+    Found,
+
+    /// <summary>The directory was asked and has no such account under its search base.</summary>
+    NotFound,
+
+    /// <summary>
+    /// More than one account answers to the name (possible only when the search
+    /// base spans several domains). Nothing is assumed about which was meant.
+    /// </summary>
+    Ambiguous,
+
+    /// <summary>
+    /// The directory cannot be asked: no service account is configured, or the
+    /// server could not be reached or refused the service account. Nothing was learned.
+    /// </summary>
+    Unavailable,
+}
+
+public sealed record DirectoryLookup(DirectoryLookupStatus Status, DirectoryAccount? Account = null)
+{
+    public static readonly DirectoryLookup NotFound = new(DirectoryLookupStatus.NotFound);
+    public static readonly DirectoryLookup Ambiguous = new(DirectoryLookupStatus.Ambiguous);
+    public static readonly DirectoryLookup Unavailable = new(DirectoryLookupStatus.Unavailable);
+
+    public static DirectoryLookup Found(DirectoryAccount account) => new(DirectoryLookupStatus.Found, account);
+}
+
+/// <summary>
+/// Suggestions for a search term. <see cref="Available"/> is false when the
+/// directory could not be asked at all, so "no matches" and "could not look"
+/// are never confused.
+/// </summary>
+public sealed record DirectorySearchResult(bool Available, IReadOnlyList<DirectoryAccount> Accounts)
+{
+    public static readonly DirectorySearchResult Unavailable = new(false, []);
+}
+
+/// <summary>
+/// Read-only questions about accounts other than the signed-in user's, asked
+/// without any user's password — what group admins need to add the right
+/// person. Both authenticators implement it: LDAP through the optional service
+/// account (Unavailable without one), Development mode from its user list.
+/// Directory trouble is reported as Unavailable, never thrown.
+/// </summary>
+public interface IDirectory
+{
+    /// <summary>The account whose <c>sAMAccountName</c> is exactly <paramref name="username"/> (case-insensitive).</summary>
+    Task<DirectoryLookup> LookupAccountAsync(string username, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Up to <paramref name="limit"/> accounts whose <c>sAMAccountName</c> starts
+    /// with <paramref name="term"/> or whose display name contains it, case-insensitively,
+    /// ordered by account name.
+    /// </summary>
+    Task<DirectorySearchResult> SearchAccountsAsync(string term, int limit, CancellationToken cancellationToken);
+}
+
 public static class HarpoClaims
 {
     public const string DisplayName = "harpo:displayname";

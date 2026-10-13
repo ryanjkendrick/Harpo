@@ -210,6 +210,9 @@ namespace Harpo.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<bool?>("Verified")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Username");

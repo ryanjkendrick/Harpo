@@ -22,11 +22,13 @@ public class LdapOptions
     public int TimeoutSeconds { get; set; } = 10;
 
     /// <summary>
-    /// Optional, read-only directory account used only to re-check signed-in
-    /// users (enabled? still in the admin group?) without their passwords —
-    /// a UPN ("svc-harpo@corp.example.com"), DOMAIN\name, or DN. Sign-in itself
-    /// never uses it. Without it, a disabled account keeps its existing Harpo
-    /// session until that session expires or the user signs out.
+    /// Optional, read-only directory account used to re-check signed-in users
+    /// (enabled? still in the admin group?) and to look up the accounts group
+    /// admins add, all without anyone's password — a UPN
+    /// ("svc-harpo@corp.example.com"), DOMAIN\name, or DN. Sign-in itself never
+    /// uses it. Without it, a disabled account keeps its existing Harpo session
+    /// until that session expires or the user signs out, and new members are
+    /// stored as typed, unchecked.
     /// </summary>
     public string ServiceUser { get; set; } = "";
     /// <summary>Password of <see cref="ServiceUser"/> (or <c>Auth:Ldap:ServicePassword__File</c>).</summary>
@@ -38,7 +40,7 @@ public class LdapOptions
 /// as the user, then reads the user's entry for display name and group membership.
 /// Works cross-platform (Linux containers included) via System.DirectoryServices.Protocols.
 /// </summary>
-public class LdapAuthenticator : IAuthenticator
+public class LdapAuthenticator : IAuthenticator, IDirectory
 {
     private readonly LdapOptions _options;
     private readonly ILogger<LdapAuthenticator> _logger;
@@ -66,7 +68,7 @@ public class LdapAuthenticator : IAuthenticator
             if (string.IsNullOrWhiteSpace(_options.SearchBase))
             {
                 throw new InvalidOperationException(
-                    "Auth:Ldap:ServiceUser is set but Auth:Ldap:SearchBase is empty — revalidation needs somewhere to look users up.");
+                    "Auth:Ldap:ServiceUser is set but Auth:Ldap:SearchBase is empty — revalidation and member lookups need somewhere to look users up.");
             }
         }
 
@@ -304,9 +306,7 @@ public class LdapAuthenticator : IAuthenticator
         var bareUsername = username.Trim().ToLowerInvariant();
         try
         {
-            using var connection = CreateConnection();
-            connection.Credential = new NetworkCredential(ServiceBindName(), _options.ServicePassword);
-            connection.Bind();
+            using var connection = BindAsServiceAccount();
 
             var filter = $"(&(objectClass=user)(sAMAccountName={EscapeFilterValue(bareUsername)}))";
             var request = new SearchRequest(
@@ -343,6 +343,182 @@ public class LdapAuthenticator : IAuthenticator
             _logger.LogWarning(ex, "Revalidating {User}: directory server {Server} unavailable", bareUsername, _options.Server);
             return RevalidationResult.Unavailable;
         }
+    }
+
+    private bool HasServiceAccount => !string.IsNullOrWhiteSpace(_options.ServiceUser);
+
+    /// <summary>A connection bound as <see cref="LdapOptions.ServiceUser"/>; throws as <see cref="LdapConnection.Bind()"/> does.</summary>
+    private LdapConnection BindAsServiceAccount()
+    {
+        var connection = CreateConnection();
+        try
+        {
+            connection.Credential = new NetworkCredential(ServiceBindName(), _options.ServicePassword);
+            connection.Bind();
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    // ---- IDirectory: looking up the accounts group admins add ----
+
+    /// <summary>
+    /// Computers are objectClass=user in AD too (their sAMAccountName ends in "$");
+    /// a group membership for one would be meaningless, so they are never offered.
+    /// </summary>
+    private const string PersonFilter = "(objectClass=user)(!(objectClass=computer))";
+
+    private static readonly string[] AccountAttributes = ["sAMAccountName", "displayName", "cn", "userAccountControl"];
+
+    /// <summary>
+    /// Asks, as the service account, for the account named exactly
+    /// <paramref name="username"/>. Without a service account the directory
+    /// cannot be asked and the answer is Unavailable — adding members keeps
+    /// working, unchecked (see <see cref="Harpo.Services.GroupService.AddMemberAsync"/>).
+    /// </summary>
+    public Task<DirectoryLookup> LookupAccountAsync(string username, CancellationToken cancellationToken)
+    {
+        if (!HasServiceAccount)
+        {
+            return Task.FromResult(DirectoryLookup.Unavailable);
+        }
+        var name = username.Trim();
+        if (name.Length == 0)
+        {
+            return Task.FromResult(DirectoryLookup.NotFound);
+        }
+        // S.DS.P is synchronous; run it off the caller's thread.
+        return Task.Run(() => LookupAccount(name), cancellationToken);
+    }
+
+    private DirectoryLookup LookupAccount(string username)
+    {
+        try
+        {
+            using var connection = BindAsServiceAccount();
+            var filter = $"(&{PersonFilter}(sAMAccountName={EscapeFilterValue(username)}))";
+            var request = new SearchRequest(_options.SearchBase, filter, SearchScope.Subtree, AccountAttributes);
+            var response = (SearchResponse)connection.SendRequest(request);
+            if (response.Entries.Count == 0)
+            {
+                return DirectoryLookup.NotFound;
+            }
+            if (response.Entries.Count > 1)
+            {
+                _logger.LogWarning("Looking up {User}: {Count} accounts under {SearchBase} have that name",
+                    username, response.Entries.Count, _options.SearchBase);
+                return DirectoryLookup.Ambiguous;
+            }
+            if (!TryReadAccount(response.Entries[0], username, out var account))
+            {
+                // Without userAccountControl we cannot say the account is enabled;
+                // calling it checked would be wrong, so nothing was learned.
+                _logger.LogWarning(
+                    "Looking up {User}: userAccountControl not readable by Auth:Ldap:ServiceUser", username);
+                return DirectoryLookup.Unavailable;
+            }
+            return DirectoryLookup.Found(account);
+        }
+        catch (LdapException ex) when (ex.ErrorCode == 49)
+        {
+            _logger.LogError("The directory rejected Auth:Ldap:ServiceUser's credentials; new members cannot be checked");
+            return DirectoryLookup.Unavailable;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Looking up {User}: directory server {Server} unavailable", username, _options.Server);
+            return DirectoryLookup.Unavailable;
+        }
+    }
+
+    /// <summary>
+    /// Suggestions for the add-member field: accounts whose sAMAccountName starts
+    /// with the term or whose displayName contains it, at most <paramref name="limit"/>.
+    /// Unavailable (not an empty list) when the directory cannot be asked.
+    /// </summary>
+    public Task<DirectorySearchResult> SearchAccountsAsync(string term, int limit, CancellationToken cancellationToken)
+    {
+        if (!HasServiceAccount)
+        {
+            return Task.FromResult(DirectorySearchResult.Unavailable);
+        }
+        term = term.Trim();
+        if (term.Length == 0 || limit <= 0)
+        {
+            return Task.FromResult(new DirectorySearchResult(true, []));
+        }
+        return Task.Run(() => SearchAccounts(term, limit), cancellationToken);
+    }
+
+    private DirectorySearchResult SearchAccounts(string term, int limit)
+    {
+        try
+        {
+            using var connection = BindAsServiceAccount();
+            var escaped = EscapeFilterValue(term);
+            var filter = $"(&{PersonFilter}(|(sAMAccountName={escaped}*)(displayName=*{escaped}*)))";
+            var request = new SearchRequest(_options.SearchBase, filter, SearchScope.Subtree, AccountAttributes)
+            {
+                SizeLimit = limit,
+            };
+            SearchResponse response;
+            try
+            {
+                response = (SearchResponse)connection.SendRequest(request);
+            }
+            catch (DirectoryOperationException ex) when (
+                ex.Response is SearchResponse partial && ex.Response.ResultCode == ResultCode.SizeLimitExceeded)
+            {
+                // More matches than wanted: the server sends `limit` of them and
+                // says so with this result code. Those are the suggestions.
+                response = partial;
+            }
+
+            var accounts = new List<DirectoryAccount>();
+            foreach (SearchResultEntry entry in response.Entries)
+            {
+                // An unreadable userAccountControl shows as enabled here: these are
+                // only suggestions, and adding the account looks it up again.
+                if (GetString(entry, "sAMAccountName") is { Length: > 0 } name)
+                {
+                    TryReadAccount(entry, name, out var account);
+                    accounts.Add(account);
+                }
+            }
+            return new DirectorySearchResult(true, accounts
+                .OrderBy(a => a.Username, StringComparer.Ordinal)
+                .Take(limit)
+                .ToList());
+        }
+        catch (LdapException ex) when (ex.ErrorCode == 49)
+        {
+            _logger.LogError("The directory rejected Auth:Ldap:ServiceUser's credentials; accounts cannot be searched");
+            return DirectorySearchResult.Unavailable;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Searching accounts: directory server {Server} unavailable", _options.Server);
+            return DirectorySearchResult.Unavailable;
+        }
+    }
+
+    /// <summary>
+    /// The account an entry describes. False when its userAccountControl could
+    /// not be read, in which case <paramref name="account"/> says "enabled"
+    /// without knowing it.
+    /// </summary>
+    private static bool TryReadAccount(SearchResultEntry entry, string fallbackName, out DirectoryAccount account)
+    {
+        // Memberships are keyed on the lower-cased sAMAccountName, as sign-in is.
+        var username = (GetString(entry, "sAMAccountName") ?? fallbackName).Trim().ToLowerInvariant();
+        var displayName = GetString(entry, "displayName") ?? GetString(entry, "cn") ?? username;
+        var readable = long.TryParse(GetString(entry, "userAccountControl"), out var flags);
+        account = new DirectoryAccount(username, displayName, readable && (flags & AccountDisabledFlag) != 0);
+        return readable;
     }
 
     private string ServiceBindName()

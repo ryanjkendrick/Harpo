@@ -69,6 +69,8 @@ else
 {
     builder.Services.AddSingleton<IAuthenticator, LdapAuthenticator>();
 }
+// The same instance answers directory lookups for group admins adding members.
+builder.Services.AddSingleton<IDirectory>(sp => (IDirectory)sp.GetRequiredService<IAuthenticator>());
 
 builder.Services.AddSingleton<LoginThrottle>();
 
