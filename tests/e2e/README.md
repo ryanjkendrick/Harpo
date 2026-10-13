@@ -19,7 +19,8 @@ afterwards.
   audit-log filters, and personal vaults as two accounts see them: one each,
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
-  — after which the second account gets a fresh one. It also holds the
+  — after which the second account gets a fresh one — plus a site admin who
+  is given an explicit Viewer membership keeping the edit controls. It also holds the
   content security policy to its word:
   every page must be served with it, nothing the app does may be blocked by
   it, and an injected inline script or style must have no effect — so a
@@ -37,7 +38,7 @@ afterwards.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 38/38 checks passed
+npm run test:ui   # interactive UI — expect 39/39 checks passed
 npm run test:all  # both
 ```
 
