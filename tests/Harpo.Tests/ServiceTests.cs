@@ -233,7 +233,7 @@ public class ServiceTests : IDisposable
         var entry = await _site.Vault.CreateEntryAsync(_alice, group.Id, "Router", "🌐", "", "", "", "pw1");
         await _site.Vault.DeleteEntryAsync(_alice, entry.Id);
 
-        var trash = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id);
+        var trash = (await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id)).Items;
         Assert.Equal(entry.Id, Assert.Single(trash).Id);
 
         // Viewers have no trash access; restore requires write rights.
@@ -243,8 +243,96 @@ public class ServiceTests : IDisposable
 
         await _site.Vault.RestoreEntryAsync(_alice, entry.Id);
         Assert.Single(await _site.Vault.GetEntriesAsync(_alice, group.Id));
-        Assert.Empty(await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id));
+        Assert.Empty((await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id)).Items);
         Assert.Equal("pw1", await _site.Vault.RevealPasswordAsync(_alice, entry.Id));
+    }
+
+    [Fact]
+    public async Task Deleted_entries_page_stably_past_fifty_with_the_true_total()
+    {
+        var group = await _site.Groups.CreateGroupAsync(_alice, "Infra", "");
+        var ids = new List<Guid>();
+        for (var i = 0; i < 51; i++)
+        {
+            var e = await _site.Vault.CreateEntryAsync(_alice, group.Id, $"E{i}", "🌐", "", "", "", "pw");
+            ids.Add(e.Id);
+        }
+        // Delete the oldest first and alone; later, every third deletion shares a tick with the next so timestamps tie.
+        for (var i = 0; i < ids.Count; i++)
+        {
+            await _site.Vault.DeleteEntryAsync(_alice, ids[i]);
+            if (i == 0 || i % 3 != 0) { _site.Time.Advance(TimeSpan.FromSeconds(1)); }
+        }
+
+        var seen = new List<Guid>();
+        DeletedCursor? cursor = null;
+        while (true)
+        {
+            var page = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id, cursor, pageSize: 20);
+            Assert.Equal(51, page.Total);
+            if (page.Items.Count == 0) { break; }
+            seen.AddRange(page.Items.Select(e => e.Id));
+            var last = page.Items[^1];
+            cursor = new DeletedCursor(last.UpdatedAtUtc, last.Id);
+        }
+        Assert.Equal(51, seen.Count);
+        Assert.Equal(ids.OrderBy(x => x), seen.OrderBy(x => x));
+
+        // The default first page is capped at 50, so the oldest is only reachable by paging on.
+        var first = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id);
+        Assert.Equal(50, first.Items.Count);
+        Assert.DoesNotContain(first.Items, e => e.Id == ids[0]);
+        var rest = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id,
+            new DeletedCursor(first.Items[^1].UpdatedAtUtc, first.Items[^1].Id));
+        var oldest = Assert.Single(rest.Items);
+        Assert.Equal(ids[0], oldest.Id);
+
+        await _site.Vault.RestoreEntryAsync(_alice, oldest.Id);
+        var after = await _site.Vault.GetDeletedEntriesAsync(_alice, group.Id);
+        Assert.Equal(50, after.Total);
+        Assert.Equal(first.Items.Select(e => e.Id), after.Items.Select(e => e.Id));
+    }
+
+    [Fact]
+    public async Task Deleted_groups_page_stably_past_fifty_with_the_true_total()
+    {
+        var ids = new List<Guid>();
+        for (var i = 0; i < 51; i++)
+        {
+            var g = await _site.Groups.CreateGroupAsync(_admin, $"G{i}", "");
+            ids.Add(g.Id);
+        }
+        for (var i = 0; i < ids.Count; i++)
+        {
+            await _site.Groups.DeleteGroupAsync(_admin, ids[i]);
+            if (i == 0 || i % 3 != 0) { _site.Time.Advance(TimeSpan.FromSeconds(1)); }
+        }
+
+        var seen = new List<Guid>();
+        DeletedCursor? cursor = null;
+        while (true)
+        {
+            var page = await _site.Groups.GetDeletedGroupsAsync(_admin, cursor, pageSize: 20);
+            Assert.Equal(51, page.Total);
+            if (page.Items.Count == 0) { break; }
+            seen.AddRange(page.Items.Select(g => g.Id));
+            var last = page.Items[^1];
+            cursor = new DeletedCursor(last.UpdatedAtUtc, last.Id);
+        }
+        Assert.Equal(51, seen.Count);
+        Assert.Equal(ids.OrderBy(x => x), seen.OrderBy(x => x));
+
+        var first = await _site.Groups.GetDeletedGroupsAsync(_admin);
+        Assert.Equal(50, first.Items.Count);
+        var rest = await _site.Groups.GetDeletedGroupsAsync(_admin,
+            new DeletedCursor(first.Items[^1].UpdatedAtUtc, first.Items[^1].Id));
+        var oldest = Assert.Single(rest.Items);
+        Assert.Equal(ids[0], oldest.Id);
+
+        await _site.Groups.RestoreGroupAsync(_admin, oldest.Id);
+        var after = await _site.Groups.GetDeletedGroupsAsync(_admin);
+        Assert.Equal(50, after.Total);
+        Assert.Equal(first.Items.Select(g => g.Id), after.Items.Select(g => g.Id));
     }
 
     [Fact]
@@ -257,7 +345,7 @@ public class ServiceTests : IDisposable
         await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Groups.GetDeletedGroupsAsync(_alice));
         await Assert.ThrowsAsync<VaultAccessDeniedException>(() => _site.Groups.RestoreGroupAsync(_alice, group.Id));
 
-        var deleted = await _site.Groups.GetDeletedGroupsAsync(_admin);
+        var deleted = (await _site.Groups.GetDeletedGroupsAsync(_admin)).Items;
         Assert.Equal(group.Id, Assert.Single(deleted).Id);
 
         await _site.Groups.RestoreGroupAsync(_admin, group.Id);

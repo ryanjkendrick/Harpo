@@ -147,19 +147,31 @@ public class GroupService
         await _audit.RecordAsync(user, AuditActions.GroupDelete, group.Name, groupId: groupId);
     }
 
-    /// <summary>Tombstoned groups, newest first. Site admins only.</summary>
-    public async Task<List<Group>> GetDeletedGroupsAsync(UserContext user, CancellationToken ct = default)
+    public const int DeletedPageSize = 50;
+
+    /// <summary>
+    /// A page of tombstoned groups, newest first, plus the true total. Site admins only. Paged by the compound
+    /// (UpdatedAtUtc, Id) key so tied timestamps are neither skipped nor repeated.
+    /// </summary>
+    public async Task<DeletedPage<Group>> GetDeletedGroupsAsync(
+        UserContext user, DeletedCursor? after = null, int pageSize = DeletedPageSize, CancellationToken ct = default)
     {
         if (!user.IsSiteAdmin)
         {
             throw new VaultAccessDeniedException("Only site admins can see deleted groups.");
         }
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        return await db.Groups
-            .Where(g => g.IsDeleted && g.OwnerUsername == "")
-            .OrderByDescending(g => g.UpdatedAtUtc)
-            .Take(50)
+        var deleted = db.Groups.Where(g => g.IsDeleted && g.OwnerUsername == "");
+        var total = await deleted.CountAsync(ct);
+        var page = after is null
+            ? deleted
+            : deleted.Where(g => g.UpdatedAtUtc < after.UpdatedAtUtc
+                || (g.UpdatedAtUtc == after.UpdatedAtUtc && g.Id.CompareTo(after.Id) < 0));
+        var items = await page
+            .OrderByDescending(g => g.UpdatedAtUtc).ThenByDescending(g => g.Id)
+            .Take(pageSize)
             .ToListAsync(ct);
+        return new DeletedPage<Group>(items, total);
     }
 
     /// <summary>Restores a deleted group; its entries that were not individually deleted come back with it.</summary>

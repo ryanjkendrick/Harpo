@@ -233,9 +233,9 @@
             @if (CanEdit && _deletedEntries is not null)
             {
                 <details class="trash">
-                    <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedEntries.Count)</summary>
+                    <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedTotal)</summary>
                     <p class="muted small trash-note">
-                        @(_deletedEntries.Count == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
+                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
                         nothing is purged automatically.
                     </p>
                     <div class="table-scroll">
@@ -257,6 +257,12 @@
                             </tbody>
                         </table>
                     </div>
+                    @if (_deletedEntries.Count < _deletedTotal)
+                    {
+                        <button class="btn btn-ghost btn-sm show-all" @onclick="LoadOlderDeletedAsync">
+                            Show older (@(_deletedTotal - _deletedEntries.Count) more)
+                        </button>
+                    }
                 </details>
             }
         }
@@ -445,6 +451,7 @@
     private List<GroupSummary>? _groups;
     private List<EntryView>? _entries;
     private List<PasswordEntry>? _deletedEntries;
+    private int _deletedTotal;
     private string _selectedGroupName = "";
     private string _search = "";
     private readonly Dictionary<Guid, string> _revealed = new();
@@ -583,7 +590,16 @@
         {
             _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
             _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
-            _deletedEntries = CanEdit ? await Passwords.GetDeletedEntriesAsync(_user, groupId.Value) : null;
+            if (CanEdit)
+            {
+                var trash = await Passwords.GetDeletedEntriesAsync(_user, groupId.Value);
+                _deletedEntries = trash.Items;
+                _deletedTotal = trash.Total;
+            }
+            else
+            {
+                _deletedEntries = null;
+            }
             _revealed.Clear();
         }
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
@@ -934,6 +950,26 @@
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
         {
             _editorError = ex.Message;
+        }
+    }
+
+    /// <summary>Appends the next page of tombstones; the cursor is the last row shown, so ties are not skipped.</summary>
+    private async Task LoadOlderDeletedAsync()
+    {
+        if (_deletedEntries is not { Count: > 0 } || SelectedGroupId is not { } groupId)
+        {
+            return;
+        }
+        try
+        {
+            var last = _deletedEntries[^1];
+            var page = await Passwords.GetDeletedEntriesAsync(_user!, groupId, new DeletedCursor(last.UpdatedAtUtc, last.Id));
+            _deletedEntries.AddRange(page.Items);
+            _deletedTotal = page.Total + _deletedEntries.Count - page.Items.Count;
+        }
+        catch (Exception ex)
+        {
+            ShowToast(ex.Message, isError: true);
         }
     }
 
