@@ -48,17 +48,7 @@ public class GroupService
             .Where(m => !m.IsDeleted && m.Username == user.Username)
             .ToDictionaryAsync(m => m.GroupId, m => m.Role, ct);
 
-        // A personal vault is listed for its owner alone — a site admin's
-        // see-everything right stops at it, and so would a membership row that
-        // somehow got attached to it.
-        var groupsQuery = db.Groups
-            .Where(g => !g.IsDeleted && (g.OwnerUsername == "" || g.OwnerUsername == user.Username));
-        if (!user.IsSiteAdmin)
-        {
-            var groupIds = memberships.Keys.ToList();
-            groupsQuery = groupsQuery.Where(g => groupIds.Contains(g.Id));
-        }
-        var groups = await groupsQuery
+        var groups = await VisibleGroups(db, user, memberships.Keys)
             .OrderBy(g => g.OwnerUsername == "" ? 1 : 0)
             .ThenBy(g => g.Name)
             .ToListAsync(ct);
@@ -82,6 +72,27 @@ public class GroupService
                 memberCounts.GetValueOrDefault(g.Id),
                 entryCounts.GetValueOrDefault(g.Id)))
             .ToList();
+    }
+
+    /// <summary>
+    /// The live groups a user may see in the vault: explicit memberships, every
+    /// shared group for a site admin, and their own personal vault. A personal
+    /// vault is listed for its owner alone — a site admin's see-everything
+    /// right stops at it, and so would a membership row that somehow got
+    /// attached to it. Shared with <see cref="VaultService.SearchEntriesAsync"/>
+    /// so that search can never reach a vault the listing would not show.
+    /// </summary>
+    internal static IQueryable<Group> VisibleGroups(
+        HarpoDbContext db, UserContext user, IEnumerable<Guid> memberGroupIds)
+    {
+        var groupsQuery = db.Groups
+            .Where(g => !g.IsDeleted && (g.OwnerUsername == "" || g.OwnerUsername == user.Username));
+        if (!user.IsSiteAdmin)
+        {
+            var groupIds = memberGroupIds.ToList();
+            groupsQuery = groupsQuery.Where(g => groupIds.Contains(g.Id));
+        }
+        return groupsQuery;
     }
 
     public async Task<Group> CreateGroupAsync(UserContext user, string name, string description, CancellationToken ct = default)

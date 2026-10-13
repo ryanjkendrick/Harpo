@@ -931,3 +931,32 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
     .details-list { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
     .details-list dd { margin-bottom: .5rem; }
 }
+
+/* ---------- search results from the user's other vaults ---------- */
+
+.search-others { margin-top: 1.4rem; }
+.search-others-title { margin-bottom: .1rem; }
+.search-none { margin: .3rem 0 0; }
+
+/* A small card per hit, so the same markup serves the wide and the narrow layout. */
+.search-hits { list-style: none; padding: 0; margin: .5rem 0 0; gap: .45rem; }
+
+.search-hit {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .6rem .9rem;
+}
+
+.search-hit > .entry-icon { font-size: 1.25rem; flex-shrink: 0; }
+.search-hit-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.search-hit-name { font-weight: 650; overflow-wrap: anywhere; }
+.search-hit-detail { overflow-wrap: anywhere; }
+
+.search-hit-vault {
+    flex-shrink: 0;
+    max-width: 40%;
+    overflow-wrap: anywhere;
+    text-align: right;
+    font-weight: 600;
+}

@@ -31,6 +31,9 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
   belongs to, an account username, and free-text notes. A **details view**,
   open to read-only members too, shows the full URL and the notes as
   selectable, copyable text; a small mark on the row says an entry has notes.
+  The vault's search box also looks in your **other vaults** (from two
+  characters on), listing matches below the open group's with the vault named
+  and linked, so an account can be found without remembering its group.
   Icons come from emoji
   or an org-wide **custom icon catalogue**: anyone can upload small images
   (PNG/JPEG/GIF/WebP/SVG, ≤64 KB, content-validated) straight from the icon
@@ -661,7 +664,9 @@ All settings can be given as environment variables (`Section__Key` form).
   group, so they are decrypted with the list rather than on a reveal click.
   Every member, Viewers included, reads them in the entry's details view.
   Entry names, URLs and usernames stay plain text in the database (they are
-  searched and matched on); turn on file encryption if those matter too.
+  searched and matched on, across every vault you can see and never another
+  user's personal vault; notes and passwords are not searched); turn on file
+  encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions
   only**, and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is

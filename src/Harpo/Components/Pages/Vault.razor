@@ -94,7 +94,8 @@
                           title="Your personal vault: nobody else can open it, site administrators included. If you leave, an administrator can turn it into a group — you would see that happen here.">only you</span>
                 }
                 <input class="search" type="search" placeholder="Search name, URL, username…"
-                       @bind="_search" @bind:event="oninput" />
+                       aria-label="Search name, URL, username"
+                       @bind="_search" @bind:event="oninput" @bind:after="OnSearchTyped" />
                 @if (CanEdit)
                 {
                     <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
@@ -237,6 +238,10 @@
                         </tbody>
                     </table>
                 </div>
+            }
+            @if (OtherMatches is { } others)
+            {
+                <SearchResults Matches="others" Term="@_otherHitsTerm" />
             }
             @if (CanEdit && _deletedEntries is not null)
             {
@@ -590,12 +595,103 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Query != _appliedQuery)
+        var queryChanged = Query != _appliedQuery;
+        if (queryChanged)
         {
             _appliedQuery = Query;
             _search = Query ?? "";
         }
         await LoadEntriesAsync();
+        // The other-vaults list is "everything but the open vault", so it is
+        // stale once the open vault changes, and a ?q= deep link needs its own
+        // search. Not while prerendering: nothing there could receive the result.
+        if (RendererInfo.IsInteractive && (queryChanged || SelectedGroupId != _searchedExcluding))
+        {
+            ScheduleOtherVaultSearch(delayMs: 0);
+        }
+    }
+
+    // ---- search in the user's other vaults ----
+
+    private const int OtherSearchMinChars = 2;
+    private const int OtherSearchDebounceMs = 250;
+
+    private List<EntryMatch>? _otherHits;
+    private string _otherHitsTerm = "";
+    private Guid? _searchedExcluding;
+    private CancellationTokenSource? _otherSearchCts;
+
+    // Shown only while the box holds enough to search on. Until the first answer
+    // arrives the section is absent, and a newer answer replaces an older one in
+    // place, so typing does not make the section blink in and out.
+    private List<EntryMatch>? OtherMatches =>
+        _otherHits is not null && _search.Trim().Length >= OtherSearchMinChars
+            ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
+            : null;
+
+    private void OnSearchTyped() => ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+
+    /// <summary>
+    /// Debounced, and latest-wins: every call cancels the one before, and an
+    /// answer is applied only if it still belongs to the newest call when it
+    /// lands, so a slow early response cannot overwrite a later one.
+    /// </summary>
+    private void ScheduleOtherVaultSearch(int delayMs)
+    {
+        _otherSearchCts?.Cancel();
+        _otherSearchCts?.Dispose();
+        _otherSearchCts = null;
+
+        var term = _search.Trim();
+        _searchedExcluding = SelectedGroupId;
+        if (term.Length < OtherSearchMinChars || _user is null)
+        {
+            _otherHits = null;
+            return;
+        }
+        var cts = _otherSearchCts = new CancellationTokenSource();
+        // The token is read now: the source is disposed by the next keystroke.
+        _ = SearchOtherVaultsAsync(term, SelectedGroupId, delayMs, cts.Token);
+    }
+
+    private async Task SearchOtherVaultsAsync(string term, Guid? excluding, int delayMs, CancellationToken token)
+    {
+        try
+        {
+            if (delayMs > 0)
+            {
+                await Task.Delay(delayMs, token);
+            }
+            var hits = await Passwords.SearchEntriesAsync(_user!, term, ct: token, excludeGroupId: excluding);
+            await InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return; // a later keystroke owns the result now
+                }
+                _otherHits = hits;
+                _otherHitsTerm = term;
+                StateHasChanged();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+            // The page went away mid-search.
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            await InvokeAsync(() =>
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    _otherHits = null;
+                    ShowToast(ex.Message, isError: true);
+                }
+            });
+        }
     }
 
     private async Task LoadEntriesAsync()
@@ -696,6 +792,8 @@
         _revealTimers.Clear();
         _totpTimer?.Dispose();
         _toastCts?.Cancel();
+        _otherSearchCts?.Cancel();
+        _otherSearchCts?.Dispose();
     }
 
     private async Task CopyPasswordAsync(Guid entryId)

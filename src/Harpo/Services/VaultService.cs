@@ -15,6 +15,15 @@ namespace Harpo.Services;
 public sealed record EntryView(
     PasswordEntry Entry, string Notes, bool NotesUnreadable, string PasswordUpdatedBy, DateTime? PasswordUpdatedAtUtc);
 
+/// <summary>
+/// One hit of <see cref="VaultService.SearchEntriesAsync"/>: the plain-text
+/// fields a result list shows and the vault it lives in. Deliberately not an
+/// <see cref="EntryView"/> — no notes and no secrets travel with a search.
+/// </summary>
+public sealed record EntryMatch(
+    Guid EntryId, string Name, string Icon, string Url, string Username,
+    Guid GroupId, string GroupName, bool GroupIsPersonal);
+
 public sealed record RevisionView(Guid RevisionId, string CreatedBy, DateTime CreatedAtUtc, bool IsCurrent);
 
 public enum RevealPurpose
@@ -84,6 +93,68 @@ public class VaultService
                     ? new EntryView(e, notes, !readable, latest.CreatedBy, latest.CreatedAtUtc)
                     : new EntryView(e, notes, !readable, e.CreatedBy, null);
             })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Finds entries by name, URL or username across every vault the user can
+    /// see (the groups <see cref="GroupService.GetMyGroupsAsync"/> lists — never
+    /// someone else's personal vault). Case-insensitive; notes are encrypted at
+    /// rest and are not searched. Like listing a group, it is not audited.
+    /// <paramref name="excludeGroupId"/> leaves one vault out — the page already
+    /// shows the open vault's matches, and its many hits must not crowd the
+    /// other vaults' out of <paramref name="limit"/>.
+    /// </summary>
+    public async Task<List<EntryMatch>> SearchEntriesAsync(
+        UserContext user, string term, int limit = 50, CancellationToken ct = default, Guid? excludeGroupId = null)
+    {
+        await _sessions.RequireLiveAsync(user, ct);
+        term = (term ?? "").Trim();
+        if (term.Length == 0 || limit <= 0)
+        {
+            return [];
+        }
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var memberOf = await db.GroupMembers
+            .Where(m => !m.IsDeleted && m.Username == user.Username)
+            .Select(m => m.GroupId)
+            .ToListAsync(ct);
+        var visible = GroupService.VisibleGroups(db, user, memberOf);
+        if (excludeGroupId is { } excluded)
+        {
+            visible = visible.Where(g => g.Id != excluded);
+        }
+        var groups = await visible
+            .Select(g => new { g.Id, g.Name, g.OwnerUsername })
+            .ToListAsync(ct);
+        if (groups.Count == 0)
+        {
+            return [];
+        }
+
+        // Matched in memory rather than with LIKE/instr: SQLite folds case for
+        // ASCII only, and this must agree with the vault page's own filter
+        // (OrdinalIgnoreCase). Only the plain-text columns are read.
+        var groupIds = groups.Select(g => g.Id).ToList();
+        var candidates = await db.PasswordEntries
+            .Where(e => !e.IsDeleted && groupIds.Contains(e.GroupId))
+            .Select(e => new { e.Id, e.Name, e.Icon, e.Url, e.Username, e.GroupId })
+            .ToListAsync(ct);
+        var groupById = groups.ToDictionary(g => g.Id);
+
+        return candidates
+            .Where(e => e.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || e.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || e.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .Select(e => (Entry: e, Group: groupById[e.GroupId]))
+            .OrderBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Group.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Entry.Id)
+            .Take(limit)
+            .Select(x => new EntryMatch(
+                x.Entry.Id, x.Entry.Name, x.Entry.Icon, x.Entry.Url, x.Entry.Username,
+                x.Group.Id, x.Group.Name, x.Group.OwnerUsername.Length > 0))
             .ToList();
     }
 
