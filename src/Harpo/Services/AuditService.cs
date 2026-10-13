@@ -77,15 +77,18 @@ public class AuditService
 
     /// <summary>Newest-first page of the trail; site admins only.</summary>
     public async Task<List<AuditEvent>> GetEventsAsync(
-        UserContext user, DateTime? beforeUtc = null, int take = 100,
+        UserContext user, AuditCursor? before = null, int take = 100,
         AuditCategory category = AuditCategory.All, CancellationToken ct = default)
     {
         RequireSiteAdmin(user);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var query = db.AuditEvents.AsNoTracking();
-        if (beforeUtc is not null)
+        if (before is { } cursor)
         {
-            query = query.Where(e => e.OccurredAtUtc < beforeUtc);
+            // The cursor spans the whole sort order (timestamp, then id): events
+            // sharing a timestamp across a page boundary must not be skipped.
+            var (at, id) = (cursor.OccurredAtUtc, cursor.Id);
+            query = query.Where(e => e.OccurredAtUtc < at || (e.OccurredAtUtc == at && e.Id.CompareTo(id) < 0));
         }
         // Filtered in the query, not after paging, so "older events" pages
         // through the chosen category instead of through everything.
@@ -172,4 +175,10 @@ public class AuditRetentionService : BackgroundService
         {
         }
     }
+}
+
+/// <summary>Position in the newest-first audit order; pass the last row of a page to fetch the next.</summary>
+public readonly record struct AuditCursor(DateTime OccurredAtUtc, Guid Id)
+{
+    public static AuditCursor Of(AuditEvent e) => new(e.OccurredAtUtc, e.Id);
 }
