@@ -96,6 +96,22 @@ public sealed class CommandHook : DbCommandInterceptor
 }
 
 /// <summary>
+/// A directory that answers from <paramref name="inner"/> until a test sets
+/// <see cref="Unavailable"/> — then it behaves like LDAP without a service
+/// account (or with the DC down): every lookup and search is Unavailable.
+/// </summary>
+public sealed class SwitchableDirectory(IDirectory inner) : IDirectory
+{
+    public bool Unavailable { get; set; }
+
+    public Task<DirectoryLookup> LookupAccountAsync(string username, CancellationToken cancellationToken) =>
+        Unavailable ? Task.FromResult(DirectoryLookup.Unavailable) : inner.LookupAccountAsync(username, cancellationToken);
+
+    public Task<DirectorySearchResult> SearchAccountsAsync(string term, int limit, CancellationToken cancellationToken) =>
+        Unavailable ? Task.FromResult(DirectorySearchResult.Unavailable) : inner.SearchAccountsAsync(term, limit, cancellationToken);
+}
+
+/// <summary>
 /// A complete Harpo "site": its own SQLite database, clock, and service
 /// instances. Replication tests wire several of these together. In-memory by
 /// default; pass <c>databasePath</c> for a real WAL-mode file where every
@@ -118,8 +134,9 @@ public sealed class TestSite : IDisposable
     public ReplicationEngine Engine { get; }
 
     /// <summary>
-    /// The site's "directory" (Development-mode users): alice, a site admin, and
-    /// bob. Sessions revalidate against it — remove a user to disable them.
+    /// The site's "directory" (Development-mode users): alice, a site admin, bob
+    /// and carol. Sessions revalidate against it — remove a user to disable
+    /// them — and group admins' member lookups ask it (through <see cref="Directory"/>).
     /// </summary>
     public DevAuthOptions DevDirectory { get; } = new()
     {
@@ -127,8 +144,12 @@ public sealed class TestSite : IDisposable
         {
             new DevAuthOptions.DevUser { Username = "alice", Password = "alice", IsSiteAdmin = true },
             new DevAuthOptions.DevUser { Username = "bob", Password = "bob" },
+            new DevAuthOptions.DevUser { Username = "carol", Password = "carol" },
         },
     };
+
+    /// <summary>What <see cref="Groups"/> asks about new members: <see cref="DevDirectory"/>, unless switched off.</summary>
+    public SwitchableDirectory Directory { get; }
 
     /// <summary>Session settings, read live by <see cref="Sessions"/> — tests may change them.</summary>
     public AuthSessionOptions SessionOptions { get; } = new();
@@ -176,7 +197,8 @@ public sealed class TestSite : IDisposable
         Sessions = new SessionService(Db, new DevAuthenticator(Options.Create(DevDirectory)), Options.Create(SessionOptions),
             Time, NullLogger<SessionService>.Instance);
         Audit = new AuditService(Db, Options.Create(new AuditOptions()), Time, NullLogger<AuditService>.Instance, Sessions);
-        Groups = new GroupService(Db, Time, Audit, Sessions);
+        Directory = new SwitchableDirectory(new DevAuthenticator(Options.Create(DevDirectory)));
+        Groups = new GroupService(Db, Time, Audit, Sessions, Directory);
         Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
             Options.Create(new HealthOptions()), Sessions);
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,

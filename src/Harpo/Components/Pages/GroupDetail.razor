@@ -4,6 +4,7 @@
 @inject GroupService Groups
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@implements IDisposable
 
 <PageTitle>@(_group?.Name ?? "Group") · Harpo</PageTitle>
 <SessionWatch />
@@ -99,6 +100,12 @@
                                         {
                                             <span class="muted"> · @member.DisplayName</span>
                                         }
+                                        @if (!member.Verified)
+                                        {
+                                            @* One flag covers both cases: added while the directory
+                                               could not be asked, and rows from before Harpo asked. *@
+                                            <span class="badge badge-unverified" title="@UnverifiedTitle">unverified</span>
+                                        }
                                     </td>
                                     <td>
                                         @if (CanAdmin)
@@ -133,17 +140,46 @@
                 @if (CanAdmin)
                 {
                     <div class="form-row add-member-row">
+                        <div class="field">
+                            <label class="field-label" for="new-member-username">AD username</label>
+                            <div class="member-picker">
+                                <input id="new-member-username" @ref="_usernameInput" autocomplete="off" spellcheck="false"
+                                       @bind="_newMemberUsername" @bind:event="oninput" @bind:after="OnUsernameInputAsync"
+                                       @onkeydown="OnUsernameKeyDownAsync"
+                                       aria-describedby="member-suggestion-status" placeholder="e.g. jsmith" />
+                                @if (_suggestions.Count > 0)
+                                {
+                                    <ul class="member-suggestions" aria-label="Directory accounts" @onkeydown="OnSuggestionKeyDownAsync">
+                                        @for (var i = 0; i < _suggestions.Count; i++)
+                                        {
+                                            var account = _suggestions[i];
+                                            var first = i == 0;
+                                            <li>
+                                                @* Only the first one needs a reference: ArrowDown in the field moves there. *@
+                                                @if (first)
+                                                {
+                                                    <button type="button" class="member-suggestion" @ref="_firstSuggestion"
+                                                            @onclick="() => PickSuggestion(account)">@SuggestionContent(account)</button>
+                                                }
+                                                else
+                                                {
+                                                    <button type="button" class="member-suggestion"
+                                                            @onclick="() => PickSuggestion(account)">@SuggestionContent(account)</button>
+                                                }
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
+                            <span id="member-suggestion-status" class="visually-hidden" role="status">@_suggestionStatus</span>
+                        </div>
                         <label class="field">
-                            <span class="field-label">AD username</span>
-                            <input @bind="_newMemberUsername" placeholder="e.g. jsmith" />
-                        </label>
-                        <label class="field">
-                            <span class="field-label">Display name (optional)</span>
-                            <input @bind="_newMemberDisplayName" />
+                            <span class="field-label">@(_picked is null ? "Display name (optional)" : "Display name (from the directory)")</span>
+                            <input @bind="_newMemberDisplayName" readonly="@(_picked is not null)" @onfocus="() => CancelSearch()" />
                         </label>
                         <label class="field">
                             <span class="field-label">Role</span>
-                            <select @bind="_newMemberRole">
+                            <select @bind="_newMemberRole" @onfocus="() => CancelSearch()">
                                 <option value="@GroupRole.Viewer">Viewer</option>
                                 <option value="@GroupRole.Member">Member</option>
                                 <option value="@GroupRole.Admin">Admin</option>
@@ -151,9 +187,16 @@
                         </label>
                         <button class="btn btn-primary" @onclick="AddMemberAsync">Add member</button>
                     </div>
+                    @if (_directoryUnavailable)
+                    {
+                        <p class="muted form-hint directory-note">
+                            The directory cannot be asked (no service account configured, or it is unreachable);
+                            the account name will be stored as typed.
+                        </p>
+                    }
                     <p class="muted form-hint">
                         The username must match the account name the person signs in with
-                        (their AD <span class="mono">sAMAccountName</span>).
+                        (their AD <span class="mono">sAMAccountName</span>)@(_directoryUnavailable ? "." : "; Harpo looks it up in the directory and keeps the directory's display name.")
                         <strong>Viewers</strong> can see and copy passwords but change nothing;
                         <strong>members</strong> can also add and edit them; <strong>admins</strong>
                         additionally manage this group and its members.
@@ -199,6 +242,24 @@
     private string? _error;
     private string? _loadError;
 
+    // ---- directory suggestions for the add-member field ----
+    private const int MinSearchLength = 2;
+    private static readonly TimeSpan SearchDebounce = TimeSpan.FromMilliseconds(250);
+    private const string UnverifiedTitle =
+        "Not checked against the directory: added while the directory could not be asked, " +
+        "or before Harpo checked new members. The name is as it was typed.";
+
+    private ElementReference _usernameInput;
+    private ElementReference _firstSuggestion;
+    private IReadOnlyList<DirectoryAccount> _suggestions = [];
+    private string _suggestionStatus = "";
+    /// <summary>The suggestion chosen, while the field still holds its name: the display name is then the directory's.</summary>
+    private DirectoryAccount? _picked;
+    private bool _directoryUnavailable;
+    private CancellationTokenSource? _searchCancel;
+    /// <summary>Bumped by every keystroke (and by adding): an answer for an older number is stale and dropped.</summary>
+    private int _searchGeneration;
+
     private bool CanAdmin =>
         _user is not null && _group?.IsPersonal != true && (_user.IsSiteAdmin || _myRole == GroupRole.Admin);
 
@@ -236,14 +297,139 @@
 
     private async Task AddMemberAsync()
     {
+        CancelSearch();
         await Guarded(async () =>
         {
-            await Groups.AddMemberAsync(_user!, Id, _newMemberUsername, _newMemberDisplayName, _newMemberRole);
+            var added = await Groups.AddMemberAsync(_user!, Id, _newMemberUsername, _newMemberDisplayName, _newMemberRole);
+            // An unverified add means the directory could not be asked just now;
+            // say so even if no search ran first (a pasted name, a quick typist).
+            _directoryUnavailable = !added.Verified;
             _newMemberUsername = "";
             _newMemberDisplayName = "";
             _newMemberRole = GroupRole.Member;
+            _picked = null;
             await LoadAsync();
         });
+    }
+
+    /// <summary>
+    /// Every keystroke in the username field: forget a chosen suggestion the
+    /// text no longer matches, then — after a pause in typing — ask the
+    /// directory for accounts like it. Each keystroke starts a new generation;
+    /// an answer that arrives for an older one is ignored, so a slow reply
+    /// never replaces the suggestions for what is in the field now.
+    /// </summary>
+    private async Task OnUsernameInputAsync()
+    {
+        var term = _newMemberUsername.Trim();
+        if (_picked is not null && !string.Equals(_picked.Username, term, StringComparison.OrdinalIgnoreCase))
+        {
+            _picked = null;
+            _newMemberDisplayName = "";
+        }
+
+        // The suggestions on screen stay until the new answer replaces them, so
+        // the list does not flicker shut at every keystroke.
+        CancelSearch(close: false);
+        var generation = _searchGeneration;
+        if (term.Length < MinSearchLength || _picked is not null)
+        {
+            CloseSuggestions();
+            return;
+        }
+
+        var cancel = _searchCancel = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(SearchDebounce, cancel.Token);
+            var result = await Groups.SearchAccountsAsync(_user!, Id, term, cancel.Token);
+            if (generation != _searchGeneration)
+            {
+                return;
+            }
+            _directoryUnavailable = !result.Available;
+            _suggestions = result.Accounts;
+            _suggestionStatus = !result.Available ? ""
+                : result.Accounts.Count == 0 ? "No matching accounts in the directory."
+                : result.Accounts.Count == 1 ? "1 matching account. Press Down or Tab to reach it."
+                : $"{result.Accounts.Count} matching accounts. Press Down or Tab to reach them.";
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer keystroke took over.
+        }
+        catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
+        {
+            if (generation == _searchGeneration)
+            {
+                _error = ex.Message;
+            }
+        }
+    }
+
+    /// <summary>Drops pending and shown suggestions; any answer still on its way is stale.</summary>
+    private void CancelSearch(bool close = true)
+    {
+        _searchGeneration++;
+        _searchCancel?.Cancel();
+        _searchCancel = null;
+        if (close)
+        {
+            CloseSuggestions();
+        }
+    }
+
+    private void CloseSuggestions()
+    {
+        _suggestions = [];
+        _suggestionStatus = "";
+    }
+
+    private void PickSuggestion(DirectoryAccount account)
+    {
+        CancelSearch();
+        _picked = account;
+        _newMemberUsername = account.Username;
+        _newMemberDisplayName = account.DisplayName;
+        _suggestionStatus = account.Disabled
+            ? $"{account.Username} is disabled in the directory."
+            : $"{account.Username} chosen: {account.DisplayName}.";
+    }
+
+    private async Task OnUsernameKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown" && _suggestions.Count > 0)
+        {
+            await _firstSuggestion.FocusAsync();
+        }
+        else if (e.Key == "Escape")
+        {
+            CancelSearch();
+        }
+    }
+
+    private async Task OnSuggestionKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            CancelSearch();
+            await _usernameInput.FocusAsync();
+        }
+    }
+
+    private static RenderFragment SuggestionContent(DirectoryAccount account) =>
+        @<text>
+            <span class="mono">@account.Username</span>
+            <span class="muted">· @account.DisplayName</span>
+            @if (account.Disabled)
+            {
+                <span class="badge badge-error">disabled</span>
+            }
+        </text>;
+
+    public void Dispose()
+    {
+        _searchCancel?.Cancel();
     }
 
     private async Task ChangeRoleAsync(GroupMember member, ChangeEventArgs e)

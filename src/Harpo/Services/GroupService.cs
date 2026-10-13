@@ -1,9 +1,17 @@
 using Harpo.Data;
+using Harpo.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace Harpo.Services;
 
 public sealed record GroupSummary(Group Group, GroupRole? MyRole, int MemberCount, int EntryCount);
+
+/// <summary>
+/// The membership <see cref="GroupService.AddMemberAsync"/> stored. <see cref="Verified"/>
+/// is false when the directory could not be asked, so the page can say the name
+/// was taken as typed.
+/// </summary>
+public sealed record MemberAdded(string Username, string DisplayName, bool Verified);
 
 /// <summary>A personal vault as a site admin sees it: whose it is and how full, never what is in it.</summary>
 public sealed record PersonalVaultSummary(Group Group, string OwnerDisplayName, int EntryCount);
@@ -25,13 +33,16 @@ public class GroupService
     private readonly TimeProvider _time;
     private readonly AuditService _audit;
     private readonly SessionService _sessions;
+    private readonly IDirectory _directory;
 
-    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit, SessionService sessions)
+    public GroupService(IDbContextFactory<HarpoDbContext> dbFactory, TimeProvider time, AuditService audit,
+        SessionService sessions, IDirectory directory)
     {
         _dbFactory = dbFactory;
         _time = time;
         _audit = audit;
         _sessions = sessions;
+        _directory = directory;
     }
 
     // Every public method taking a UserContext first checks that the caller's
@@ -113,6 +124,7 @@ public class GroupService
             Role = GroupRole.Admin,
             AddedBy = user.Username,
             CreatedAtUtc = now,
+            Verified = true, // the creator's identity came from the directory at sign-in
         });
         await db.SaveChangesAsync(ct);
         return group;
@@ -213,7 +225,48 @@ public class GroupService
             .ToListAsync(ct);
     }
 
-    public async Task AddMemberAsync(UserContext user, Guid groupId, string username, string displayName, GroupRole role, CancellationToken ct = default)
+    /// <summary>Most suggestions <see cref="SearchAccountsAsync"/> returns.</summary>
+    public const int AccountSuggestionLimit = 10;
+
+    /// <summary>
+    /// Directory accounts matching <paramref name="term"/>, as suggestions for
+    /// the add-member field. Only someone who may add members to
+    /// <paramref name="groupId"/> may search, so the directory is not an open
+    /// phone book for every signed-in user. Unavailable when the directory
+    /// cannot be asked (LDAP without a service account, or the server is down).
+    /// </summary>
+    public async Task<DirectorySearchResult> SearchAccountsAsync(UserContext user, Guid groupId, string term, CancellationToken ct = default)
+    {
+        await _sessions.RequireLiveAsync(user, ct);
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            await RequireGroupAdminAsync(db, user, groupId, ct);
+        }
+        term = term.Trim();
+        if (term.Length == 0)
+        {
+            return new DirectorySearchResult(true, []);
+        }
+        return await _directory.SearchAccountsAsync(term, AccountSuggestionLimit, ct);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="username"/> to the group, after asking the directory
+    /// who that is. A name the directory does not know, or knows as disabled,
+    /// is refused — a typo would otherwise grant access to nobody today and to
+    /// whoever is given that name tomorrow. The display name stored is the
+    /// directory's, not what was typed.
+    /// <para>
+    /// When the directory cannot be asked, the membership is still made, from
+    /// the name and display name as typed, and recorded as unverified (on the
+    /// row, in the audit detail, and in the result). That is deliberate: in
+    /// LDAP mode the asking needs <c>Auth:Ldap:ServiceUser</c>, which is
+    /// optional, and deployments without one must still be able to add people.
+    /// Whether verification is enforced is the operator's choice, made by
+    /// configuring the service account.
+    /// </para>
+    /// </summary>
+    public async Task<MemberAdded> AddMemberAsync(UserContext user, Guid groupId, string username, string displayName, GroupRole role, CancellationToken ct = default)
     {
         username = username.Trim().ToLowerInvariant();
         if (username.Length == 0)
@@ -222,7 +275,40 @@ public class GroupService
         }
 
         await _sessions.RequireLiveAsync(user, ct);
+        // Rights first, so the directory answers only those allowed to add
+        // members — the refusals below say whether an account exists. The
+        // lookup happens outside the write gate (it is a network round trip);
+        // the rights are checked again inside it.
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            await RequireGroupAdminAsync(db, user, groupId, ct);
+        }
+        var lookup = await _directory.LookupAccountAsync(username, ct);
+        bool verified;
+        switch (lookup.Status)
+        {
+            case DirectoryLookupStatus.Found:
+                var account = lookup.Account!;
+                if (account.Disabled)
+                {
+                    throw new VaultValidationException($"'{account.Username}' is disabled in the directory.");
+                }
+                username = account.Username;
+                displayName = account.DisplayName;
+                verified = true;
+                break;
+            case DirectoryLookupStatus.NotFound:
+                throw new VaultValidationException($"No account named '{username}' in the directory.");
+            case DirectoryLookupStatus.Ambiguous:
+                throw new VaultValidationException(
+                    $"More than one account in the directory is named '{username}'; ask an administrator to narrow Auth:Ldap:SearchBase.");
+            default:
+                verified = false;
+                break;
+        }
+
         Group group;
+        string storedDisplayName;
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
             // "Is this user already a member?" and the insert are one atomic step.
@@ -249,24 +335,30 @@ public class GroupService
                 existing.DisplayName = string.IsNullOrWhiteSpace(displayName) ? existing.DisplayName : displayName.Trim();
                 existing.AddedBy = user.Username;
                 existing.CreatedAtUtc = now;
+                existing.Verified = verified;
+                storedDisplayName = existing.DisplayName;
             }
             else
             {
+                storedDisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim();
                 db.GroupMembers.Add(new GroupMember
                 {
                     Id = id,
                     GroupId = groupId,
                     Username = username,
-                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName.Trim(),
+                    DisplayName = storedDisplayName,
                     Role = role,
                     AddedBy = user.Username,
                     CreatedAtUtc = now,
+                    Verified = verified,
                 });
             }
             await db.SaveChangesAsync(ct);
         }
         await _audit.RecordAsync(user, AuditActions.MemberAdd, group.Name,
-            detail: $"{username} as {role}", groupId: groupId);
+            detail: verified ? $"{username} as {role}" : $"{username} as {role} (unverified: directory not available)",
+            groupId: groupId);
+        return new MemberAdded(username, storedDisplayName, verified);
     }
 
     public async Task SetMemberRoleAsync(UserContext user, Guid groupId, string username, GroupRole role, CancellationToken ct = default)
@@ -403,6 +495,7 @@ public class GroupService
             Role = GroupRole.Admin,
             AddedBy = user.Username,
             CreatedAtUtc = now,
+            Verified = true, // the owner's own sign-in
         });
         await db.SaveChangesAsync(ct);
         return group;
@@ -499,6 +592,7 @@ public class GroupService
                     Role = GroupRole.Admin,
                     AddedBy = user.Username,
                     CreatedAtUtc = now,
+                    Verified = true, // the site admin's own sign-in
                 });
             }
             else
@@ -507,6 +601,7 @@ public class GroupService
                 membership.Role = GroupRole.Admin;
                 membership.AddedBy = user.Username;
                 membership.CreatedAtUtc = now;
+                membership.Verified = true;
             }
             await db.SaveChangesAsync(ct);
         }

@@ -75,6 +75,15 @@ public class GroupMember : IReplicatedRow
     public GroupRole Role { get; set; }
     public string AddedBy { get; set; } = "";
     public DateTime CreatedAtUtc { get; set; }
+    /// <summary>
+    /// Whether the directory vouched for <see cref="Username"/> when the
+    /// membership was made: the account existed, was enabled, and the display
+    /// name is the directory's (or the member's own sign-in made the row). False
+    /// when the directory could not be asked — and for every row from before
+    /// Harpo checked, or relayed by a peer too old to send the flag: nothing
+    /// says those were checked, so they are not claimed to be.
+    /// </summary>
+    public bool Verified { get; set; }
 
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }
