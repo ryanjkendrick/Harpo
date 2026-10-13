@@ -27,6 +27,7 @@ const ENTRY = `E2E Router ${RUN_ID}`;
 const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
 const PERSONAL_ENTRY = `E2E Personal ${RUN_ID}`;
 const OTHER_PERSONAL_ENTRY = `E2E Other Personal ${RUN_ID}`;
+const OTHER_GROUP = `E2E Other Group ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
@@ -184,6 +185,7 @@ async function groupId(page) {
     let takenOverId = null;
     let personalId = null;
     let otherContext = null;
+    let otherGroupId = null;
 
     try {
         await signIn(page);
@@ -548,7 +550,40 @@ async function groupId(page) {
             theirsAfter.groups.includes(`${OTHER_USER}'s personal vault`)
             && !!theirsAfter.personal && theirsAfter.personal !== otherPersonalId,
             JSON.stringify(theirsAfter));
+        // A site admin given an explicit Viewer membership keeps the edit
+        // controls: the service lets site admins write to any shared group,
+        // and the page must not hide what the service allows (this regressed once).
+        await other.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+        await other.waitForSelector(".page-header .btn-primary");
+        await openDialog(other, ".page-header .btn-primary", "New group");
+        await setValue(other, ".modal-panel form > label:nth-of-type(1) input", OTHER_GROUP);
+        await sleep(300);
+        await submitDialog(other);
+        await other.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        for (let i = 0; i < 15 && !otherGroupId; i++) {
+            await other.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+            await sleep(800);
+            otherGroupId = await other.evaluate((g) =>
+                [...document.querySelectorAll('a[href^="/groups/"]')].find((a) => a.textContent.includes(g))?.getAttribute("href").split("/").pop() ?? null, OTHER_GROUP);
+        }
+        await other.goto(`${BASE}/groups/${otherGroupId}`, { waitUntil: "networkidle2" });
+        await other.waitForSelector(".add-member-row", { timeout: 15000 });
+        await sleep(600);
+        await setValue(other, ".add-member-row input:nth-of-type(1), .add-member-row label:nth-of-type(1) input", USER);
+        await other.evaluate(() => { const s = document.querySelector(".add-member-row select"); s.value = "Viewer"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+        await sleep(300);
+        await clickText(other, ".add-member-row button", "Add member");
+        await other.waitForFunction((u) => [...document.querySelectorAll(".members-table .mono")].some((e) => e.textContent.trim() === u), { timeout: 15000 }, USER);
+        const membership = await other.evaluate((u) => {
+            const row = [...document.querySelectorAll(".members-table tbody tr")].find((r) => r.querySelector(".mono")?.textContent.trim() === u);
+            return row?.querySelector("select")?.value ?? row?.querySelector(".badge")?.textContent.trim();
+        }, USER);
         await other.close();
+        await page.bringToFront();
+        const asViewerAdmin = await visitVault(page, otherGroupId);
+        check("a site admin with an explicit Viewer membership keeps the edit controls",
+            membership === "Viewer" && asViewerAdmin.canAdd && asViewerAdmin.toast === "",
+            JSON.stringify({ membership, asViewerAdmin }));
 
         // ---- 8. Content security policy: on every page, in nobody's way, and enforced ----
         const unprotected = [...policies].filter(([, policy]) =>
@@ -593,6 +628,9 @@ async function groupId(page) {
             let cleaned = await deleteGroup(id);
             if (takenOverId) {
                 cleaned = (await deleteGroup(takenOverId)) && cleaned;
+            }
+            if (otherGroupId) {
+                cleaned = (await deleteGroup(otherGroupId)) && cleaned;
             }
             if (personalId) {
                 await visitVault(page, personalId);
