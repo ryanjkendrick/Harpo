@@ -81,8 +81,8 @@ the replication high-watermark vector.
 
 ## Testing real AD logins — the Samba AD lab
 
-To exercise the genuine LDAP code path (bind, `sAMAccountName` lookup, `memberOf`
-→ site-admin mapping) without touching a real domain controller, the repo ships a
+To exercise the genuine LDAP code path (bind, "Who am I?", `sAMAccountName`
+lookup, `memberOf` → site-admin mapping) without touching a real domain controller, the repo ships a
 lab compose file with a **Samba Active Directory DC**:
 
 ```bash
@@ -171,14 +171,38 @@ running with an empty key.
 | `Auth__Ldap__UseSsl` | Use LDAPS (strongly recommended — plain LDAP sends the bind password in clear text) | `true` |
 | `Auth__Ldap__SkipCertificateValidation` | Accept any DC certificate (labs only) | `false` |
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
-| `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups | `DC=corp,DC=example,DC=com` |
+| `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups — must contain every account that signs in | `DC=corp,DC=example,DC=com` |
 | `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
 the user** to validate them, then reads `displayName` and `memberOf` from their
 directory entry. No service account is required. Inside Harpo, people are
-identified by their `sAMAccountName` — that's the username group admins type
-when adding members.
+identified by their `sAMAccountName` (lower-cased) — that's the username group
+admins type when adding members.
+
+How a sign-in becomes that identity:
+
+- The sign-in form takes `jsmith`, `jsmith@corp.example.com` (any UPN the
+  directory accepts, including alternate UPN suffixes) or `CORP\jsmith`. A bare
+  name is bound as `name@UpnSuffix`; anything with `@` or `\` is bound exactly as
+  typed.
+- What was typed is used **only for the bind**. After the bind succeeds, Harpo
+  asks the domain controller which account it just authenticated (the LDAP
+  "Who am I?" operation, which AD answers with `CORP\sAMAccountName`) and reads
+  that account's entry under `SearchBase`. The identity, display name and
+  site-admin membership all come from that one entry. A UPN's prefix is never
+  taken as an account name: `ada.admin@corp.example.com` signs in as `ada` if
+  that is the account it belongs to, and a UPN such as `ada@other.example` that
+  belongs to someone else signs in as *them*, not as `ada`.
+- It fails closed: if the directory gives no usable answer, or the account is
+  not found under `SearchBase` exactly once, the sign-in is refused with the
+  normal "Invalid username or password" message and a log line
+  ("Could not resolve the signed-in account …"). So `SearchBase` must cover
+  everyone who signs in — accounts outside it can no longer sign in as a plain
+  user.
+- Because the identity is the bare `sAMAccountName`, accounts with the same
+  `sAMAccountName` in different domains of one forest would be the same Harpo
+  user. Point Harpo at a single domain's DC and `SearchBase`.
 
 ## Offline access (PWA)
 
@@ -616,6 +640,11 @@ All settings can be given as environment variables (`Section__Key` form).
   — is one-way, audited, and visible to the owner.
 - The AD bind sends the user's password to the DC — use LDAPS (`UseSsl=true`).
   Failed logins are logged; invalid and unreachable-DC cases are distinguished.
+- **Who signed in is decided by the directory, not by what was typed.** After
+  the bind, Harpo asks the DC which account it authenticated and takes the
+  identity and site-admin rights from that account's entry; if that cannot be
+  resolved to exactly one entry, the sign-in is refused (see "Active Directory
+  settings").
 - **Brute-force lockout** is on by default: 5 failures against an account (or 20
   from one address across any accounts) within 15 minutes blocks further
   attempts for 5 minutes — tune via `Auth__Lockout__*`. Only *failures* count;
