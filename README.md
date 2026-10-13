@@ -216,7 +216,13 @@ Harpo__Offline__Enabled: "false"   # forbid offline password storage org-wide
 ```
 
 Disabling it hides the feature, turns the snapshot API dark (404), and makes
-devices **wipe their local copy the next time they contact the server**. Be
+devices **wipe their local copy the next time they contact the server**: a
+device opening the offline page, or refreshing a vault it already has
+unlocked, is told offline access is off, drops the keys and passwords from
+memory and the screen, deletes the stored copy, and stops any sync still in
+flight from writing it back. A sign-in prompt, a network failure or a
+different account being signed in do not count as that answer and wipe
+nothing. Be
 honest about the physics: a device that never reconnects keeps its encrypted
 copy until it expires — no server can remotely erase a disconnected laptop.
 That copy is protected by the user's passphrase (and their disk encryption),

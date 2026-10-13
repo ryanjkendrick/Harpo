@@ -1,6 +1,6 @@
 # Harpo end-to-end tests
 
-Two suites, both driving the live two-site demo with a real headless Chrome.
+Three scripts, all driving the live two-site demo with a real headless Chrome.
 Each creates its own throwaway group and entries and deletes the group
 afterwards.
 
@@ -10,6 +10,17 @@ afterwards.
   generates 2FA codes offline. It also proves that another account signing in
   to the same browser cannot take the vault over, and that a refresh still in
   flight when the vault is locked cannot undo the lock.
+- **`offline-disable.e2e.js`** — what a device does when the administrator
+  turns offline access off. Not part of `test:all`: the script cannot change
+  the container's environment, so you give it `HARPO_RESTART_CMD`, a shell
+  command that restarts the server with `Harpo__Offline__Enabled=false`
+  (for example a `docker compose ... up -d --force-recreate` with the offline
+  switch set to false). It syncs a copy, leaves the vault unlocked, runs the
+  command, clicks Refresh, and expects the disabled message, an empty entry
+  list, a deleted IndexedDB record, and an offline reload (network cut) that
+  offers no unlock. It leaves the stack with offline access disabled; restore
+  it yourself. Run it on a throwaway stack, never the demo:
+  `HARPO_RESTART_CMD='...' npm run test:disable`.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,

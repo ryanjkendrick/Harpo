@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node offline-vault.e2e.js",
     "test:ui": "node ui.e2e.js",
+    "test:disable": "node offline-disable.e2e.js",
     "test:all": "node offline-vault.e2e.js && node ui.e2e.js"
   },
   "dependencies": {
