@@ -13,6 +13,8 @@ against **Active Directory**, shipped as a **Docker** container, with built-in
 
 ![The vault](docs/screenshot-vault.png)
 
+Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md)**.
+
 ## Features
 
 - **Active Directory sign-in** — users log in with their AD credentials via a
