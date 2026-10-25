@@ -56,6 +56,13 @@ afterwards.
   it, and an injected inline script or style must have no effect — so a
   change that quietly needs something the policy forbids fails here.
 
+One more script is not a test: **`manual-screenshots.js`** fills a throwaway
+site with example groups, passwords, members and an offline copy, and captures
+the screenshots in `docs/manual/` for the [user manual](../../docs/user-manual.md).
+Run it against a fresh stack with alice, bob and carol as Development-mode
+users and offline access on (`npm run shots`, or set `HARPO_BASE_URL`); it
+leaves the data behind.
+
 ## Prerequisites
 
 - The two-site demo running: `docker compose -f docker-compose.multisite.yml up -d`
