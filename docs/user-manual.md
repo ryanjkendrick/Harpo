@@ -20,13 +20,14 @@ you are the person running the server, read that too.
 7. [Password history](#password-history)
 8. [Searching](#searching)
 9. [Deleting and restoring](#deleting-and-restoring)
-10. [Your personal vault](#your-personal-vault)
-11. [Groups and members](#groups-and-members)
-12. [Vault health](#vault-health)
-13. [The offline vault](#the-offline-vault)
-14. [On a phone or tablet](#on-a-phone-or-tablet)
-15. [Administration](#administration) (site administrators)
-16. [Who can do what](#who-can-do-what)
+10. [Importing and exporting](#importing-and-exporting)
+11. [Your personal vault](#your-personal-vault)
+12. [Groups and members](#groups-and-members)
+13. [Vault health](#vault-health)
+14. [The offline vault](#the-offline-vault)
+15. [On a phone or tablet](#on-a-phone-or-tablet)
+16. [Administration](#administration) (site administrators)
+17. [Who can do what](#who-can-do-what)
 
 ## The ideas in one minute
 
@@ -90,8 +91,10 @@ Select a vault and its passwords appear as a table, one row per entry:
 | Actions | Edit, details and notes, password history, delete. Viewers see only details and history. |
 
 The toolbar above the table has the search box and, if you may add passwords
-here, the **New password** button. If you are a viewer, the button is replaced
-by a *viewer* badge and the edit and delete buttons are not shown.
+here, the **Import…** and **New password** buttons; group admins also see
+**Export…** (see [Importing and exporting](#importing-and-exporting)). If you
+are a viewer, the buttons are replaced by a *viewer* badge and the edit and
+delete buttons are not shown.
 
 ![The same group as a viewer sees it](manual/viewer.png)
 
@@ -201,6 +204,69 @@ who can edit the vault.
 
 Deleting a whole group works the same way, from the group's page (see below);
 a site administrator can restore it from the Administration page.
+
+## Importing and exporting
+
+### Bringing passwords in from another manager
+
+If your team's passwords live in Bitwarden, 1Password, KeePass, LastPass or a
+browser today, export them from there as a **CSV file**, open the Harpo vault
+they belong in, and click **Import…**. Anyone who can add passwords to the
+vault can import into it.
+
+![The import dialog, before anything is imported](manual/import.png)
+
+Choose the file and Harpo shows what it found before anything is created:
+
+- **One drop-down per column** says what that column becomes: name,
+  username, password, URL, notes, 2FA secret, or *Ignore*. Exports from the
+  managers above are recognised by their column names, so usually there is
+  nothing to change. A name and a password column are required.
+- **The first few rows** are shown so you can check the columns line up.
+  Passwords and 2FA secrets are shown as dots.
+- **Folders are not used.** Other managers' folder or group columns are
+  shown but ignored: everything goes into the vault you have open. Import
+  each folder into its own group if you want them apart.
+- **Skip rows whose name and username are already in this vault** is on by
+  default, so importing the same file twice does not give you every entry
+  twice. Untick it to create them anyway.
+
+Click **Import** and a summary says how many entries were created, how many
+were skipped because the vault already had them, and which rows could not be
+imported and why: a row with no name or no password (a secure note, say), or
+a 2FA secret that is not one. The row number is the line in the file, so you
+can find it. Imported passwords are ordinary entries from then on, with you as
+the person who set them.
+
+The file you imported from holds those passwords in plain text. Delete it once
+you are done, and empty your computer's recycle bin.
+
+### Taking a copy out
+
+Group admins and site administrators can download a whole group as a file
+with **Export…**, and you can download your own personal vault the same way
+(nobody else can, site administrators included). Members and viewers cannot; they reveal
+passwords one at a time.
+
+![The export dialog](manual/export.png)
+
+Choose a format:
+
+- **CSV** is what other password managers import (it uses Bitwarden's column
+  names). It holds each entry's name, URL, username, password, notes and 2FA
+  secret. Values that a spreadsheet would treat as a formula, such as a
+  password starting with `-` or `=`, are written with an apostrophe in front
+  so opening the file in Excel cannot run anything; Harpo removes the
+  apostrophe again when you import the file, other managers may not.
+- **JSON** is Harpo's own format, with icons too. Use it to move entries into
+  another Harpo vault or site.
+
+Only the current passwords are exported, not their history. Take the dialog's
+warning seriously: **the file is not encrypted**, and anyone who gets hold of
+it can read every password in it. Every export is recorded in the audit log
+under your name. Use the file for what you needed it for, then delete it.
+Your administrator can turn exporting off for the whole site, in which case
+the button is not there.
 
 ## Your personal vault
 
@@ -392,7 +458,8 @@ health-report views alongside. Events from every site are shown together,
 newest first.
 
 - The chips narrow the list to **Reveals** (passwords and 2FA codes shown or
-  copied), **Changes** (membership, icons, takeovers), **Deletions**, or
+  copied, vaults exported), **Changes** (membership, icons, takeovers,
+  imports), **Deletions**, or
   **Background** (offline syncs and report views, which are shown dimmed in
   the full list).
 - The filter box matches on the person, the action or the target.
@@ -447,6 +514,8 @@ they will see it happen. Use it for departures, not curiosity.
 | See, reveal and copy passwords and 2FA codes | ✓ | ✓ | ✓ | ✓ (all groups) |
 | Read details and notes, see history | ✓ | ✓ | ✓ | ✓ |
 | Add, edit, delete and restore passwords | | ✓ | ✓ | ✓ |
+| Import passwords from a file | | ✓ | ✓ | ✓ |
+| Export the whole vault to a file | | | ✓ | ✓ (not personal vaults) |
 | Rename the group, manage members, delete the group | | | ✓ | ✓ |
 | Create a new group | ✓ | ✓ | ✓ | ✓ |
 | Vault health report | | | own groups | whole vault |
@@ -455,7 +524,8 @@ they will see it happen. Use it for departures, not curiosity.
 | Audit log, icon catalogue, restore groups, take over a personal vault | | | | ✓ |
 
 Roles are per group: the same person can be an admin of one group and a viewer
-of another. Site administrators are defined by directory group membership,
+of another. In your personal vault you can do everything in the first five rows,
+importing and exporting included. Site administrators are defined by directory group membership,
 which your IT department manages.
 
 ---

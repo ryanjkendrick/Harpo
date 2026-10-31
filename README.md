@@ -67,6 +67,12 @@ Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md
   computed from keyed fingerprints and stored strength scores so nothing is
   decrypted to build the page. Site admins see everything; group admins see
   their groups (cross-scope reuse appears as a count, never as names).
+- **Import and export** — bring passwords in from a CSV export of Bitwarden,
+  1Password, KeePass, LastPass or Chrome/Edge (columns recognised from the
+  header, previewed before anything is created), and take a vault out as
+  Bitwarden-compatible CSV or lossless Harpo JSON. Exports are plain text,
+  so they are limited to group admins, audited, rate-limited and can be
+  switched off for the whole site.
 - **Installable PWA with an offline vault** — users can keep an encrypted,
   passphrase-protected, read-only copy of their passwords on their device for
   when the server (or the network) is down. Admins can forbid this org-wide
@@ -499,6 +505,8 @@ record captures:
 | `password.reveal` / `password.copy` | someone views or copies a current password |
 | `revision.reveal` / `revision.copy` | someone views or copies a historical password value |
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
+| `vault.export` | someone downloads a vault as a CSV or JSON file (a bulk decrypt; counted under *Reveals*) |
+| `vault.import` | entries are created in a vault from an imported file (with created/skipped/failed counts) |
 | `entry.delete` / `group.delete` | something is deleted |
 | `member.add` / `member.remove` / `member.role` | group access changes |
 | `personal.takeover` | a site admin converts someone's personal vault into a group |
@@ -566,6 +574,67 @@ database — the people who run the server — could read a personal vault the
 way they could read any group; Harpo is a trusted-server design (see
 "Security model"), and a personal vault is private from colleagues and
 administrators, not from the operator.
+
+## Import and export
+
+Moving to Harpo, or keeping a copy elsewhere, means files. Both directions
+work on the vault that is open on the vault page.
+
+**Import.** *Import…* in the vault's toolbar, for anyone who may add
+passwords there (members and admins of a group, a personal vault's owner).
+It takes a CSV file (`.csv` or `.txt`, comma- or semicolon-separated, up to
+5 MB and 5,000 rows) or a JSON file exported from Harpo. The file is read in
+memory on the server and never written to disk. Harpo recognises the column
+names that Bitwarden, 1Password, KeePass/KeePassXC, LastPass and Chrome/Edge
+write, so their exports need no clicks; the dialog shows the first rows
+(passwords and 2FA secrets masked) with a drop-down per column to change the
+mapping before anything is created. Folder or group columns are shown but not
+used: everything goes into the open vault. Each row is checked like the
+entry editor checks a new entry — a name and a password are required, a 2FA
+secret must be a valid base32 seed or `otpauth://` link — and a row that
+fails is listed with its line number and the reason while the rest are
+created. By default a row whose name and username (ignoring case) already
+exist in the vault is skipped. Imported entries are ordinary entries: a first
+revision by the importer, replicated, in the health report and the offline
+copy. Each import is audited once as `vault.import` with the counts.
+
+**Export.** *Export…* in the same toolbar downloads the vault as a file:
+
+- **CSV** with Bitwarden's column names (`name,login_uri,login_username,login_password,notes,login_totp`),
+  which most password managers — and Harpo — import. UTF-8 with a byte order
+  mark so Excel reads it correctly. Any cell starting with `=`, `+`, `-`,
+  `@`, a tab or a carriage return is prefixed with an apostrophe so a
+  spreadsheet does not run it as a formula; Harpo's own import removes that
+  apostrophe again, other managers may keep it (a password beginning with
+  `-`, for example, would then need fixing by hand).
+- **JSON**, Harpo's own format: every field including the icon, plus the
+  vault's name and where and when it was exported. For moving entries
+  between Harpo vaults or sites.
+
+Only current values are exported — passwords, 2FA secrets and notes; no
+history. Who may export: a personal vault's owner (and nobody else — a site
+admin's rights stop there, as everywhere), a group's admins, and site
+admins. Members and viewers reveal passwords one at a time, each audited; a
+bulk copy is a group admin's decision.
+
+**Read this before allowing it.** An export is a file of every password in
+the vault, in plain text, that leaves Harpo's control the moment it is
+downloaded. Harpo treats it like the offline snapshot, its only other bulk
+decrypt: the download (`GET /api/vault/{id}/export?format=csv|json`) needs a
+live session, checks the rights again, allows one export per user every 10
+seconds, is sent with `Cache-Control: no-store`, and is refused when the
+request comes from another site's page (so a link elsewhere cannot drop a
+file into someone's downloads). Every export is audited as `vault.export`
+with the format and the entry count, in the *Reveals* category. The dialog
+tells the user the file is unencrypted and should be deleted after use. In a
+personal vault both events describe the target only as *a personal vault*.
+To remove the feature, set:
+
+```yaml
+Harpo__Export__Enabled: "false"   # no Export button; the endpoint answers 404
+```
+
+Import is not affected by the switch.
 
 ## 2FA codes (TOTP)
 
@@ -673,6 +742,8 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
+| `Harpo__Export__Enabled` | `true` | Allow group admins (and personal-vault owners) to export a vault as a plain-text file — see "Import and export" |
+| `Harpo__Export__MinSecondsBetweenExports` | `10` | Per-user cooldown between exports |
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`, `Disabled`) |
@@ -712,7 +783,9 @@ All settings can be given as environment variables (`Section__Key` form).
   user's personal vault; notes and passwords are not searched); turn on file
   encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions
-  only**, and every reveal is authorization-checked against group membership. This is a
+  only** — plus two deliberate, audited bulk decrypts: the offline snapshot
+  and a vault export (see "Import and export", which can be switched off) —
+  and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.
 - All access control is enforced in the service layer, not the UI.

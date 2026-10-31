@@ -126,7 +126,7 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
 3. Full matrix, all on throwaway stacks, never the demo or the AD lab until
    the end:
    - unit suite, Release, three runs;
-   - UI 52, session 9, offline 22, offline-disable 10;
+   - UI 64, session 9, offline 22, offline-disable 10;
    - **upgrade in place, unencrypted volume:** 0.6.0 → candidate, data
      intact, sessions require one sign-in only if the cookie format changed
      (it should not);
