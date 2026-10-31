@@ -338,6 +338,8 @@ public class ImportExportTests : IDisposable
             "JBSWY3DPEHPK3PXP");
         await _site.Vault.CreateEntryAsync(admin, group.Id, "Ünïcödé 🔑", VaultService.DefaultIcon, "mailto:it@example.com", " spaced ",
             "+44 notes\r\nwindows lines", " pass word ");
+        // Values that begin with a quote of their own must survive the formula guard.
+        await _site.Vault.CreateEntryAsync(admin, group.Id, "'quoted name", VaultService.DefaultIcon, "", "'", "''two", "'=secret");
         return group;
     }
 

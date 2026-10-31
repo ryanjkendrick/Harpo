@@ -21,7 +21,8 @@
                    @onchange="() => _format = ExportFormat.Csv" />
             <span><strong>CSV</strong> — name, URL, username, password, notes and 2FA secret, under Bitwarden's
                 column names, which most password managers (and Harpo) can import. Values that a spreadsheet
-                would run as a formula are prefixed with an apostrophe.</span>
+                would run as a formula are prefixed with an apostrophe; importing the file back into Harpo
+                removes it again.</span>
         </label>
         <label class="export-format">
             <input type="radio" name="export-format" value="json" checked="@(_format == ExportFormat.Json)"

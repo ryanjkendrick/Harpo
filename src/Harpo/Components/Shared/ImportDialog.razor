@@ -202,7 +202,7 @@
     private List<string> FolderColumns =>
         _table is null ? [] : _table.Columns.Where((c, i) => _mapping[i] == ImportField.Ignore && ImportReader.IsFolderColumn(c)).ToList();
 
-    private string RowNumbering => _format == "CSV"
+    private string RowNumbering => _format != ImportTable.HarpoJsonFormat
         ? "Rows are numbered by the line of the file they start on; the header is line 1."
         : "Rows are numbered by their position in the file's list of entries.";
 
