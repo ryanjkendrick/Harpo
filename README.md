@@ -604,9 +604,13 @@ copy. Each import is audited once as `vault.import` with the counts.
   which most password managers — and Harpo — import. UTF-8 with a byte order
   mark so Excel reads it correctly. Any cell starting with `=`, `+`, `-`,
   `@`, a tab or a carriage return is prefixed with an apostrophe so a
-  spreadsheet does not run it as a formula; Harpo's own import removes that
-  apostrophe again, other managers may keep it (a password beginning with
-  `-`, for example, would then need fixing by hand).
+  spreadsheet does not run it as a formula (a value that already begins with
+  an apostrophe gets a second one, so the two cases stay distinct). Harpo's
+  import recognises its own export by the header and takes that apostrophe
+  off again, so a round trip is exact; a file from any other manager is
+  imported exactly as written. Other managers may keep the apostrophe (a
+  password beginning with `-`, for example, would then need fixing by hand
+  there).
 - **JSON**, Harpo's own format: every field including the icon, plus the
   vault's name and where and when it was exported. For moving entries
   between Harpo vaults or sites.

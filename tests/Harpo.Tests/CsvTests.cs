@@ -100,6 +100,9 @@ public class CsvTests
     [InlineData("\rlead", "\"'\rlead\"")]
     [InlineData("=HYPERLINK(\"http://evil\",\"x\")", "\"'=HYPERLINK(\"\"http://evil\"\",\"\"x\"\")\"")]
     [InlineData("a=b", "a=b")]                  // only the first character counts
+    [InlineData("'=secret", "\"''=secret\"")]    // a value's own quote is doubled so it stays distinct from a guard
+    [InlineData("'plain", "\"''plain\"")]
+    [InlineData("'", "\"''\"")]
     public void Cells_a_spreadsheet_would_run_as_formulas_are_neutralised(string cell, string expected)
     {
         Assert.Equal(expected, CsvWriter.Escape(cell));
@@ -108,7 +111,10 @@ public class CsvTests
     [Theory]
     [InlineData("'=SUM(A1)", "=SUM(A1)")]
     [InlineData("'-dash", "-dash")]
-    [InlineData("'plain", "'plain")]            // a quote before anything else is the value's own
+    [InlineData("''=secret", "'=secret")]       // the writer doubled a value's own quote
+    [InlineData("''plain", "'plain")]
+    [InlineData("''", "'")]
+    [InlineData("'plain", "'plain")]            // a quote the writer would never have left alone
     [InlineData("'", "'")]
     [InlineData("=raw", "=raw")]
     public void Reading_back_removes_only_the_quote_the_writer_added(string cell, string expected)
@@ -125,6 +131,8 @@ public class CsvTests
             ["Mail, \"work\"", "line 1\nline 2\r\nline 3"],
             ["=1+1", " spaces "],
             ["", "ünïcödé 🔐"],
+            ["'=secret", "'plain"],
+            ["''doubled", "'"],
         ];
         var output = new StringBuilder();
         foreach (var row in rows)

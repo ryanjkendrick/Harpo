@@ -162,8 +162,10 @@ public static class CsvReader
 /// Writes RFC 4180 CSV (comma-separated, CRLF between records) that is safe to
 /// open in a spreadsheet: a cell beginning with <c>=</c>, <c>+</c>, <c>-</c>,
 /// <c>@</c>, a tab or a carriage return would be taken for a formula, so it is
-/// prefixed with a single quote (and quoted). <see cref="CsvInjection.Undo"/>
-/// reverses exactly that on the way back in.
+/// prefixed with a single quote (and quoted). So is a cell that already starts
+/// with a single quote, which makes the guard reversible: <see cref="CsvInjection.Undo"/>
+/// takes exactly one quote off exactly those cells, and a value that began with
+/// a quote of its own comes back with it.
 /// </summary>
 public static class CsvWriter
 {
@@ -184,7 +186,7 @@ public static class CsvWriter
 
     public static string Escape(string cell)
     {
-        var guarded = CsvInjection.IsDangerous(cell);
+        var guarded = CsvInjection.NeedsGuard(cell);
         if (guarded)
         {
             cell = "'" + cell;
@@ -205,14 +207,20 @@ public static class CsvInjection
 {
     private static bool IsTrigger(char c) => c is '=' or '+' or '-' or '@' or '\t' or '\r';
 
-    /// <summary>True when a spreadsheet would treat the cell as a formula.</summary>
-    public static bool IsDangerous(string cell) => cell.Length > 0 && IsTrigger(cell[0]);
+    /// <summary>
+    /// True when the writer must put a quote in front: a formula, or a value
+    /// that itself starts with a quote (otherwise "'=x" and "=x" would read
+    /// back as the same thing).
+    /// </summary>
+    public static bool NeedsGuard(string cell) => cell.Length > 0 && (IsTrigger(cell[0]) || cell[0] == '\'');
 
     /// <summary>
-    /// Removes the quote <see cref="CsvWriter"/> put in front of a dangerous
-    /// cell, so an export read back in is exactly what was exported. Only a
-    /// quote followed by one of the trigger characters is removed.
+    /// Removes the one quote <see cref="CsvWriter"/> put in front of a guarded
+    /// cell, so a Harpo export read back in is exactly what was exported: a
+    /// quote followed by a trigger character or by another quote. Only for
+    /// files Harpo wrote — in another manager's file a leading quote is the
+    /// value's own and must stay.
     /// </summary>
     public static string Undo(string cell) =>
-        cell.Length > 1 && cell[0] == '\'' && IsTrigger(cell[1]) ? cell[1..] : cell;
+        cell.Length > 1 && cell[0] == '\'' && (IsTrigger(cell[1]) || cell[1] == '\'') ? cell[1..] : cell;
 }

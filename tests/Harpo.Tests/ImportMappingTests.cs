@@ -101,7 +101,31 @@ public class ImportMappingTests
         Assert.Equal(3, rows.Count);
         Assert.Equal(new ImportRow(2, "Mail", "me@example.com", "p,w", "mail.example.com", "two\nlines", "JBSWY3DPEHPK3PXP"), rows[0]);
         Assert.Equal(new ImportRow(4, "Short", "", "", "", "", ""), rows[1]);        // a short row: missing cells are empty
-        Assert.Equal(("=SUM(1)", "-pw"), (rows[2].Name, rows[2].Password));      // the export's formula guard comes off
+        Assert.Equal(("'=SUM(1)", "'-pw"), (rows[2].Name, rows[2].Password));    // not Harpo's file: a leading quote is the value's own
+    }
+
+    [Fact]
+    public void A_csv_with_harpos_own_header_has_the_formula_guard_taken_off()
+    {
+        var table = ImportReader.ReadCsv(
+            "name,login_uri,login_username,login_password,notes,login_totp\r\n" +
+            "\"'=SUM(1)\",,\"'@ops\",\"'-pw\",\"''=my own quote\",\r\n" +
+            "Plain,,,\"'plain\",,\r\n");
+
+        Assert.Equal(ImportTable.HarpoCsvFormat, table.Format);
+        var rows = ImportReader.BuildRows(table, ImportReader.GuessMapping(table.Columns));
+        Assert.Equal(("=SUM(1)", "@ops", "-pw", "'=my own quote"), (rows[0].Name, rows[0].Username, rows[0].Password, rows[0].Notes));
+        Assert.Equal("'plain", rows[1].Password);   // a lone quote before plain text is never a guard
+    }
+
+    [Theory]
+    [InlineData("Name,Login_URI,login_username,login_password,notes,login_totp", true)]     // case does not matter
+    [InlineData("name,login_uri,login_username,login_password,notes", false)]             // a column short
+    [InlineData("folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp", false)] // real Bitwarden
+    public void Only_harpos_exact_header_marks_a_file_as_harpos(string header, bool harpo)
+    {
+        var table = ImportReader.ReadCsv(header + "\r\n");
+        Assert.Equal(harpo ? ImportTable.HarpoCsvFormat : ImportTable.CsvFormat, table.Format);
     }
 
     [Fact]

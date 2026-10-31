@@ -256,8 +256,10 @@ Choose a format:
   names). It holds each entry's name, URL, username, password, notes and 2FA
   secret. Values that a spreadsheet would treat as a formula, such as a
   password starting with `-` or `=`, are written with an apostrophe in front
-  so opening the file in Excel cannot run anything; Harpo removes the
-  apostrophe again when you import the file, other managers may not.
+  so opening the file in Excel cannot run anything. Harpo recognises its own
+  file when you import it back and removes the apostrophe again, so nothing
+  changes on a round trip; files from other managers are imported exactly as
+  they are. Other managers may keep the apostrophe.
 - **JSON** is Harpo's own format, with icons too. Use it to move entries into
   another Harpo vault or site.
 

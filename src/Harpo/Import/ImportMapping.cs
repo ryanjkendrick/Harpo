@@ -29,8 +29,12 @@ public sealed class ImportTable
 {
     public required IReadOnlyList<string> Columns { get; init; }
     public required IReadOnlyList<CsvRecord> Rows { get; init; }
-    /// <summary>"CSV" or "Harpo JSON" — shown in the dialog and the audit detail.</summary>
+    /// <summary>"CSV", "Harpo CSV" (the header is exactly Harpo's export's) or "Harpo JSON" — shown in the dialog and the audit detail.</summary>
     public required string Format { get; init; }
+
+    public const string CsvFormat = "CSV";
+    public const string HarpoCsvFormat = "Harpo CSV";
+    public const string HarpoJsonFormat = "Harpo JSON";
 
     /// <summary>The cell of a row under a column; empty where a short row has none.</summary>
     public static string Cell(CsvRecord row, int column) => column < row.Cells.Count ? row.Cells[column] : "";
@@ -99,7 +103,16 @@ public static class ImportReader
         var columns = Enumerable.Range(0, width)
             .Select(i => i < header.Count && header[i].Trim().Length > 0 ? header[i].Trim() : $"Column {i + 1}")
             .ToList();
-        return new ImportTable { Columns = columns, Rows = records.Skip(1).ToList(), Format = "CSV" };
+        // Only a file with Harpo's own header had the formula guard applied on
+        // the way out; another manager's file is taken exactly as it is.
+        var isHarpo = header.Count == VaultExport.CsvColumns.Length
+            && header.Select(h => h.Trim()).SequenceEqual(VaultExport.CsvColumns, StringComparer.OrdinalIgnoreCase);
+        return new ImportTable
+        {
+            Columns = columns,
+            Rows = records.Skip(1).ToList(),
+            Format = isHarpo ? ImportTable.HarpoCsvFormat : ImportTable.CsvFormat,
+        };
     }
 
     /// <summary>The fields of Harpo's JSON export, in the order they become columns.</summary>
@@ -141,7 +154,7 @@ public static class ImportReader
                     .ToArray();
                 rows.Add(new CsvRecord(number, cells));
             }
-            return new ImportTable { Columns = JsonFields, Rows = rows, Format = "Harpo JSON" };
+            return new ImportTable { Columns = JsonFields, Rows = rows, Format = ImportTable.HarpoJsonFormat };
         }
     }
 
@@ -236,12 +249,13 @@ public static class ImportReader
     }
 
     /// <summary>
-    /// The rows under a mapping. A value Harpo's own CSV export guarded against
-    /// formula injection gets its quote back off (<see cref="CsvInjection.Undo"/>).
+    /// The rows under a mapping. In a CSV Harpo itself exported, a value guarded
+    /// against formula injection gets its quote back off (<see cref="CsvInjection.Undo"/>);
+    /// a file from anywhere else is imported exactly as written.
     /// </summary>
     public static List<ImportRow> BuildRows(ImportTable table, IReadOnlyList<ImportField> mapping)
     {
-        var undo = table.Format == "CSV";
+        var undo = table.Format == ImportTable.HarpoCsvFormat;
         string Value(CsvRecord row, ImportField field)
         {
             var index = -1;
