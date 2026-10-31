@@ -391,6 +391,9 @@ tbody tr:hover { background: var(--bg); }
     transform: translateY(-50%);
 }
 .entry-icon { font-size: 1.25rem; }
+/* Names from an import are often one long token (a URL, a formula-looking
+   string): they wrap anywhere rather than widen the table past its panel. */
+.cell-name .entry-name { overflow-wrap: anywhere; }
 .cell-actions { white-space: nowrap; text-align: right; }
 /* The password controls and the 2FA controls are two clusters: each stays on
    one line, but the second may wrap under the first when the column is tight. */
@@ -1000,3 +1003,37 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
     text-align: right;
     font-weight: 600;
 }
+
+/* ---------- import and export ---------- */
+
+.modal-panel.modal-wide { max-width: 860px; }
+
+.import-intro { margin-top: 0; }
+.import-file { cursor: pointer; }
+.import-file:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.import-file-name { margin-top: 0; overflow-wrap: anywhere; }
+.import-target { margin-top: -.4rem; }
+
+/* Column names as the file wrote them, each over the choice of what it becomes. */
+.import-preview th { text-transform: none; letter-spacing: normal; vertical-align: bottom; font-size: .8rem; }
+.import-column-name { display: block; margin-bottom: .3rem; font-weight: 600; color: var(--ink); }
+.import-preview select { font-size: .85rem; padding: .25rem .35rem; min-width: 7.5rem; }
+.import-preview td { font-size: .85rem; white-space: nowrap; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+
+.import-option { display: flex; align-items: center; gap: .5rem; margin-top: .8rem; }
+
+.import-counts { list-style: none; padding: 0; margin: 0 0 .8rem; display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
+.import-counts strong { font-size: 1.3rem; margin-right: .2rem; }
+.import-subheading { font-size: 1rem; margin: .4rem 0 .3rem; }
+.import-failures td { font-size: .87rem; }
+.import-skipped { margin-top: .6rem; }
+.import-skipped ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+
+.export-warning { margin-bottom: .6rem; }
+.export-facts { margin: 0 0 .9rem; padding-left: 1.2rem; }
+.export-facts li { margin-bottom: .2rem; }
+.export-formats { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .55rem; }
+.export-formats legend { padding: 0; margin-bottom: .4rem; }
+.export-format { display: flex; align-items: flex-start; gap: .55rem; line-height: 1.4; }
+.export-format input { margin-top: .25rem; flex-shrink: 0; }
+.export-started { margin: 0 0 .6rem; }
