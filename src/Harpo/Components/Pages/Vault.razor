@@ -98,6 +98,14 @@
                        @bind="_search" @bind:event="oninput" @bind:after="OnSearchTyped" />
                 @if (CanEdit)
                 {
+                    <button class="btn btn-ghost vault-import" @onclick="() => _importOpen = true"><Lucide Name="upload" Size="16" /> Import…</button>
+                }
+                @if (CanExport)
+                {
+                    <button class="btn btn-ghost vault-export" @onclick="() => _exportOpen = true"><Lucide Name="download" Size="16" /> Export…</button>
+                }
+                @if (CanEdit)
+                {
                     <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
                 }
                 else if (SelectedSummary is not null)
@@ -444,6 +452,17 @@
     }
 </Modal>
 
+@if (_importOpen && SelectedSummary is { } importTarget && _user is not null)
+{
+    <ImportDialog User="_user" GroupId="importTarget.Group.Id" VaultName="@importTarget.Group.Name" IsPersonal="importTarget.Group.IsPersonal"
+                  OnClose="() => _importOpen = false" OnImported="ReloadAsync" />
+}
+@if (_exportOpen && SelectedSummary is { } exportTarget)
+{
+    <ExportDialog GroupId="exportTarget.Group.Id" VaultName="@exportTarget.Group.Name" IsPersonal="exportTarget.Group.IsPersonal"
+                  OnClose="() => _exportOpen = false" />
+}
+
 <EntryDetails View="DetailsView" Updated="@DetailsUpdated" OnClose="CloseDetails" CopyText="CopyFromDetailsAsync" />
 
 <div class="toast-region" role="status" aria-live="polite">
@@ -564,6 +583,17 @@
     private bool CanEdit =>
         SelectedSummary is { } selected
         && (_user?.IsSiteAdmin == true || selected.MyRole?.CanWrite() == true);
+
+    // Export is a group admin's call (VaultService.RequireExportRightsAsync):
+    // the owner of a personal vault, a group's admins, the site admins — and
+    // only while the site allows it.
+    private bool CanExport =>
+        Passwords.ExportEnabled
+        && SelectedSummary is { } selected
+        && (selected.Group.IsPersonal || _user?.IsSiteAdmin == true || selected.MyRole == GroupRole.Admin);
+
+    private bool _importOpen;
+    private bool _exportOpen;
 
     private List<EntryView> FilteredEntries
     {

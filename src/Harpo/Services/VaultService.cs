@@ -1,4 +1,5 @@
 using Harpo.Data;
+using Harpo.Import;
 using Harpo.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -26,6 +27,15 @@ public sealed record EntryMatch(
 
 public sealed record RevisionView(Guid RevisionId, string CreatedBy, DateTime CreatedAtUtc, bool IsCurrent);
 
+/// <summary>A row the import did not create because the vault already has an entry with its name and username.</summary>
+public sealed record ImportSkip(int Row, string Name);
+
+/// <summary>A row the import could not create, and why (the same message the editor would give).</summary>
+public sealed record ImportFailure(int Row, string Name, string Reason);
+
+/// <summary>What <see cref="VaultService.ImportEntriesAsync"/> did with each row of a file.</summary>
+public sealed record ImportResult(int Created, IReadOnlyList<ImportSkip> Skipped, IReadOnlyList<ImportFailure> Failed);
+
 public enum RevealPurpose
 {
     View,
@@ -47,10 +57,13 @@ public class VaultService
     private readonly AuditService _audit;
     private readonly HealthOptions _health;
     private readonly SessionService _sessions;
+    private readonly ExportOptions _export;
+    private readonly string _siteId;
 
     public VaultService(
         IDbContextFactory<HarpoDbContext> dbFactory, CryptoService crypto, TimeProvider time,
-        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health, SessionService sessions)
+        ILogger<VaultService> logger, AuditService audit, IOptions<HealthOptions> health, SessionService sessions,
+        IOptions<ExportOptions>? export = null, IOptions<SiteOptions>? site = null)
     {
         _dbFactory = dbFactory;
         _crypto = crypto;
@@ -59,7 +72,12 @@ public class VaultService
         _audit = audit;
         _health = health.Value;
         _sessions = sessions;
+        _export = export?.Value ?? new ExportOptions();
+        _siteId = site?.Value.SiteId ?? "";
     }
+
+    /// <summary>Whether this site offers vault exports at all (<c>Harpo:Export:Enabled</c>).</summary>
+    public bool ExportEnabled => _export.Enabled;
 
     public async Task<List<EntryView>> GetEntriesAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
@@ -162,6 +180,28 @@ public class VaultService
         UserContext user, Guid groupId, string name, string icon, string url, string username, string notes, string password,
         string totpSecret = "", CancellationToken ct = default)
     {
+        var (entry, revision) = NewEntry(user, groupId, name, icon, url, username, notes, password, totpSecret,
+            _time.GetUtcNow().UtcDateTime);
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
+
+        db.PasswordEntries.Add(entry);
+        db.PasswordRevisions.Add(revision);
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("{User} created entry {Entry} in group {Group}", user.Username, entry.Id, groupId);
+        return entry;
+    }
+
+    /// <summary>
+    /// A new entry and its first revision, validated: the rules every way of
+    /// creating an entry shares (the editor's <see cref="CreateEntryAsync"/> and
+    /// <see cref="ImportEntriesAsync"/>). Throws <see cref="VaultValidationException"/>.
+    /// </summary>
+    private (PasswordEntry Entry, PasswordRevision Revision) NewEntry(
+        UserContext user, Guid groupId, string name, string icon, string url, string username, string notes,
+        string password, string totpSecret, DateTime now)
+    {
         name = name.Trim();
         if (name.Length == 0)
         {
@@ -172,11 +212,6 @@ public class VaultService
             throw new VaultValidationException("Password is required.", "password");
         }
         var encryptedTotp = EncryptTotpOrThrow(totpSecret);
-
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
-
-        var now = _time.GetUtcNow().UtcDateTime;
         var entry = new PasswordEntry
         {
             Id = Guid.NewGuid(),
@@ -191,12 +226,110 @@ public class VaultService
             CreatedAtUtc = now,
             UpdatedBy = user.Username,
         };
-        db.PasswordEntries.Add(entry);
-        db.PasswordRevisions.Add(NewRevision(entry.Id, password, user, now));
-        await db.SaveChangesAsync(ct);
-        _logger.LogInformation("{User} created entry {Entry} in group {Group}", user.Username, entry.Id, groupId);
-        return entry;
+        return (entry, NewRevision(entry.Id, password, user, now));
     }
+
+    /// <summary>
+    /// Creates an entry for each row read from an import file, in one go. Each
+    /// row is checked with the editor's rules (a name and a password are
+    /// required, a 2FA secret must parse); a row that fails is reported with
+    /// its reason and the rest still go in. With <paramref name="skipDuplicates"/>,
+    /// a row whose name and username (ignoring case and surrounding spaces)
+    /// match an entry already in the vault, or an earlier row of the same file,
+    /// is skipped. Every entry gets an ordinary first revision by the importer,
+    /// so it replicates and shows in health and offline copies like any other.
+    /// Needs write rights to the vault. Audited once, with the counts.
+    /// </summary>
+    public async Task<ImportResult> ImportEntriesAsync(
+        UserContext user, Guid groupId, IReadOnlyList<ImportRow> rows, bool skipDuplicates = true,
+        string format = "CSV", CancellationToken ct = default)
+    {
+        await _sessions.RequireLiveAsync(user, ct);
+        if (rows.Count > ImportReader.MaxRows)
+        {
+            throw new VaultValidationException(
+                $"This file has {rows.Count} rows; one import takes at most {ImportReader.MaxRows}. Split the file and import the parts.");
+        }
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        Group group;
+        var created = 0;
+        var skipped = new List<ImportSkip>();
+        var failed = new List<ImportFailure>();
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            // The duplicate check and the inserts are one step, so two imports of
+            // the same file at once cannot both find the vault without the rows.
+            group = await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
+            var existing = await db.PasswordEntries
+                .Where(e => e.GroupId == groupId && !e.IsDeleted)
+                .Select(e => new { e.Name, e.Username })
+                .ToListAsync(ct);
+            var seen = new HashSet<(string, string)>(
+                existing.Select(e => DuplicateKey(e.Name, e.Username)), DuplicateKeyComparer.Instance);
+
+            var now = _time.GetUtcNow().UtcDateTime;
+            foreach (var row in rows)
+            {
+                var key = DuplicateKey(row.Name, row.Username);
+                if (skipDuplicates && key.Item1.Length > 0 && seen.Contains(key))
+                {
+                    skipped.Add(new ImportSkip(row.Row, key.Item1));
+                    continue;
+                }
+                try
+                {
+                    var (entry, revision) = NewEntry(user, groupId, row.Name, ImportIcon(row.Icon), row.Url, row.Username,
+                        row.Notes, row.Password, row.Totp, now);
+                    db.PasswordEntries.Add(entry);
+                    db.PasswordRevisions.Add(revision);
+                    seen.Add(key);
+                    created++;
+                }
+                catch (VaultValidationException ex)
+                {
+                    failed.Add(new ImportFailure(row.Row, key.Item1, ex.Message));
+                }
+            }
+            await db.SaveChangesAsync(ct);
+        }
+        _logger.LogInformation("{User} imported {Created} entries into group {Group} ({Skipped} skipped, {Failed} failed)",
+            user.Username, created, groupId, skipped.Count, failed.Count);
+        await _audit.RecordAsync(user, AuditActions.VaultImport, DescribeVault(group),
+            detail: $"{format}: {created} created, {skipped.Count} skipped as duplicates, {failed.Count} failed",
+            groupId: groupId);
+        return new ImportResult(created, skipped, failed);
+    }
+
+    private static (string, string) DuplicateKey(string name, string username) => (name.Trim(), username.Trim());
+
+    private sealed class DuplicateKeyComparer : IEqualityComparer<(string, string)>
+    {
+        public static readonly DuplicateKeyComparer Instance = new();
+
+        public bool Equals((string, string) x, (string, string) y) =>
+            string.Equals(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Item2, y.Item2, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string, string) key) => HashCode.Combine(
+            StringComparer.OrdinalIgnoreCase.GetHashCode(key.Item1), StringComparer.OrdinalIgnoreCase.GetHashCode(key.Item2));
+    }
+
+    /// <summary>
+    /// The icon an imported row asks for, when it is one the editor could have
+    /// set (an emoji or a catalogue reference); anything else — another
+    /// manager's idea of an icon — becomes the default.
+    /// </summary>
+    private static string ImportIcon(string icon)
+    {
+        icon = icon.Trim();
+        return icon.Length == 0 || (CustomIcon.ParseReference(icon) is null && (icon.Length > 16 || icon.Any(char.IsLetterOrDigit)))
+            ? DefaultIcon
+            : icon;
+    }
+
+    /// <summary>The icon a new entry starts with in the editor.</summary>
+    public const string DefaultIcon = "🔐";
 
     /// <summary>
     /// Metadata update. TOTP semantics: empty <paramref name="totpSecret"/> keeps
@@ -434,6 +567,84 @@ public class VaultService
 
     public const string PersonalEntryDescription = "an entry in a personal vault";
 
+    /// <summary>The audit trail's name for a whole vault: a group by its name, a personal vault never by anything of its owner's.</summary>
+    private static string DescribeVault(Group group) =>
+        group.IsPersonal ? PersonalVaultDescription : group.Name;
+
+    public const string PersonalVaultDescription = "a personal vault";
+
+    // ---- export ----
+
+    /// <summary>
+    /// Checks, without decrypting anything, that this site allows exports and
+    /// that the caller may export the vault (see <see cref="RequireExportRightsAsync"/>).
+    /// The download endpoint asks this first, so a refusal costs no rate-limit slot.
+    /// </summary>
+    public async Task RequireCanExportAsync(UserContext user, Guid groupId, CancellationToken ct = default)
+    {
+        RequireExportEnabled();
+        await _sessions.RequireLiveAsync(user, ct);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        await RequireExportRightsAsync(db, user, groupId, ct);
+    }
+
+    /// <summary>
+    /// The vault's live entries with their current passwords, 2FA secrets and
+    /// notes decrypted, as a CSV or JSON file — the one deliberate bulk decrypt
+    /// besides the offline snapshot, and treated like it: rights-checked here,
+    /// rate-limited and switchable at the endpoint, and always audited (the
+    /// format and the count, never a value). No password history.
+    /// </summary>
+    public async Task<ExportFile> ExportVaultAsync(
+        UserContext user, Guid groupId, ExportFormat format, CancellationToken ct = default)
+    {
+        RequireExportEnabled();
+        await _sessions.RequireLiveAsync(user, ct);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var group = await RequireExportRightsAsync(db, user, groupId, ct);
+
+        var entries = await db.PasswordEntries
+            .Where(e => e.GroupId == groupId && !e.IsDeleted)
+            .OrderBy(e => e.Name)
+            .ToListAsync(ct);
+        var latestByEntry = await LatestRevisionsAsync(db, entries.Select(e => e.Id).ToList(), ct);
+        var exported = entries
+            .Select(e => new ExportEntry(
+                e.Name,
+                e.Icon,
+                e.Url,
+                e.Username,
+                latestByEntry.TryGetValue(e.Id, out var latest) ? _crypto.Decrypt(latest.EncryptedPassword) : "",
+                ProtectedNotes.TryRead(_crypto, e.EncryptedNotes, out var notes) ? notes : "",
+                e.EncryptedTotpSecret is null ? "" : _crypto.Decrypt(e.EncryptedTotpSecret)))
+            .ToList();
+
+        var now = _time.GetUtcNow().UtcDateTime;
+        var fileName = VaultExport.FileName(group.Name, group.IsPersonal, now, format);
+        var file = format == ExportFormat.Json
+            ? new ExportFile(fileName, "application/json; charset=utf-8",
+                System.Text.Encoding.UTF8.GetBytes(
+                    VaultExport.ToJson(group.Name, group.IsPersonal, user.Username, _siteId, now, exported)),
+                exported.Count)
+            : new ExportFile(fileName, "text/csv; charset=utf-8",
+                CsvWriter.ToUtf8WithBom(VaultExport.ToCsv(exported)), exported.Count);
+
+        _logger.LogInformation("{User} exported {Count} entries of group {Group} as {Format}",
+            user.Username, exported.Count, groupId, format);
+        await _audit.RecordAsync(user, AuditActions.VaultExport, DescribeVault(group),
+            detail: $"{(format == ExportFormat.Json ? "JSON" : "CSV")}, {exported.Count} {(exported.Count == 1 ? "entry" : "entries")}",
+            groupId: groupId);
+        return file;
+    }
+
+    private void RequireExportEnabled()
+    {
+        if (!_export.Enabled)
+        {
+            throw new VaultNotFoundException("Exporting vaults is turned off on this site.");
+        }
+    }
+
     /// <summary>
     /// Everything the user may take offline: groups they are an explicit member of,
     /// with each entry's current password decrypted. Deliberately scoped to real
@@ -465,18 +676,7 @@ public class VaultService
             .OrderBy(e => e.Name)
             .ToListAsync(ct);
 
-        var entryIds = entries.Select(e => e.Id).ToList();
-        var revisions = await db.PasswordRevisions
-            .Where(r => entryIds.Contains(r.EntryId))
-            .ToListAsync(ct);
-        var latestByEntry = revisions
-            .GroupBy(r => r.EntryId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.OrderByDescending(r => r.CreatedAtUtc)
-                      .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
-                      .ThenByDescending(r => r.OriginSeq)
-                      .First());
+        var latestByEntry = await LatestRevisionsAsync(db, entries.Select(e => e.Id).ToList(), ct);
 
         var offlineEntries = entries
             .Select(e =>
@@ -519,6 +719,22 @@ public class VaultService
     // OriginSeq is monotonic per origin. (An earlier random-Guid tie-break made
     // "current" non-deterministic for same-tick revisions; see GetHistoryAsync,
     // GetEntriesAsync, GetOfflineDataAsync and HealthService, which order the same way.)
+    private static async Task<Dictionary<Guid, PasswordRevision>> LatestRevisionsAsync(
+        HarpoDbContext db, List<Guid> entryIds, CancellationToken ct)
+    {
+        var revisions = await db.PasswordRevisions
+            .Where(r => entryIds.Contains(r.EntryId))
+            .ToListAsync(ct);
+        return revisions
+            .GroupBy(r => r.EntryId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(r => r.CreatedAtUtc)
+                      .ThenByDescending(r => r.OriginSiteId, StringComparer.Ordinal)
+                      .ThenByDescending(r => r.OriginSeq)
+                      .First());
+    }
+
     private static async Task<PasswordRevision?> LatestRevisionAsync(HarpoDbContext db, Guid entryId, CancellationToken ct)
     {
         var revisions = await db.PasswordRevisions.Where(r => r.EntryId == entryId).ToListAsync(ct);
@@ -535,7 +751,7 @@ public class VaultService
     /// first that the caller's session is still live — a page open since before
     /// a sign-out elsewhere must not get another secret — then group membership.
     /// </summary>
-    private async Task RequireMemberAsync(
+    private async Task<Group> RequireMemberAsync(
         HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct, bool requireWrite = false)
     {
         await _sessions.RequireLiveAsync(user, ct);
@@ -544,11 +760,11 @@ public class VaultService
         GroupService.RequireNotSomeoneElsesPersonalVault(group, user);
         if (group.IsPersonal)
         {
-            return; // the owner, with every right over their own entries
+            return group; // the owner, with every right over their own entries
         }
         if (user.IsSiteAdmin)
         {
-            return;
+            return group;
         }
         var role = await GroupService.GetRoleAsync(db, groupId, user.Username, ct);
         if (role is null)
@@ -559,6 +775,34 @@ public class VaultService
         {
             throw new VaultAccessDeniedException("Viewers can see passwords but not change them.");
         }
+        return group;
+    }
+
+    /// <summary>
+    /// Who may take a whole vault away as a plain-text file: the owner of a
+    /// personal vault (and nobody else — a site admin's rights stop at it, as
+    /// everywhere), and for a shared group its admins and the site admins.
+    /// Members and viewers reveal passwords one at a time, each audited; a
+    /// bulk copy is a group admin's decision.
+    /// </summary>
+    private static async Task<Group> RequireExportRightsAsync(
+        HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct)
+    {
+        var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && !g.IsDeleted, ct)
+            ?? throw new VaultNotFoundException("Group not found.");
+        GroupService.RequireNotSomeoneElsesPersonalVault(group, user);
+        if (group.IsPersonal || user.IsSiteAdmin)
+        {
+            return group;
+        }
+        var role = await GroupService.GetRoleAsync(db, groupId, user.Username, ct);
+        if (role != GroupRole.Admin)
+        {
+            throw new VaultAccessDeniedException(role is null
+                ? "You are not a member of this group."
+                : "Only the group's admins can export it.");
+        }
+        return group;
     }
 
 

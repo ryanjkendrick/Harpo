@@ -13,6 +13,7 @@
 // readable when the manual scales it down.
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const puppeteer = require("puppeteer");
 
 const BASE = process.env.HARPO_BASE_URL || "http://localhost:8091";
@@ -364,6 +365,31 @@ async function pageShot(page, file, fullPage = false) {
         await page.evaluate(() => { document.querySelector("details.trash").open = true; });
         await sleep(600);
         await elementShot(page, "details.trash", "trash.png");
+
+        // ---- Import and export: the dialogs only; nothing is imported or downloaded ----
+        // A KeePassXC export, cut to the columns that fit the dialog; the file name shows in the shot.
+        const importDir = fs.mkdtempSync(path.join(os.tmpdir(), "harpo-manual-"));
+        const importFile = path.join(importDir, "keepass-export.csv");
+        fs.writeFileSync(importFile, [
+            "\"Group\",\"Title\",\"Username\",\"Password\",\"URL\"",
+            "\"Network\",\"Firewall\",\"admin\",\"Fw3!kq8Zr2#mLx6T\",\"https://fw.office.example.com\"",
+            "\"Network\",\"Switch stack\",\"admin\",\"Sw5#np2Vq8!tKz4R\",\"https://10.0.0.2\"",
+            "\"Cloud\",\"DNS provider\",\"ops@example.com\",\"Dn7!wx3Lq9#bRt2M\",\"https://dns.example.net\"",
+            "",
+        ].join("\r\n"));
+        await openDialog(page, ".vault-toolbar .vault-import", "Import");
+        await (await page.$('.modal-panel input[type="file"]')).uploadFile(importFile);
+        await page.waitForSelector(".modal-panel .import-preview", { timeout: 15000 });
+        await sleep(500);
+        await dialogShot(page, "import.png");
+        await page.evaluate(() => document.querySelector(".modal-close").click());
+        await noDialog(page);
+        fs.rmSync(importDir, { recursive: true, force: true });
+
+        await openDialog(page, ".vault-toolbar .vault-export", "Export");
+        await dialogShot(page, "export.png");
+        await page.evaluate(() => document.querySelector(".modal-close").click());
+        await noDialog(page);
 
         // ---- Vault health ----
         await page.goto(`${BASE}/health`, { waitUntil: "networkidle2" });

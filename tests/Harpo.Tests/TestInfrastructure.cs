@@ -156,6 +156,9 @@ public sealed class TestSite : IDisposable
 
     public SessionService Sessions { get; }
 
+    /// <summary>The export switch, read live by <see cref="Vault"/> — tests may turn it off.</summary>
+    public Harpo.Import.ExportOptions ExportOptions { get; } = new();
+
     private readonly SqliteConnection? _connection;
     private readonly bool _fileBacked;
 
@@ -204,7 +207,8 @@ public sealed class TestSite : IDisposable
         Directory = new SwitchableDirectory(new DevAuthenticator(Options.Create(DevDirectory)));
         Groups = new GroupService(Db, Time, Audit, Sessions, Directory);
         Vault = new VaultService(Db, Crypto, Time, NullLogger<VaultService>.Instance, Audit,
-            Options.Create(new HealthOptions()), Sessions);
+            Options.Create(new HealthOptions()), Sessions, Options.Create(ExportOptions),
+            Options.Create(new SiteOptions { SiteId = siteId }));
         Health = new HealthService(Db, Crypto, Options.Create(new HealthOptions()), Time, Audit,
             NullLogger<HealthService>.Instance, Sessions);
         Icons = new IconService(Db, Time, Audit, Options.Create(new IconOptions()),
@@ -267,13 +271,17 @@ public sealed class TestSite : IDisposable
     /// login page does, and returns the caller exactly as an interactive page
     /// would hold it: built from the cookie's principal, session id included.
     /// </summary>
-    public async Task<UserContext> SignInAsync(string username)
+    public async Task<UserContext> SignInAsync(string username) =>
+        UserContext.FromPrincipal(await SignInPrincipalAsync(username));
+
+    /// <summary>As <see cref="SignInAsync"/>, but the cookie's principal itself — what an endpoint receives.</summary>
+    public async Task<System.Security.Claims.ClaimsPrincipal> SignInPrincipalAsync(string username)
     {
         var dev = DevDirectory.DevUsers.Single(u => u.Username == username);
         var result = await new DevAuthenticator(Options.Create(DevDirectory))
             .AuthenticateAsync(dev.Username, dev.Password, CancellationToken.None)
             ?? throw new InvalidOperationException($"{username} could not sign in");
         var sessionId = await Sessions.CreateAsync(result);
-        return UserContext.FromPrincipal(HarpoClaims.CreatePrincipal(result, sessionId));
+        return HarpoClaims.CreatePrincipal(result, sessionId);
     }
 }

@@ -51,10 +51,14 @@ public static class AuditActions
     public const string IconDelete = "icon.delete";
     public const string KeyRotate = "key.rotate";
     public const string PersonalTakeover = "personal.takeover";
+    /// <summary>A whole vault was downloaded as a plain-text file (a bulk decrypt).</summary>
+    public const string VaultExport = "vault.export";
+    /// <summary>Entries were created in a vault from an imported file.</summary>
+    public const string VaultImport = "vault.import";
 
-    /// <summary>A secret left the vault: shown on screen or put on a clipboard.</summary>
+    /// <summary>A secret left the vault: shown on screen, put on a clipboard, or written to an export file.</summary>
     public static readonly string[] Reveals =
-        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal];
+        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal, VaultExport];
 
     public static readonly string[] Deletions = [EntryDelete, GroupDelete, MemberRemove, IconDelete];
 

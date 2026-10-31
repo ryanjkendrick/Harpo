@@ -1,0 +1,331 @@
+@* Import into the open vault: choose a file, check how its columns map, import,
+   read the summary. The file is read into memory on the server and parsed
+   there; it is never written to disk. Shown only to those who may add
+   passwords to the vault (the service checks again). *@
+@using Harpo.Import
+@inject VaultService Passwords
+@inject IconService IconCatalogue
+
+<Modal Visible="true" Title="@(IsPersonal ? "Import into your personal vault" : $"Import into {VaultName}")" OnClose="CloseAsync" CloseOnBackdrop="false" Wide="true">
+    @if (_result is { } result)
+    {
+        <div class="import-summary" role="status">
+            <ul class="import-counts">
+                <li class="import-count-created"><strong>@result.Created</strong> created</li>
+                <li class="import-count-skipped"><strong>@result.Skipped.Count</strong> skipped — already in this vault</li>
+                <li class="import-count-failed"><strong>@result.Failed.Count</strong> failed</li>
+            </ul>
+            @if (result.Failed.Count > 0)
+            {
+                <h3 class="import-subheading">Not imported</h3>
+                <div class="table-scroll">
+                    <table class="import-failures">
+                        <thead><tr><th>Row</th><th>Name</th><th>Reason</th></tr></thead>
+                        <tbody>
+                            @foreach (var failure in result.Failed)
+                            {
+                                <tr>
+                                    <td class="mono">@failure.Row</td>
+                                    <td>@(failure.Name.Length > 0 ? failure.Name : "(no name)")</td>
+                                    <td>@failure.Reason</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <p class="muted small">@RowNumbering</p>
+            }
+            @if (result.Skipped.Count > 0)
+            {
+                <details class="import-skipped">
+                    <summary class="muted">Skipped rows (@result.Skipped.Count)</summary>
+                    <ul>
+                        @foreach (var skip in result.Skipped)
+                        {
+                            <li><span class="mono">@skip.Row</span> · @skip.Name</li>
+                        }
+                    </ul>
+                </details>
+            }
+            <p class="muted small">
+                The file you imported from holds these passwords in plain text. Delete it, and empty your
+                computer's recycle bin, once you no longer need it.
+            </p>
+        </div>
+        <div class="modal-footer">
+            <div class="modal-actions">
+                <button type="button" class="btn btn-primary" @onclick="CloseAsync">Done</button>
+            </div>
+        </div>
+    }
+    else if (_table is null)
+    {
+        <p class="import-intro">
+            Choose a CSV file exported from another password manager — Bitwarden, 1Password, KeePass,
+            LastPass, Chrome or Edge, for example — or a JSON file exported from Harpo. Its entries are
+            added to <strong>@VaultName</strong>; you see how the columns will be used before anything is imported.
+        </p>
+        <label class="btn btn-ghost import-file">
+            <Lucide Name="upload" Size="16" /> Choose a file…
+            <InputFile class="visually-hidden" OnChange="ReadFileAsync"
+                       accept=".csv,.txt,.json,text/csv,text/plain,application/json" />
+        </label>
+        <p class="muted small">
+            .csv, .txt or .json, up to @(ImportReader.MaxBytes / 1024 / 1024) MB and @ImportReader.MaxRows rows. The file is
+            read in memory and never stored.
+        </p>
+        @if (_error is not null)
+        {
+            <div class="alert alert-error" role="alert">@_error</div>
+        }
+    }
+    else
+    {
+        <p class="import-file-name">
+            <strong>@_fileName</strong> · @_table.Format · @_table.Rows.Count @(_table.Rows.Count == 1 ? "row" : "rows")
+        </p>
+        <p class="muted small import-target">
+            Everything goes into <strong>@VaultName</strong>.
+            @if (FolderColumns.Count > 0)
+            {
+                <span class="import-folder-note">
+                    The @string.Join(", ", FolderColumns.Select(c => $"“{c}”")) @(FolderColumns.Count == 1 ? "column holds" : "columns hold")
+                    folders from the other manager; @(FolderColumns.Count == 1 ? "it is" : "they are") shown but not used.
+                </span>
+            }
+        </p>
+        <div class="table-scroll">
+            <table class="import-preview">
+                <thead>
+                    <tr>
+                        @for (var i = 0; i < _table.Columns.Count; i++)
+                        {
+                            var column = i;
+                            <th>
+                                <span class="import-column-name">@_table.Columns[column]</span>
+                                <select aria-label="@($"Use the column {_table.Columns[column]} as")"
+                                        value="@_mapping[column]" @onchange="e => SetMapping(column, e)">
+                                    @foreach (var (field, label) in FieldLabels)
+                                    {
+                                        <option value="@field">@label</option>
+                                    }
+                                </select>
+                            </th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in _table.Rows.Take(PreviewRows))
+                    {
+                        <tr>
+                            @for (var i = 0; i < _table.Columns.Count; i++)
+                            {
+                                var cell = ImportTable.Cell(row, i);
+                                @if (_mapping[i] is ImportField.Password or ImportField.Totp)
+                                {
+                                    <td class="mask">@(cell.Length > 0 ? "••••••••" : "")</td>
+                                }
+                                else
+                                {
+                                    <td>@Shorten(cell)</td>
+                                }
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (_table.Rows.Count > PreviewRows)
+        {
+            <p class="muted small">The first @PreviewRows of @_table.Rows.Count rows. Passwords and 2FA secrets are hidden.</p>
+        }
+        else
+        {
+            <p class="muted small">Passwords and 2FA secrets are hidden.</p>
+        }
+        <label class="import-option">
+            <input type="checkbox" @bind="_skipDuplicates" />
+            Skip rows whose name and username are already in this vault
+        </label>
+        <div class="modal-footer">
+            @if (MappingProblem is { } problem)
+            {
+                <div class="alert alert-warning" role="alert">@problem</div>
+            }
+            @if (_error is not null)
+            {
+                <div class="alert alert-error" role="alert">@_error</div>
+            }
+            <div class="modal-actions">
+                <button type="button" class="btn btn-ghost" @onclick="ChooseAnother">Choose another file</button>
+                <button type="button" class="btn btn-primary import-confirm" disabled="@(MappingProblem is not null || _busy)"
+                        @onclick="ImportAsync">
+                    Import @_table.Rows.Count @(_table.Rows.Count == 1 ? "row" : "rows")
+                </button>
+            </div>
+        </div>
+    }
+</Modal>
+
+@code {
+    [Parameter, EditorRequired] public UserContext User { get; set; } = default!;
+    [Parameter, EditorRequired] public Guid GroupId { get; set; }
+    [Parameter, EditorRequired] public string VaultName { get; set; } = "";
+    [Parameter] public bool IsPersonal { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>Raised once entries were created, so the page behind can refresh its list.</summary>
+    [Parameter] public EventCallback OnImported { get; set; }
+
+    private const int PreviewRows = 5;
+
+    private static readonly (ImportField Field, string Label)[] FieldLabels =
+    [
+        (ImportField.Ignore, "Ignore"),
+        (ImportField.Name, "Name"),
+        (ImportField.Username, "Username"),
+        (ImportField.Password, "Password"),
+        (ImportField.Url, "URL"),
+        (ImportField.Notes, "Notes"),
+        (ImportField.Totp, "2FA secret"),
+        (ImportField.Icon, "Icon"),
+    ];
+
+    private ImportTable? _table;
+    private ImportField[] _mapping = [];
+    private string _fileName = "";
+    private string _format = "CSV";
+    private bool _skipDuplicates = true;
+    private bool _busy;
+    private string? _error;
+    private ImportResult? _result;
+
+    private List<string> FolderColumns =>
+        _table is null ? [] : _table.Columns.Where((c, i) => _mapping[i] == ImportField.Ignore && ImportReader.IsFolderColumn(c)).ToList();
+
+    private string RowNumbering => _format == "CSV"
+        ? "Rows are numbered by the line of the file they start on; the header is line 1."
+        : "Rows are numbered by their position in the file's list of entries.";
+
+    private string? MappingProblem =>
+        !_mapping.Contains(ImportField.Name) && !_mapping.Contains(ImportField.Password)
+            ? "Choose the column that holds the names and the one that holds the passwords."
+            : !_mapping.Contains(ImportField.Name) ? "Choose the column that holds the names."
+            : !_mapping.Contains(ImportField.Password) ? "Choose the column that holds the passwords."
+            : null;
+
+    private static string Shorten(string cell)
+    {
+        var flat = cell.ReplaceLineEndings(" ");
+        return flat.Length > 48 ? flat[..47] + "…" : flat;
+    }
+
+    private async Task ReadFileAsync(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        var file = e.File;
+        if (file.Size > ImportReader.MaxBytes)
+        {
+            _error = $"That file is {file.Size / 1024.0 / 1024.0:0.#} MB; the limit is {ImportReader.MaxBytes / 1024 / 1024} MB. Split it and import the parts.";
+            return;
+        }
+        try
+        {
+            byte[] bytes;
+            await using (var stream = file.OpenReadStream(ImportReader.MaxBytes))
+            using (var buffer = new MemoryStream())
+            {
+                await stream.CopyToAsync(buffer);
+                bytes = buffer.ToArray();
+            }
+            var table = ImportReader.Read(file.Name, ImportReader.Decode(bytes));
+            if (table.Rows.Count == 0)
+            {
+                _error = "That file has no entries in it — only a header row, or nothing at all.";
+                return;
+            }
+            if (table.Rows.Count > ImportReader.MaxRows)
+            {
+                _error = $"That file has {table.Rows.Count} rows; one import takes at most {ImportReader.MaxRows}. Split it and import the parts.";
+                return;
+            }
+            _table = table;
+            _fileName = file.Name;
+            _format = table.Format;
+            _mapping = ImportReader.GuessMapping(table.Columns);
+        }
+        catch (CsvFormatException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (IOException)
+        {
+            _error = "The file could not be read. Choose it again.";
+        }
+    }
+
+    /// <summary>A Harpo field comes from one column: choosing it for this one releases any other.</summary>
+    private void SetMapping(int column, ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<ImportField>(e.Value?.ToString(), out var field))
+        {
+            return;
+        }
+        if (field != ImportField.Ignore)
+        {
+            for (var i = 0; i < _mapping.Length; i++)
+            {
+                if (i != column && _mapping[i] == field)
+                {
+                    _mapping[i] = ImportField.Ignore;
+                }
+            }
+        }
+        _mapping[column] = field;
+    }
+
+    private void ChooseAnother()
+    {
+        _table = null;
+        _mapping = [];
+        _error = null;
+    }
+
+    private async Task ImportAsync()
+    {
+        if (_table is null || MappingProblem is not null || _busy)
+        {
+            return;
+        }
+        _busy = true;
+        _error = null;
+        try
+        {
+            var rows = ImportReader.BuildRows(_table, _mapping);
+            if (!_mapping.Contains(ImportField.Icon))
+            {
+                // As in the editor: an entry whose URL matches an attributed icon gets it.
+                var catalogue = await IconCatalogue.GetAllAsync();
+                rows = rows
+                    .Select(r => IconUrlMatcher.FindBestMatch(r.Url, catalogue) is { } match ? r with { Icon = match.Reference } : r)
+                    .ToList();
+            }
+            _result = await Passwords.ImportEntriesAsync(User, GroupId, rows, _skipDuplicates, _table.Format);
+            _table = null; // the passwords are in the vault now; the copy on this page can go
+            _mapping = [];
+            if (_result.Created > 0)
+            {
+                await OnImported.InvokeAsync();
+            }
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

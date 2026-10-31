@@ -13,6 +13,9 @@
 //
 // Prerequisites: `docker compose -f docker-compose.multisite.yml up -d`.
 // Run with: npm run test:ui (see README.md in this directory).
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const puppeteer = require("puppeteer");
 
 const BASE = process.env.HARPO_BASE_URL || "http://localhost:8081";
@@ -31,6 +34,23 @@ const OTHER_GROUP = `E2E Other Group ${RUN_ID}`;
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
+const IMPORTED = `E2E Imported ${RUN_ID}`;
+const IMPORTED_PASSWORD = "Imp0rt!Pass#1";
+// A name a spreadsheet would run as a formula: the CSV export must neutralise it.
+const INJECTED = `=HYPERLINK("http://example.invalid","x") ${RUN_ID}`;
+const CSV_HEADER = "name,login_uri,login_username,login_password,notes,login_totp";
+// A Bitwarden export: its folder column, a note spanning two lines, a row
+// matching an entry the vault already has (ENTRY, no username) and a secure
+// note without a password, which must be reported as failed (it starts on line 6).
+const BITWARDEN_CSV = [
+    "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp",
+    `Network,,login,${IMPORTED},"first line`,
+    `second, with ""quotes""",,0,https://imported.example.com,imp-admin,${IMPORTED_PASSWORD},${TOTP_SECRET}`,
+    `,,login,"${INJECTED.replace(/"/g, '""')}",,,0,,@evil,Imp0rt!Pass#2,`,
+    `,,login,${ENTRY},,,0,,,dup-password,`,
+    `,,note,E2E Note only ${RUN_ID},just a note,,0,,,,`,
+    "",
+].join("\r\n");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -146,6 +166,29 @@ const rowAction = (page, entryName, ariaLabel) => page.evaluate((name, label) =>
     button.click();
 }, entryName, ariaLabel);
 
+// The export endpoint, fetched from the page so its cookies apply. One export
+// every 10 seconds per user: a 429 is waited out (twice at most).
+async function fetchExport(page, url) {
+    for (let attempt = 0; ; attempt++) {
+        const r = await page.evaluate(async (u) => {
+            const response = await fetch(u, { credentials: "same-origin" });
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            return {
+                status: response.status,
+                retryAfter: response.headers.get("retry-after"),
+                disposition: response.headers.get("content-disposition") ?? "",
+                cache: response.headers.get("cache-control") ?? "",
+                bom: bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF,
+                text: new TextDecoder().decode(bytes), // drops the byte order mark
+            };
+        }, url);
+        if (r.status !== 429 || attempt >= 2) {
+            return r;
+        }
+        await sleep((Number(r.retryAfter) || 10) * 1000 + 500);
+    }
+}
+
 async function groupId(page) {
     for (let i = 0; i < 15; i++) {
         await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
@@ -186,6 +229,7 @@ async function groupId(page) {
     let personalId = null;
     let otherContext = null;
     let otherGroupId = null;
+    const csvPath = path.join(os.tmpdir(), `harpo-e2e-import-${RUN_ID}.csv`);
 
     try {
         await signIn(page);
@@ -335,6 +379,99 @@ async function groupId(page) {
         await page.evaluate(() => document.querySelector(".modal-close").click());
         await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
 
+        // ---- 3a. Import a Bitwarden export into the group, then export the group ----
+        const toolbar = await page.evaluate(() =>
+            [...document.querySelectorAll(".vault-toolbar .btn")].map((b) => b.textContent.trim()));
+        check("a group admin's toolbar offers Import… and Export… beside New password",
+            toolbar.join(",") === "Import…,Export…,New password", toolbar.join(","));
+
+        fs.writeFileSync(csvPath, BITWARDEN_CSV);
+        await openDialog(page, ".vault-toolbar .vault-import", "Import");
+        await (await page.$('.modal-panel input[type="file"]')).uploadFile(csvPath);
+        await page.waitForSelector(".modal-panel .import-preview", { timeout: 15000 });
+        await sleep(400);
+        const preview = await page.evaluate(() => ({
+            mapping: Object.fromEntries([...document.querySelectorAll(".import-preview thead th")]
+                .map((th) => [th.querySelector(".import-column-name").textContent.trim(), th.querySelector("select").value])),
+            firstRow: [...document.querySelectorAll(".import-preview tbody tr:first-child td")].map((td) => td.textContent.trim()),
+            folderNote: document.querySelector(".import-folder-note")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+            text: document.querySelector(".modal-panel").textContent,
+            confirm: document.querySelector(".modal-panel .import-confirm")?.textContent.trim(),
+        }));
+        const m = preview.mapping;
+        check("a Bitwarden file is mapped without a click; its folder column is shown but not used",
+            m.name === "Name" && m.login_username === "Username" && m.login_password === "Password" && m.login_uri === "Url"
+            && m.notes === "Notes" && m.login_totp === "Totp" && m.folder === "Ignore" && m.type === "Ignore"
+            && preview.folderNote.includes("“folder”") && preview.confirm === "Import 4 rows", JSON.stringify(preview.mapping));
+        check("the preview shows the rows but hides passwords and 2FA secrets",
+            preview.firstRow.includes(IMPORTED) && preview.firstRow.includes("••••••••")
+            && !preview.text.includes(IMPORTED_PASSWORD) && !preview.text.includes(TOTP_SECRET), preview.firstRow.join(" | "));
+
+        await page.evaluate(() => document.querySelector(".modal-panel .import-confirm").click());
+        await page.waitForSelector(".modal-panel .import-summary", { timeout: 15000 });
+        const summary = await page.evaluate(() => ({
+            created: document.querySelector(".import-count-created strong")?.textContent.trim(),
+            skipped: document.querySelector(".import-count-skipped strong")?.textContent.trim(),
+            failed: document.querySelector(".import-count-failed strong")?.textContent.trim(),
+            failures: [...document.querySelectorAll(".import-failures tbody tr")]
+                .map((r) => [...r.querySelectorAll("td")].map((td) => td.textContent.trim()).join(" / ")),
+        }));
+        check("the summary counts what was created, skipped as a duplicate, and failed with its row and reason",
+            summary.created === "2" && summary.skipped === "1" && summary.failed === "1"
+            && summary.failures.length === 1 && summary.failures[0] === `6 / E2E Note only ${RUN_ID} / Password is required.`,
+            JSON.stringify(summary));
+        await clickText(page, ".modal-panel .btn-primary", "Done");
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+        await page.waitForFunction((a, b) => {
+            const names = [...document.querySelectorAll(".entries-table tbody .entry-name")].map((e) => e.textContent.trim());
+            return names.includes(a) && names.includes(b);
+        }, { timeout: 15000 }, IMPORTED, INJECTED);
+        check("the imported entries are in the list", true);
+
+        await openDialog(page, ".vault-toolbar .vault-export", "Export");
+        const exportDialog = await page.evaluate(() => ({
+            warning: document.querySelector(".modal-panel .export-warning")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+            facts: document.querySelector(".modal-panel .export-facts")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+            href: document.querySelector(".modal-panel a.export-download")?.getAttribute("href"),
+            download: document.querySelector(".modal-panel a.export-download")?.hasAttribute("download"),
+        }));
+        await page.evaluate(() => document.querySelector('.modal-panel input[value="json"]').click());
+        let jsonHref = null;
+        try {
+            await page.waitForFunction(() => document.querySelector("a.export-download")?.getAttribute("href").endsWith("format=json"), { timeout: 5000 });
+            jsonHref = await page.evaluate(() => document.querySelector("a.export-download").getAttribute("href"));
+        } catch { /* stays null */ }
+        check("the export dialog says the file is plain text, audited and to be deleted, and links to the download",
+            exportDialog.warning.includes("not encrypted") && exportDialog.warning.includes("every current password")
+            && exportDialog.facts.includes("audit log") && exportDialog.facts.includes("Delete the file")
+            && exportDialog.href === `/api/vault/${id}/export?format=csv` && exportDialog.download
+            && jsonHref === `/api/vault/${id}/export?format=json`, JSON.stringify({ ...exportDialog, jsonHref }));
+        await page.evaluate(() => document.querySelector(".modal-close").click());
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+
+        const csv = await fetchExport(page, `/api/vault/${id}/export?format=csv`);
+        const csvLines = csv.text.split("\r\n");
+        check("the CSV export is a UTF-8 attachment with a byte order mark, not cached, under the Bitwarden header",
+            csv.status === 200 && csv.bom && csvLines[0] === CSV_HEADER
+            && csv.disposition.startsWith("attachment") && csv.cache.includes("no-store"),
+            JSON.stringify({ status: csv.status, bom: csv.bom, header: csvLines[0], disposition: csv.disposition, cache: csv.cache }));
+        const injectedLine = csvLines.find((l) => l.includes(String(RUN_ID)) && l.includes("HYPERLINK")) ?? "";
+        check("a value a spreadsheet would run as a formula is exported with a leading apostrophe, quoted",
+            injectedLine.startsWith(`"'=HYPERLINK(""http://example.invalid"",""x"") ${RUN_ID}",,"'@evil",`), injectedLine);
+
+        const json = await fetchExport(page, `/api/vault/${id}/export?format=json`);
+        let exported = null;
+        try {
+            exported = JSON.parse(json.text);
+        } catch { /* reported below */ }
+        const byName = (n) => exported?.entries?.find((e) => e.name === n);
+        check("the JSON export holds the 2FA secrets and notes, the imported entry's included",
+            json.status === 200 && exported?.format === "harpo-vault-export" && exported?.vault?.name === GROUP
+            && byName(ENTRY)?.totp === TOTP_SECRET && byName(ENTRY)?.notes === NOTES
+            && byName(IMPORTED)?.totp === TOTP_SECRET && byName(IMPORTED)?.password === IMPORTED_PASSWORD
+            && byName(IMPORTED)?.notes === 'first line\r\nsecond, with "quotes"',
+            JSON.stringify({ status: json.status, format: exported?.format, entry: byName(ENTRY)?.totp, imported: byName(IMPORTED)?.notes }));
+
         // ---- 4. Layout: nothing overflows or hides, at any width, at rest or revealed ----
         const problems = [];
         const modes = [];
@@ -431,8 +568,8 @@ async function groupId(page) {
         const reveals = await page.evaluate(() =>
             [...document.querySelectorAll(".audit-table tbody tr td:nth-child(3)")].map((td) => td.textContent.trim()));
         check("the Reveals category shows only reveals and copies, including copies from history",
-            reveals.length > 0 && reveals.includes("revision.copy")
-            && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal)$/.test(a)),
+            reveals.length > 0 && reveals.includes("revision.copy") && reveals.includes("vault.export")
+            && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal|vault\.export)$/.test(a)),
             [...new Set(reveals)].join(","));
 
         // ---- 7. Personal vaults: one each, owner-only, taken over on departure ----
@@ -448,6 +585,12 @@ async function groupId(page) {
         await rowAction(page, PERSONAL_ENTRY, "Reveal");
         await page.waitForSelector(".entries-table .revealed", { timeout: 10000 });
         check("a personal entry is created and revealed like any other", true);
+        // Its owner may export it; the audit log must not name what is in it (checked in the admin view below).
+        const personalExport = await fetchExport(page, `/api/vault/${personalId}/export?format=csv`);
+        check("the owner can export their personal vault",
+            !!(await page.$(".vault-toolbar .vault-export")) && personalExport.status === 200
+            && personalExport.text.includes(PERSONAL_ENTRY) && /harpo-personal-/.test(personalExport.disposition),
+            JSON.stringify({ status: personalExport.status, disposition: personalExport.disposition }));
 
         // ---- 7a. Global search: an entry in another vault is found from this one ----
         // The shared test group is open and holds nothing called PERSONAL_ENTRY;
@@ -591,6 +734,9 @@ async function groupId(page) {
                     ?.querySelectorAll(".group-card-name").length ?? 0,
                 personalInAllGroups: [...document.querySelectorAll(".group-card-name")].some((e) => e.textContent.trim() === "Personal"),
                 auditWhat: [...document.querySelectorAll(".audit-table tbody tr td:nth-child(4)")].map((td) => td.textContent.trim()),
+                personalExport: [...document.querySelectorAll(".audit-table tbody tr")]
+                    .find((r) => r.querySelector("td:nth-child(3)")?.textContent.trim() === "vault.export")
+                    ?.querySelector("td:nth-child(4)")?.textContent.replace(/\s+/g, " ").trim() ?? "",
             };
         }, OTHER_USER);
         check("administration lists personal vaults by owner and size only, and keeps them out of the group list",
@@ -600,6 +746,8 @@ async function groupId(page) {
             adminBefore.auditWhat.some((w) => w.startsWith("an entry in a personal vault"))
             && !adminBefore.auditWhat.some((w) => w.includes(PERSONAL_ENTRY)),
             adminBefore.auditWhat.slice(0, 3).join(" | "));
+        check("the audit log records the personal vault's export as \"a personal vault\", with the count and no names",
+            /^a personal vault · CSV, \d+ entr(y|ies)$/.test(adminBefore.personalExport), adminBefore.personalExport);
 
         // Take the other account's vault over.
         await page.evaluate((otherUser) => {
@@ -695,6 +843,8 @@ async function groupId(page) {
         const viewerRow = await viewer.evaluate((name) => {
             const row = [...document.querySelectorAll(".entries-table tbody tr")].find((r) => r.textContent.includes(name));
             const button = row.querySelector('button[aria-label="Details and notes"]');
+            // The imported entries sort above this one, so its card may start below the fold.
+            button?.scrollIntoView({ block: "center" });
             const r = button?.getBoundingClientRect();
             const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
             return {
@@ -707,6 +857,14 @@ async function groupId(page) {
                 pageFits: document.documentElement.scrollWidth <= window.innerWidth + 1,
             };
         }, ENTRY);
+        const viewerTools = await viewer.evaluate(() => ({
+            importButton: !!document.querySelector(".vault-toolbar .vault-import"),
+            exportButton: !!document.querySelector(".vault-toolbar .vault-export"),
+        }));
+        const viewerExport = await fetchExport(viewer, `/api/vault/${id}/export?format=csv`);
+        check("a Viewer is offered neither Import nor Export, and the export endpoint refuses them with 403",
+            !viewerTools.importButton && !viewerTools.exportButton && viewerExport.status === 403
+            && !viewerExport.text.includes(IMPORTED_PASSWORD), JSON.stringify({ ...viewerTools, status: viewerExport.status }));
         check("a Viewer on a 390px touch screen sees a card with a notes indicator and a visible, unobstructed Details button",
             viewerRow.cards && !viewerRow.canEdit && viewerRow.indicator === "Has notes" && viewerRow.detailsButton
             && viewerRow.visible && viewerRow.clickable && viewerRow.pageFits, JSON.stringify(viewerRow));
@@ -834,6 +992,7 @@ async function groupId(page) {
         try {
             await otherContext?.close();
         } catch { /* already gone with the browser */ }
+        fs.rmSync(csvPath, { force: true });
         await browser.close();
     }
 

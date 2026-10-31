@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Harpo;
 using Harpo.Components;
 using Harpo.Data;
+using Harpo.Import;
 using Harpo.Offline;
 using Harpo.Replication;
 using Harpo.Security;
@@ -31,6 +32,7 @@ builder.Services.AddCascadingAuthenticationState();
 // ---- Options ----
 builder.Services.Configure<SiteOptions>(builder.Configuration.GetSection("Harpo"));
 builder.Services.Configure<Harpo.Offline.OfflineOptions>(builder.Configuration.GetSection("Harpo:Offline"));
+builder.Services.Configure<Harpo.Import.ExportOptions>(builder.Configuration.GetSection("Harpo:Export"));
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Harpo:Audit"));
 builder.Services.Configure<HealthOptions>(builder.Configuration.GetSection("Harpo:Health"));
 builder.Services.Configure<IconOptions>(builder.Configuration.GetSection("Harpo:Icons"));
@@ -57,6 +59,7 @@ builder.Services.AddSingleton<VaultService>();
 builder.Services.AddSingleton<HealthService>();
 builder.Services.AddSingleton<IconService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
+builder.Services.AddSingleton<Harpo.Import.ExportThrottle>();
 
 // ---- Authentication: LDAP bind against Active Directory (or dev users for local testing) ----
 var authMode = builder.Configuration["Auth:Mode"] ?? "Ldap";
@@ -196,6 +199,7 @@ app.MapRazorComponents<App>()
 
 app.MapReplicationEndpoints();
 app.MapOfflineEndpoints();
+app.MapExportEndpoints();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
