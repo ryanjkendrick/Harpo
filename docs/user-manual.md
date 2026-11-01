@@ -90,6 +90,13 @@ Select a vault and its passwords appear as a table, one row per entry:
 | **Last updated** | Who last changed the password and how long ago. Hover for the exact time. |
 | Actions | Edit, details and notes, password history, delete. Viewers see only details and history. |
 
+A vault with more than 50 passwords shows them 50 at a time. **First**,
+**Previous**, **Next** and **Last** under the table move between pages, and the
+count between them says which passwords you are looking at. The page is part
+of the address, so reloading keeps it and the browser's Back button returns to
+the page before. Searching always covers the whole vault and starts again at
+the first match.
+
 The toolbar above the table has the search box and, if you may add passwords
 here, the **Import…** and **New password** buttons; group admins also see
 **Export…** (see [Importing and exporting](#importing-and-exporting)). If you
@@ -400,6 +407,9 @@ entries, encrypts them with your passphrase, and shows them.
 below) and enter your passphrase. You get your entries grouped by vault, with
 search, reveal and copy, and 2FA codes generated on the device. You cannot add
 or change anything offline; changes are made online, in the normal vault.
+
+The offline list also shows 50 passwords at a time, with the same buttons
+under it; search covers everything, and locking starts again at the first page.
 
 Good to know:
 

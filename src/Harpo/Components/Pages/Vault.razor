@@ -144,7 +144,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var view in FilteredEntries)
+                            @foreach (var view in PageOfEntries)
                             {
                                 var entry = view.Entry;
                                 <tr>
@@ -246,6 +246,20 @@
                         </tbody>
                     </table>
                 </div>
+                @if (FilteredEntries.Count is var total && total > PageSize)
+                {
+                    var page = CurrentPage(total);
+                    var pages = PageCount(total);
+                    var first = (page - 1) * PageSize + 1;
+                    var last = Math.Min(page * PageSize, total);
+                    <nav class="pager" aria-label="Pages of passwords">
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(1)">First</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(page - 1)">Previous</button>
+                        <span class="pager-status" role="status">@first.ToString("N0")–@last.ToString("N0") of @total.ToString("N0")</span>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(page + 1)">Next</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(pages)">Last</button>
+                    </nav>
+                }
             }
             @if (OtherMatches is { } others)
             {
@@ -477,6 +491,8 @@
 
     /// <summary>Pre-fills the search box — lets other pages (the health report) link straight to an entry.</summary>
     [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    /// <summary>Which page of the list to show (?page=N); absent means the first.</summary>
+    [SupplyParameterFromQuery(Name = "page")] public int? PageQuery { get; set; }
     private string? _appliedQuery;
 
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
@@ -631,7 +647,16 @@
             _appliedQuery = Query;
             _search = Query ?? "";
         }
-        await LoadEntriesAsync();
+        var groupChanged = SelectedGroupId != _pagedGroup;
+        _pagedGroup = SelectedGroupId;
+        // The address says which page (a link to a vault or a search has none: page 1).
+        _page = Math.Max(1, PageQuery ?? 1);
+        // Moving between pages only changes ?page: the entries are already here,
+        // and reloading them would re-decrypt the vault and hide what was revealed.
+        if (queryChanged || groupChanged || _entries is null)
+        {
+            await LoadEntriesAsync();
+        }
         // The other-vaults list is "everything but the open vault", so it is
         // stale once the open vault changes, and a ?q= deep link needs its own
         // search. Not while prerendering: nothing there could receive the result.
@@ -659,7 +684,48 @@
             ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
             : null;
 
-    private void OnSearchTyped() => ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+    private void OnSearchTyped()
+    {
+        _page = 1; // a new search starts at its first match
+        if (PageQuery is not null)
+        {
+            // …and the address stops naming a page of the old list.
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", (int?)null), replace: true);
+        }
+        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+    }
+
+    // ---- paging ----
+    // The page draws one page of the (filtered) entries: drawing thousands of
+    // rows at once took seconds on every visit. Search still covers them all.
+
+    private const int PageSize = 50;
+    private int _page = 1;
+    private Guid? _pagedGroup;
+
+    private static int PageCount(int total) => Math.Max(1, (total + PageSize - 1) / PageSize);
+
+    /// <summary>The page to show: the one chosen, pulled back if deletions left it past the end.</summary>
+    private int CurrentPage(int total) => Math.Clamp(_page, 1, PageCount(total));
+
+    private List<EntryView> PageOfEntries
+    {
+        get
+        {
+            var all = FilteredEntries;
+            return all.Skip((CurrentPage(all.Count) - 1) * PageSize).Take(PageSize).ToList();
+        }
+    }
+
+    private async Task GoToPageAsync(int page)
+    {
+        _page = Math.Clamp(page, 1, PageCount(FilteredEntries.Count));
+        // In the address, so a reload or a shared link shows the same page and
+        // Back returns to the previous one; page 1 is the address without ?page.
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", _page == 1 ? null : (int?)_page));
+        // The pager sits under the table: bring the top of the new page into view.
+        await JS.InvokeVoidAsync("harpoScrollIntoView", ".vault-toolbar");
+    }
 
     /// <summary>
     /// Debounced, and latest-wins: every call cancels the one before, and an
@@ -1191,6 +1257,13 @@
     {
         _groups = await Groups.GetMyGroupsAsync(_user!);
         await LoadEntriesAsync();
+        // Stay on this page, unless deletions left it past the end.
+        var page = CurrentPage(FilteredEntries.Count);
+        if (page != _page)
+        {
+            _page = page;
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", page == 1 ? null : (int?)page), replace: true);
+        }
     }
 
     private void ShowToast(string message, bool isError = false)
