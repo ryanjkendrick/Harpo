@@ -2,7 +2,8 @@
 // stack: dialog keyboard behaviour and validation, the vault's password and
 // 2FA controls, the entries layout at a range of widths, the links between
 // pages, the Administration page (its all-groups export included: the demo
-// and CI stacks switch it on), and personal vaults as two accounts see them.
+// and CI stacks switch it on), personal vaults as two accounts see them, and
+// purging deleted passwords and a deleted group.
 //
 // These are the things unit tests cannot see — a control that ends up hidden
 // under another, focus left behind a dialog, an error shown far from its field.
@@ -32,6 +33,8 @@ const WEAK_ENTRY = `E2E Weak ${RUN_ID}`;
 const PERSONAL_ENTRY = `E2E Personal ${RUN_ID}`;
 const OTHER_PERSONAL_ENTRY = `E2E Other Personal ${RUN_ID}`;
 const OTHER_GROUP = `E2E Other Group ${RUN_ID}`;
+const PURGE_GROUP = `E2E Purge ${RUN_ID}`;
+const PURGE_ENTRIES = [`E2E Purge One ${RUN_ID}`, `E2E Purge Two ${RUN_ID}`, `E2E Purge Three ${RUN_ID}`];
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 const NOTES = `recovery codes 4F9K-22QX (run ${RUN_ID})`;
 const WIDTHS = [1920, 1600, 1440, 1280, 1024, 768, 390];
@@ -286,6 +289,8 @@ async function groupId(page) {
     let personalId = null;
     let otherContext = null;
     let otherGroupId = null;
+    let purgeGroupId = null;
+    let purgeGroupDeleted = false;
     const csvPath = path.join(os.tmpdir(), `harpo-e2e-import-${RUN_ID}.csv`);
 
     try {
@@ -1057,6 +1062,151 @@ async function groupId(page) {
         await viewer.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
         await viewer.close();
 
+        // ---- 7c. Purge: not for members, for the group's admins, and a deleted group from Administration ----
+        // Its own group: the admin creates it, the second account joins as a
+        // Member, three entries are created and deleted.
+        await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".page-header .btn-primary");
+        await openDialog(page, ".page-header .btn-primary", "New group");
+        await setValue(page, ".modal-panel form > label:nth-of-type(1) input", PURGE_GROUP);
+        await sleep(300);
+        await submitDialog(page);
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 15000 });
+        for (let i = 0; i < 15 && !purgeGroupId; i++) {
+            await page.goto(`${BASE}/groups`, { waitUntil: "networkidle2" });
+            await sleep(800);
+            purgeGroupId = await page.evaluate((g) =>
+                [...document.querySelectorAll('a[href^="/groups/"]')].find((a) => a.textContent.includes(g))?.getAttribute("href").split("/").pop() ?? null, PURGE_GROUP);
+        }
+        await page.goto(`${BASE}/groups/${purgeGroupId}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".add-member-row", { timeout: 15000 });
+        await sleep(600);
+        await setValue(page, ".add-member-row input:nth-of-type(1), .add-member-row label:nth-of-type(1) input", OTHER_USER);
+        await page.evaluate(() => { const s = document.querySelector(".add-member-row select"); s.value = "Member"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+        await sleep(300);
+        await clickText(page, ".add-member-row button", "Add member");
+        await page.waitForFunction((u) => [...document.querySelectorAll(".members-table .mono")].some((e) => e.textContent.trim() === u), { timeout: 15000 }, OTHER_USER);
+        await visitVault(page, purgeGroupId);
+        for (const name of PURGE_ENTRIES) {
+            await createEntry(page, name, "Purge-Me!2468");
+        }
+        for (const name of PURGE_ENTRIES) {
+            await rowAction(page, name, "Delete");
+            await page.waitForFunction((n) => !document.querySelector(".entries-table")?.textContent.includes(n), { timeout: 10000 }, name);
+        }
+
+        // What the trash offers whoever is looking at it.
+        const trashState = (p) => p.evaluate(() => ({
+            summary: document.querySelector("details.trash summary")?.textContent.trim(),
+            rows: [...document.querySelectorAll(".trash tbody tr")].map((r) => r.querySelector(".entry-name")?.textContent.trim()),
+            restore: [...document.querySelectorAll(".trash .cell-actions button")].filter((b) => b.textContent.trim() === "Restore").length,
+            purge: document.querySelectorAll(".trash .purge-entry").length,
+            emptyBin: !!document.querySelector(".trash .empty-bin"),
+        }));
+        // Click a control until its confirmation shows (the circuit may not be attached yet), and read it.
+        const openConfirm = async (p, click, arg = null) => {
+            for (let i = 0; i < 12 && !(await p.$(".modal-panel .purge-confirm")); i++) {
+                await p.evaluate(click, arg);
+                await sleep(700);
+            }
+            return p.evaluate(() => ({
+                title: document.querySelector(".modal-panel h2")?.textContent.trim(),
+                text: document.querySelector(".modal-panel .purge-confirm")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+                confirm: document.querySelector(".modal-panel .purge-confirm-button")?.textContent.trim(),
+            }));
+        };
+        const confirmPurge = async (p) => {
+            await p.evaluate(() => document.querySelector(".modal-panel .purge-confirm-button").click());
+            await p.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 30000 });
+            await sleep(800);
+        };
+
+        const member = await otherContext.newPage();
+        await member.evaluateOnNewDocument(() => { window.confirm = () => true; });
+        await member.setViewport({ width: 1280, height: 860 });
+        await visitVault(member, purgeGroupId);
+        const asMember = await trashState(member);
+        check("a member sees Restore on every deleted entry but neither Purge nor Empty recycle bin",
+            asMember.restore === 3 && asMember.purge === 0 && !asMember.emptyBin, JSON.stringify(asMember));
+
+        // Promote the member to the group's admin: a group admin who is not a site administrator purges.
+        await page.goto(`${BASE}/groups/${purgeGroupId}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".members-table", { timeout: 15000 });
+        await sleep(600);
+        await page.evaluate((u) => {
+            const row = [...document.querySelectorAll(".members-table tbody tr")].find((r) => r.querySelector(".mono")?.textContent.trim() === u);
+            const select = row.querySelector("select");
+            select.value = "Admin";
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+        }, OTHER_USER);
+        await sleep(1500);
+        await visitVault(member, purgeGroupId);
+        const asAdmin = await trashState(member);
+        const purgeDialog = await openConfirm(member, (name) => [...document.querySelectorAll(".trash tbody tr")]
+            .find((r) => r.textContent.includes(name))?.querySelector(".purge-entry")?.click(), PURGE_ENTRIES[0]);
+        check("the group admin's Purge asks first: it names the entry and says it cannot be undone and leaves every site",
+            asAdmin.purge === 3 && asAdmin.emptyBin && purgeDialog.title === "Purge password"
+            && purgeDialog.text.includes(PURGE_ENTRIES[0]) && purgeDialog.text.includes("cannot be undone")
+            && purgeDialog.text.includes("every site") && purgeDialog.confirm === "Purge",
+            JSON.stringify({ asAdmin: { purge: asAdmin.purge, emptyBin: asAdmin.emptyBin }, purgeDialog }));
+        await confirmPurge(member);
+        const afterPurge = await trashState(member);
+        await visitVault(member, purgeGroupId);
+        const afterReload = await trashState(member);
+        check("the purged entry is gone from the recycle bin, with no Restore for it, the others still restorable",
+            !afterPurge.rows.includes(PURGE_ENTRIES[0]) && afterReload.summary === "Recently deleted (2)"
+            && !afterReload.rows.includes(PURGE_ENTRIES[0]) && afterReload.restore === 2,
+            JSON.stringify(afterReload));
+
+        const emptyDialog = await openConfirm(member, () => document.querySelector(".trash .empty-bin")?.click());
+        await confirmPurge(member);
+        await visitVault(member, purgeGroupId);
+        const emptied = await trashState(member);
+        check("Empty recycle bin asks first with the count, then purges every deleted entry",
+            emptyDialog.title === "Empty recycle bin" && emptyDialog.text.includes("2 deleted passwords")
+            && emptyDialog.text.includes("cannot be undone") && emptyDialog.text.includes("every site")
+            && emptied.summary === "Recently deleted (0)" && emptied.rows.length === 0 && !emptied.emptyBin,
+            JSON.stringify({ emptyDialog, emptied }));
+        await member.close();
+        await page.bringToFront();
+
+        // Delete the group, then purge it from Administration.
+        await page.goto(`${BASE}/groups/${purgeGroupId}`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".panel-danger .btn-danger", { timeout: 15000 });
+        for (let i = 0; i < 12 && !purgeGroupDeleted; i++) {
+            await page.evaluate(() => document.querySelector(".panel-danger .btn-danger")?.click());
+            try {
+                await page.waitForFunction(() => location.pathname === "/groups", { timeout: 1500 });
+                purgeGroupDeleted = true;
+            } catch { /* circuit not attached yet */ }
+        }
+        await page.goto(`${BASE}/admin`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".audit-table", { timeout: 15000 });
+        await sleep(1200);
+        const groupDialog = await openConfirm(page, (g) => [...document.querySelectorAll(".group-card")]
+            .find((c) => c.querySelector(".group-card-name")?.textContent.trim() === g)?.querySelector(".purge-group")?.click(), PURGE_GROUP);
+        await confirmPurge(page);
+        await page.goto(`${BASE}/admin`, { waitUntil: "networkidle2" });
+        await page.waitForSelector(".audit-table", { timeout: 15000 });
+        await sleep(1200);
+        const adminAfterPurge = await page.evaluate((g) => ({
+            deletedListed: [...document.querySelectorAll(".group-card-name")].some((n) => n.textContent.trim() === g),
+            audit: [...document.querySelectorAll(".audit-table tbody tr")].slice(0, 40).map((r) => ({
+                action: r.querySelector("td:nth-child(3)")?.textContent.trim(),
+                what: r.querySelector("td:nth-child(4)")?.textContent.replace(/\s+/g, " ").trim(),
+            })),
+        }), PURGE_GROUP);
+        check("a deleted group is purged from Administration after a confirmation, and is no longer listed",
+            groupDialog.title === "Purge a deleted group" && groupDialog.text.includes(PURGE_GROUP)
+            && groupDialog.text.includes("cannot be undone") && groupDialog.confirm === "Purge group"
+            && !adminAfterPurge.deletedListed, JSON.stringify({ groupDialog, deletedListed: adminAfterPurge.deletedListed }));
+        const logged = (action, what) => adminAfterPurge.audit.some((e) => e.action === action && what(e.what || ""));
+        check("the audit log shows entry.purge, bin.empty (with the count) and group.purge",
+            logged("entry.purge", (w) => w.includes(PURGE_ENTRIES[0]) && w.includes(PURGE_GROUP))
+            && logged("bin.empty", (w) => w.startsWith(PURGE_GROUP) && w.includes("2 entries"))
+            && logged("group.purge", (w) => w.startsWith(PURGE_GROUP) && w.includes("0 entries")),
+            JSON.stringify(adminAfterPurge.audit.filter((e) => /purge|bin/.test(e.action || ""))));
+
         // ---- 8. Content security policy: on every page, in nobody's way, and enforced ----
         const unprotected = [...policies].filter(([, policy]) =>
             !/script-src 'self';/.test(policy) || !/style-src 'self';/.test(policy) || !/frame-ancestors 'none'/.test(policy));
@@ -1103,6 +1253,9 @@ async function groupId(page) {
             }
             if (otherGroupId) {
                 cleaned = (await deleteGroup(otherGroupId)) && cleaned;
+            }
+            if (purgeGroupId && !purgeGroupDeleted) {
+                cleaned = (await deleteGroup(purgeGroupId)) && cleaned;
             }
             if (personalId) {
                 await visitVault(page, personalId);

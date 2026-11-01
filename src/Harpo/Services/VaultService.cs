@@ -232,12 +232,16 @@ public class VaultService
         var (entry, revision) = NewEntry(user, groupId, name, icon, url, username, notes, password, totpSecret,
             _time.GetUtcNow().UtcDateTime);
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
-
-        db.PasswordEntries.Add(entry);
-        db.PasswordRevisions.Add(revision);
-        await db.SaveChangesAsync(ct);
+        // The check and the insert are one step (see RequireMemberAsync).
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
+            db.PasswordEntries.Add(entry);
+            db.PasswordRevisions.Add(revision);
+            await db.SaveChangesAsync(ct);
+        }
         _logger.LogInformation("{User} created entry {Entry} in group {Group}", user.Username, entry.Id, groupId);
         return entry;
     }
@@ -398,26 +402,31 @@ public class VaultService
         }
         var encryptedTotp = EncryptTotpOrThrow(totpSecret);
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
-        entry.Name = name;
-        entry.Icon = icon.Trim();
-        entry.Url = NormalizeUrl(url);
-        entry.Username = username.Trim();
-        entry.EncryptedNotes = ProtectedNotes.Replace(_crypto, entry.EncryptedNotes, notes.Trim());
+        PasswordEntry entry;
         var totpChanged = false;
-        if (clearTotp && entry.EncryptedTotpSecret is not null)
+        using (await db.BeginExclusiveWriteAsync(ct))
         {
-            entry.EncryptedTotpSecret = null;
-            totpChanged = true;
+            entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
+            entry.Name = name;
+            entry.Icon = icon.Trim();
+            entry.Url = NormalizeUrl(url);
+            entry.Username = username.Trim();
+            entry.EncryptedNotes = ProtectedNotes.Replace(_crypto, entry.EncryptedNotes, notes.Trim());
+            if (clearTotp && entry.EncryptedTotpSecret is not null)
+            {
+                entry.EncryptedTotpSecret = null;
+                totpChanged = true;
+            }
+            else if (encryptedTotp is not null)
+            {
+                entry.EncryptedTotpSecret = encryptedTotp;
+                totpChanged = true;
+            }
+            entry.UpdatedBy = user.Username;
+            await db.SaveChangesAsync(ct);
         }
-        else if (encryptedTotp is not null)
-        {
-            entry.EncryptedTotpSecret = encryptedTotp;
-            totpChanged = true;
-        }
-        entry.UpdatedBy = user.Username;
-        await db.SaveChangesAsync(ct);
         if (totpChanged)
         {
             await _audit.RecordAsync(user, AuditActions.TotpChange, await DescribeEntryAsync(db, entry, ct),
@@ -478,23 +487,32 @@ public class VaultService
             throw new VaultValidationException("Password is required.", "password");
         }
 
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
-        var now = _time.GetUtcNow().UtcDateTime;
-        db.PasswordRevisions.Add(NewRevision(entry.Id, newPassword, user, now));
-        // Touch the entry so list views (and replication consumers) see it moved.
-        entry.UpdatedBy = user.Username;
-        await db.SaveChangesAsync(ct);
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
+            var now = _time.GetUtcNow().UtcDateTime;
+            db.PasswordRevisions.Add(NewRevision(entry.Id, newPassword, user, now));
+            // Touch the entry so list views (and replication consumers) see it moved.
+            entry.UpdatedBy = user.Username;
+            await db.SaveChangesAsync(ct);
+        }
         _logger.LogInformation("{User} changed the password of entry {Entry}", user.Username, entryId);
     }
 
     public async Task DeleteEntryAsync(UserContext user, Guid entryId, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
-        entry.IsDeleted = true;
-        entry.UpdatedBy = user.Username;
-        await db.SaveChangesAsync(ct);
+        PasswordEntry entry;
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            entry = await RequireEntryAsync(db, user, entryId, ct, requireWrite: true);
+            entry.IsDeleted = true;
+            entry.UpdatedBy = user.Username;
+            await db.SaveChangesAsync(ct);
+        }
         _logger.LogInformation("{User} deleted entry {Entry}", user.Username, entryId);
         await _audit.RecordAsync(
             user, AuditActions.EntryDelete, await DescribeEntryAsync(db, entry, ct),
@@ -513,7 +531,7 @@ public class VaultService
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
-        var deleted = db.PasswordEntries.Where(e => e.GroupId == groupId && e.IsDeleted);
+        var deleted = db.PasswordEntries.Where(e => e.GroupId == groupId && e.IsDeleted && !e.IsPurged);
         var total = await deleted.CountAsync(ct);
         var page = after is null
             ? deleted
@@ -526,16 +544,24 @@ public class VaultService
         return new DeletedPage<PasswordEntry>(items, total);
     }
 
-    /// <summary>Undoes a delete — tombstones replicate, so this works on any site and syncs everywhere.</summary>
+    /// <summary>
+    /// Undoes a delete — tombstones replicate, so this works on any site and syncs everywhere.
+    /// A purged entry is gone for good and cannot be restored (see <see cref="PurgeService"/>).
+    /// </summary>
     public async Task RestoreEntryAsync(UserContext user, Guid entryId, CancellationToken ct = default)
     {
+        await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && e.IsDeleted, ct)
-            ?? throw new VaultNotFoundException("Deleted entry not found.");
-        await RequireMemberAsync(db, user, entry.GroupId, ct, requireWrite: true);
-        entry.IsDeleted = false;
-        entry.UpdatedBy = user.Username;
-        await db.SaveChangesAsync(ct);
+        PasswordEntry entry;
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            entry = await db.PasswordEntries.SingleOrDefaultAsync(e => e.Id == entryId && e.IsDeleted && !e.IsPurged, ct)
+                ?? throw new VaultNotFoundException("Deleted entry not found.");
+            await RequireMemberAsync(db, user, entry.GroupId, ct, requireWrite: true);
+            entry.IsDeleted = false;
+            entry.UpdatedBy = user.Username;
+            await db.SaveChangesAsync(ct);
+        }
         _logger.LogInformation("{User} restored entry {Entry}", user.Username, entryId);
         await _audit.RecordAsync(
             user, AuditActions.EntryRestore, await DescribeEntryAsync(db, entry, ct),
@@ -603,7 +629,7 @@ public class VaultService
     /// names of what someone keeps privately are theirs. The event itself (who,
     /// what kind of action, when, from where) is still recorded.
     /// </summary>
-    private static async Task<string> DescribeEntryAsync(HarpoDbContext db, PasswordEntry entry, CancellationToken ct)
+    internal static async Task<string> DescribeEntryAsync(HarpoDbContext db, PasswordEntry entry, CancellationToken ct)
     {
         var group = await db.Groups
             .Where(g => g.Id == entry.GroupId)
@@ -617,7 +643,7 @@ public class VaultService
     public const string PersonalEntryDescription = "an entry in a personal vault";
 
     /// <summary>The audit trail's name for a whole vault: a group by its name, a personal vault never by anything of its owner's.</summary>
-    private static string DescribeVault(Group group) =>
+    internal static string DescribeVault(Group group) =>
         group.IsPersonal ? PersonalVaultDescription : group.Name;
 
     public const string PersonalVaultDescription = "a personal vault";
@@ -909,6 +935,14 @@ public class VaultService
     /// <see cref="RequireEntryAsync"/>) before anything is decrypted or written:
     /// first that the caller's session is still live — a page open since before
     /// a sign-out elsewhere must not get another secret — then group membership.
+    /// <para>
+    /// The writes make this check and their save one step under the write gate
+    /// (calling <see cref="SessionService.RequireLiveAsync"/> once before taking
+    /// it, as GroupService does). Otherwise a purge could commit between the
+    /// check and the save, and the save would write a name, notes or a new
+    /// password revision back into a purged entry or group — content the purge
+    /// had just erased, and that nothing would ever erase again.
+    /// </para>
     /// </summary>
     private async Task<Group> RequireMemberAsync(
         HarpoDbContext db, UserContext user, Guid groupId, CancellationToken ct, bool requireWrite = false)

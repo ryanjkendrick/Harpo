@@ -40,6 +40,12 @@ public static class AuditActions
     public const string EntryRestore = "entry.restore";
     public const string GroupDelete = "group.delete";
     public const string GroupRestore = "group.restore";
+    /// <summary>A deleted entry was erased for good, on every site (see <see cref="Services.PurgeService"/>).</summary>
+    public const string EntryPurge = "entry.purge";
+    /// <summary>Every deleted entry of a vault was purged at once ("Empty recycle bin"); the detail has the count.</summary>
+    public const string BinEmpty = "bin.empty";
+    /// <summary>A deleted group was erased for good, with every entry in it; the detail has the count.</summary>
+    public const string GroupPurge = "group.purge";
     public const string MemberAdd = "member.add";
     public const string MemberRemove = "member.remove";
     public const string MemberRole = "member.role";
@@ -62,7 +68,8 @@ public static class AuditActions
     public static readonly string[] Reveals =
         [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal, VaultExport, SiteExport];
 
-    public static readonly string[] Deletions = [EntryDelete, GroupDelete, MemberRemove, IconDelete];
+    public static readonly string[] Deletions =
+        [EntryDelete, GroupDelete, MemberRemove, IconDelete, EntryPurge, BinEmpty, GroupPurge];
 
     /// <summary>
     /// Recorded for completeness but routine and frequent: a device syncing its

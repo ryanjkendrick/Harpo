@@ -12,6 +12,7 @@
 @inject IconService Icons
 @inject Harpo.Security.CryptoService Crypto
 @inject VaultService Vault
+@inject PurgeService Purge
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -355,7 +356,14 @@
     {
         <section class="panel">
             <h2>Deleted groups</h2>
-            <p class="muted">@_deletedGroupsTotal deleted. Restoring a group brings back the passwords that were not deleted individually.</p>
+            <p class="muted">
+                @_deletedGroupsTotal deleted. Restoring a group brings back the passwords that were not deleted individually.
+                Purging one erases it and every password in it for good, on every site.
+            </p>
+            @if (_purgedGroupMessage is not null)
+            {
+                <p class="purge-result" role="status">@_purgedGroupMessage</p>
+            }
             <div class="card-list">
                 @foreach (var g in _showAllDeletedGroups ? _deletedGroups : _deletedGroups.Take(DeletedGroupsShown))
                 {
@@ -366,6 +374,7 @@
                         </div>
                         <div class="group-card-meta">
                             <button class="btn btn-ghost btn-sm" @onclick="() => RestoreGroupAsync(g)">Restore</button>
+                            <button class="btn btn-ghost btn-sm btn-danger-text purge-group" @onclick="() => OpenPurgeGroup(g)">Purge…</button>
                         </div>
                     </div>
                 }
@@ -501,6 +510,38 @@
 {
     <ExportAllGroupsDialog User="_user!" OnClose="CloseExportAllAsync" />
 }
+
+<Modal Visible="_purgeGroup is not null" Title="Purge a deleted group" OnClose="ClosePurgeGroup" CloseOnBackdrop="false">
+    @if (_purgeGroup is { } purging)
+    {
+        <div class="purge-confirm">
+            <p>
+                <strong>@purging.Name</strong> and every password in it — deleted or not — will be erased for good:
+                their password history, notes and 2FA secrets, and the group's name and description. It
+                disappears from every site and can never be restored.
+            </p>
+            <p class="alert alert-warning purge-warning">This cannot be undone.</p>
+            @if (_purgeGroupError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_purgeGroupError</div>
+            }
+            @if (_purgeGroupBusy)
+            {
+                <div class="busy-status" role="status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span>Purging… <span class="muted">Erasing the group and rewriting this site's database file.</span></span>
+                </div>
+            }
+            else
+            {
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" @onclick="ClosePurgeGroup">Cancel</button>
+                    <button type="button" class="btn btn-danger purge-confirm-button" @onclick="PurgeGroupAsync">Purge group</button>
+                </div>
+            }
+        </div>
+    }
+</Modal>
 
 <Modal Visible="_takeover is not null" Title="Take over a personal vault" OnClose="() => _takeover = null">
     @if (_takeover is { } taking)
@@ -847,6 +888,55 @@
         var page = await Groups.GetDeletedGroupsAsync(_user!, new DeletedCursor(last.UpdatedAtUtc, last.Id));
         _deletedGroups.AddRange(page.Items);
         _deletedGroupsTotal = page.Total;
+    }
+
+    private Group? _purgeGroup;
+    private bool _purgeGroupBusy;
+    private string? _purgeGroupError;
+    private string? _purgedGroupMessage;
+
+    private void OpenPurgeGroup(Group group)
+    {
+        _purgeGroup = group;
+        _purgeGroupError = null;
+        _purgedGroupMessage = null;
+    }
+
+    private void ClosePurgeGroup()
+    {
+        if (!_purgeGroupBusy)
+        {
+            _purgeGroup = null;
+        }
+    }
+
+    private async Task PurgeGroupAsync()
+    {
+        if (_purgeGroup is not { } group || _purgeGroupBusy)
+        {
+            return;
+        }
+        _purgeGroupBusy = true;
+        _purgeGroupError = null;
+        StateHasChanged();
+        await Task.Yield();
+        var user = _user!;
+        try
+        {
+            var purged = await Task.Run(() => Purge.PurgeGroupAsync(user, group.Id));
+            _purgedGroupMessage = $"Purged {group.Name} ({(purged == 1 ? "1 password" : $"{purged:N0} passwords")}).";
+            _purgeGroup = null;
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _purgeGroupError = ex.Message;
+        }
+        finally
+        {
+            _purgeGroupBusy = false;
+        }
+        await LoadDeletedGroupsAsync();
+        await LoadAuditAsync();
     }
 
     private async Task RestoreGroupAsync(Group group)

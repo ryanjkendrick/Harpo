@@ -166,6 +166,7 @@ public class GroupService
 
         await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        using var gate = await db.BeginExclusiveWriteAsync(ct);
         var group = await RequireGroupAdminAsync(db, user, groupId, ct);
         group.Name = name;
         group.Description = description.Trim();
@@ -197,7 +198,7 @@ public class GroupService
         }
         await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var deleted = db.Groups.Where(g => g.IsDeleted && g.OwnerUsername == "");
+        var deleted = db.Groups.Where(g => g.IsDeleted && !g.IsPurged && g.OwnerUsername == "");
         var total = await deleted.CountAsync(ct);
         var page = after is null
             ? deleted
@@ -210,7 +211,10 @@ public class GroupService
         return new DeletedPage<Group>(items, total);
     }
 
-    /// <summary>Restores a deleted group; its entries that were not individually deleted come back with it.</summary>
+    /// <summary>
+    /// Restores a deleted group; its entries that were not individually deleted come back with it.
+    /// A purged group cannot be restored (see <see cref="PurgeService.PurgeGroupAsync"/>).
+    /// </summary>
     public async Task RestoreGroupAsync(UserContext user, Guid groupId, CancellationToken ct = default)
     {
         if (!user.IsSiteAdmin)
@@ -219,10 +223,15 @@ public class GroupService
         }
         await _sessions.RequireLiveAsync(user, ct);
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && g.IsDeleted && g.OwnerUsername == "", ct)
-            ?? throw new VaultNotFoundException("Deleted group not found.");
-        group.IsDeleted = false;
-        await db.SaveChangesAsync(ct);
+        Group group;
+        // One step with the check, so a purge cannot commit in between and be undone.
+        using (await db.BeginExclusiveWriteAsync(ct))
+        {
+            group = await db.Groups.SingleOrDefaultAsync(g => g.Id == groupId && g.IsDeleted && !g.IsPurged && g.OwnerUsername == "", ct)
+                ?? throw new VaultNotFoundException("Deleted group not found.");
+            group.IsDeleted = false;
+            await db.SaveChangesAsync(ct);
+        }
         await _audit.RecordAsync(user, AuditActions.GroupRestore, group.Name, groupId: groupId);
     }
 

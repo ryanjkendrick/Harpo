@@ -100,7 +100,7 @@ jobs:
         working-directory: tests/e2e
         run: node offline-vault.e2e.js
 
-      - name: Interactive UI (69 checks)
+      - name: Interactive UI (75 checks)
         if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
         working-directory: tests/e2e
         run: node ui.e2e.js

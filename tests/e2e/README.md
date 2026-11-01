@@ -61,7 +61,12 @@ afterwards.
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
   — after which the second account gets a fresh one — plus a site admin who
-  is given an explicit Viewer membership keeping the edit controls. It also holds the
+  is given an explicit Viewer membership keeping the edit controls; purging,
+  in a throwaway group of its own: a Member is offered Restore but no Purge,
+  the same account made the group's admin purges one deleted entry behind a
+  confirmation (it leaves the recycle bin for good) and empties the bin, the
+  deleted group is purged from the Administration page, and the audit log
+  shows `entry.purge`, `bin.empty` and `group.purge`. It also holds the
   content security policy to its word:
   every page must be served with it, nothing the app does may be blocked by
   it, and an injected inline script or style must have no effect — so a
@@ -86,7 +91,7 @@ leaves the data behind.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 69/69 checks passed
+npm run test:ui   # interactive UI — expect 75/75 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
 ```

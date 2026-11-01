@@ -58,6 +58,9 @@ builder.Services.AddSingleton<GroupService>();
 builder.Services.AddSingleton<VaultService>();
 builder.Services.AddSingleton<HealthService>();
 builder.Services.AddSingleton<IconService>();
+builder.Services.AddSingleton<DatabaseScrubber>();
+builder.Services.AddHostedService<PurgeScrubService>();
+builder.Services.AddSingleton<PurgeService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
 builder.Services.AddSingleton<Harpo.Import.ExportThrottle>();
 builder.Services.AddSingleton<Harpo.Import.AllGroupsExportThrottle>();
@@ -169,6 +172,13 @@ await KeyRotation.EnsureMasterKeyStateAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(),
     app.Services.GetRequiredService<CryptoService>(),
     app.Services.GetRequiredService<AuditService>(),
+    app.Logger);
+
+// Finish any purge this site received but could not carry out yet (while on an
+// earlier version), and remove from the file what an interrupted purge left.
+await Purging.FinishAsync(
+    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(),
+    app.Services.GetRequiredService<DatabaseScrubber>(),
     app.Logger);
 
 // Server-level icon catalogue: import whatever the admin mounted into the icons folder.
