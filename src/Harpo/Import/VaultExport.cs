@@ -16,6 +16,20 @@ public class ExportOptions
 
     /// <summary>Minimum seconds between exports per user (each one decrypts a whole vault).</summary>
     public int MinSecondsBetweenExports { get; set; } = 10;
+
+    /// <summary>
+    /// Whether site administrators may download every shared group at once, as
+    /// one archive (<c>Harpo__Export__AllGroupsEnabled</c>). Off by default: a
+    /// whole-site plain-text export is the riskiest thing Harpo can do, so a
+    /// site opts in. Needs <see cref="Enabled"/> as well.
+    /// </summary>
+    public bool AllGroupsEnabled { get; set; }
+
+    /// <summary>Minimum seconds between all-groups exports per user (each one decrypts every shared group).</summary>
+    public int MinSecondsBetweenAllGroupsExports { get; set; } = 60;
+
+    /// <summary>Whether the all-groups export is on: its own switch and the export switch together.</summary>
+    public bool AllGroupsAvailable => Enabled && AllGroupsEnabled;
 }
 
 public enum ExportFormat
@@ -83,8 +97,22 @@ public static class VaultExport
     /// </summary>
     public static string FileName(string vaultName, bool personal, DateTime date, ExportFormat format)
     {
+        var name = Slug(personal ? "personal" : vaultName, "vault");
+        return $"harpo-{name}-{date:yyyy-MM-dd}.{Extension(format)}";
+    }
+
+    /// <summary>The file extension for a format, without the dot.</summary>
+    public static string Extension(ExportFormat format) => format == ExportFormat.Csv ? "csv" : "json";
+
+    /// <summary>
+    /// Lower-case ASCII letters, digits and single dashes, at most 40 characters;
+    /// <paramref name="fallback"/> when nothing is left. Safe in any file name
+    /// and any Content-Disposition header.
+    /// </summary>
+    internal static string Slug(string value, string fallback)
+    {
         var slug = new StringBuilder();
-        foreach (var c in (personal ? "personal" : vaultName).ToLowerInvariant())
+        foreach (var c in value.ToLowerInvariant())
         {
             if (c is >= 'a' and <= 'z' or >= '0' and <= '9')
             {
@@ -100,8 +128,7 @@ public static class VaultExport
         {
             name = name[..40].Trim('-');
         }
-        name = name.Length == 0 ? "vault" : name;
-        return $"harpo-{name}-{date:yyyy-MM-dd}.{(format == ExportFormat.Csv ? "csv" : "json")}";
+        return name.Length == 0 ? fallback : name;
     }
 
     private sealed record JsonExport(

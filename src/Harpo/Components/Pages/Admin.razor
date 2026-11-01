@@ -11,6 +11,7 @@
 @inject AuditService Audit
 @inject IconService Icons
 @inject Harpo.Security.CryptoService Crypto
+@inject VaultService Vault
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -25,6 +26,7 @@
         <a href="/admin#audit">Audit log</a>
         <a href="/admin#icons">Icons</a>
         <a href="/admin#groups">Groups</a>
+        <a href="/admin#export">Export</a>
     </nav>
 
     <section class="panel" id="site">
@@ -459,7 +461,39 @@
             </div>
         }
     </section>
+
+    <section class="panel" id="export">
+        <h2>Export</h2>
+        @if (Vault.AllGroupsExportEnabled)
+        {
+            <p class="muted">
+                Download every shared group on this site as one archive: a file per group, each the same as
+                that group's own export, so it imports back into a Harpo vault unchanged. The archive is
+                <strong>not encrypted</strong> and is recorded in the audit log. Personal vaults are never
+                included.
+            </p>
+            <button type="button" class="btn btn-ghost export-all-open" @onclick="() => _exportAllOpen = true">
+                <Lucide Name="download" Size="16" /> Export all groups…
+            </button>
+        }
+        else
+        {
+            <p class="muted export-all-off">
+                Exporting all groups at once is off. To allow it, set
+                <span class="mono">Harpo__Export__AllGroupsEnabled=true</span>@if (!Vault.ExportEnabled)
+                {
+                    <text> and </text><span class="mono">Harpo__Export__Enabled=true</span>
+                }
+                and restart — and read "Import and export" in the README first.
+            </p>
+        }
+    </section>
 </div>
+
+@if (_exportAllOpen && Vault.AllGroupsExportEnabled)
+{
+    <ExportAllGroupsDialog User="_user!" OnClose="CloseExportAllAsync" />
+}
 
 <Modal Visible="_takeover is not null" Title="Take over a personal vault" OnClose="() => _takeover = null">
     @if (_takeover is { } taking)
@@ -489,6 +523,14 @@
 
 @code {
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
+
+    private bool _exportAllOpen;
+
+    private async Task CloseExportAllAsync()
+    {
+        _exportAllOpen = false;
+        await LoadAuditAsync(); // a download just made shows up as site.export
+    }
 
     private List<PersonalVaultSummary>? _personalVaults;
     private PersonalVaultSummary? _takeover;
@@ -628,7 +670,7 @@
     private static readonly (AuditCategory Category, string Label, string Hint)[] AuditCategoryChips =
     [
         (AuditCategory.All, "All", "Every recorded event"),
-        (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied"),
+        (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied, vaults and all groups exported"),
         (AuditCategory.Changes, "Changes", "Memberships, roles, restores, icons, key rotation, personal-vault takeovers"),
         (AuditCategory.Deletions, "Deletions", "Passwords, groups, members and icons removed"),
         (AuditCategory.Background, "Background", "Routine activity: offline syncs, health report views"),

@@ -60,6 +60,7 @@ builder.Services.AddSingleton<HealthService>();
 builder.Services.AddSingleton<IconService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
 builder.Services.AddSingleton<Harpo.Import.ExportThrottle>();
+builder.Services.AddSingleton<Harpo.Import.AllGroupsExportThrottle>();
 
 // ---- Authentication: LDAP bind against Active Directory (or dev users for local testing) ----
 var authMode = builder.Configuration["Auth:Mode"] ?? "Ldap";

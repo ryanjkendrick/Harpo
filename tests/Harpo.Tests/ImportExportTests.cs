@@ -15,7 +15,7 @@ namespace Harpo.Tests;
 /// Importing entries into a vault and exporting a vault as a file: who may,
 /// what is created, what the files contain, and what the audit trail says.
 /// </summary>
-public class ImportExportTests : IDisposable
+public partial class ImportExportTests : IDisposable
 {
     private readonly TestSite _site = new("alpha");
 
