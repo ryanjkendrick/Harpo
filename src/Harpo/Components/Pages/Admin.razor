@@ -422,7 +422,14 @@
                                 <td>@vault.EntryCount</td>
                                 <td class="muted" title="@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC">@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd")</td>
                                 <td class="cell-actions">
-                                    <button class="btn btn-ghost btn-sm" @onclick="() => OpenTakeover(vault)">Take over…</button>
+                                    @if (IsMine(vault))
+                                    {
+                                        <span class="badge" title="Your own personal vault: only someone else can take it over, if you leave.">you</span>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => OpenTakeover(vault)">Take over…</button>
+                                    }
                                 </td>
                             </tr>
                         }
@@ -537,8 +544,15 @@
     private string _takeoverName = "";
     private string? _takeoverError;
 
+    private bool IsMine(PersonalVaultSummary vault) =>
+        string.Equals(vault.Group.OwnerUsername, _user?.Username, StringComparison.OrdinalIgnoreCase);
+
     private void OpenTakeover(PersonalVaultSummary vault)
     {
+        if (IsMine(vault))
+        {
+            return; // no button for it; and the service refuses it anyway
+        }
         _takeover = vault;
         _takeoverName = $"{vault.Group.OwnerUsername}'s personal vault";
         _takeoverError = null;

@@ -566,7 +566,9 @@ What makes it personal:
 **When someone leaves.** Company accounts kept in a personal vault must not
 leave with their owner, so a site admin can **take the vault over** from the
 Administration page: it becomes an ordinary group with the admin as an admin
-of it. This is deliberately not quiet — it is one-way, recorded in the audit
+of it. An administrator cannot take over their own personal vault — that would
+only show its passwords to every other site admin — so their own row is marked
+*you* instead. This is deliberately not quiet — it is one-way, recorded in the audit
 log as `personal.takeover`, and the former owner keeps their membership, so if
 they are still around they see exactly what happened. Their next visit gives
 them a fresh, empty personal vault.

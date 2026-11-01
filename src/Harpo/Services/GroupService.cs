@@ -585,6 +585,15 @@ public class GroupService
                 throw new VaultValidationException("That is not a personal vault (it may have been taken over already).");
             }
             owner = group.OwnerUsername;
+            if (string.Equals(owner, user.Username, StringComparison.OrdinalIgnoreCase))
+            {
+                // Takeover is for someone who has left. Done to one's own vault it
+                // would only hand one's private passwords to every other site
+                // administrator, and it cannot be undone.
+                throw new VaultValidationException(
+                    "You cannot take over your own personal vault: that would show its passwords to every site administrator. " +
+                    "To share some of them, export them and import them into a group.");
+            }
             name = name.Trim();
             group.Name = name.Length == 0 ? $"{owner}'s personal vault" : name;
             group.OwnerUsername = "";

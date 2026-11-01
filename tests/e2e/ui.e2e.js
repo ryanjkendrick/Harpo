@@ -829,12 +829,18 @@ async function groupId(page) {
         await page.goto(`${BASE}/admin`, { waitUntil: "networkidle2" });
         await page.waitForSelector(".personal-vaults-table, #personal-vaults .muted", { timeout: 15000 });
         await sleep(1200);
-        const adminBefore = await page.evaluate((otherUser) => {
-            const row = [...document.querySelectorAll(".personal-vaults-table tbody tr")]
-                .find((r) => r.querySelector(".mono")?.textContent.trim() === otherUser);
+        const adminBefore = await page.evaluate((otherUser, me) => {
+            const rowOf = (user) => [...document.querySelectorAll(".personal-vaults-table tbody tr")]
+                .find((r) => r.querySelector(".mono")?.textContent.trim() === user);
+            const row = rowOf(otherUser);
+            const mine = rowOf(me);
             return {
                 otherListed: !!row,
                 otherCount: row?.querySelector("td:nth-child(2)")?.textContent.trim(),
+                otherCanBeTakenOver: !!row?.querySelector("button"),
+                mineListed: !!mine,
+                mineCanBeTakenOver: !!mine?.querySelector("button"),
+                mineBadge: mine?.querySelector(".cell-actions .badge")?.textContent.trim() ?? null,
                 allGroups: [...document.querySelectorAll("section.panel")]
                     .find((s) => s.querySelector("h2")?.textContent === "All groups")
                     ?.querySelectorAll(".group-card-name").length ?? 0,
@@ -847,9 +853,11 @@ async function groupId(page) {
                     .find((r) => r.querySelector("td:nth-child(3)")?.textContent.trim() === "site.export")
                     ?.textContent.replace(/\s+/g, " ").trim() ?? "",
             };
-        }, OTHER_USER);
-        check("administration lists personal vaults by owner and size only, and keeps them out of the group list",
-            adminBefore.otherListed && adminBefore.otherCount === "1" && adminBefore.allGroups > 0 && !adminBefore.personalInAllGroups,
+        }, OTHER_USER, USER);
+        check("administration lists personal vaults by owner and size only, offers no takeover of the admin's own, and keeps them out of the group list",
+            adminBefore.otherListed && adminBefore.otherCount === "1" && adminBefore.otherCanBeTakenOver
+            && adminBefore.mineListed && !adminBefore.mineCanBeTakenOver && adminBefore.mineBadge === "you"
+            && adminBefore.allGroups > 0 && !adminBefore.personalInAllGroups,
             JSON.stringify({ ...adminBefore, auditWhat: undefined }));
         check("the audit log records the personal reveal without the entry's name",
             adminBefore.auditWhat.some((w) => w.startsWith("an entry in a personal vault"))
