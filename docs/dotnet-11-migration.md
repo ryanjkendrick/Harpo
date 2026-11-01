@@ -44,15 +44,15 @@ of the migration release (see "Afterwards").
 ## Decisions
 
 **D1. One dedicated release, nothing else in it.** The migration ships as its
-own version (call it 0.7.0) with no feature work and **no EF migration**.
-Reason: a clean rollback. A 0.7.0 site can be put back on 0.6 by changing the
+own version (call it 0.8.0) with no feature work and **no EF migration**.
+Reason: a clean rollback. A 0.8.0 site can be put back on 0.7 by changing the
 image tag, because the schema is identical and (see D2) the database file
 format is too.
 
 **D2. Keep the SQLCipher 4 file format, now produced by SQLite3MC.** Every
 connection opens with `cipher=sqlcipher&legacy=4`, for existing and new
-files alike. Reasons: zero data conversion on upgrade, 0.6 can still open a
-file 0.7 wrote (rollback), and the `sqlcipher` command-line tool keeps working
+files alike. Reasons: zero data conversion on upgrade, 0.7 can still open a
+file 0.8 wrote (rollback), and the `sqlcipher` command-line tool keeps working
 on backups. The cost is that SQLite3MC calls legacy mode "for compatibility
 reasons only"; it is the same AES-256-CBC + HMAC-SHA512 construction, just
 not their preferred one. Moving to ChaCha20-Poly1305 is a later, separate
@@ -127,14 +127,14 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    the end:
    - unit suite, Release, three runs;
    - UI 64, session 9, offline 22, offline-disable 10;
-   - **upgrade in place, unencrypted volume:** 0.6.0 → candidate, data
+   - **upgrade in place, unencrypted volume:** 0.7.0 → candidate, data
      intact, sessions require one sign-in only if the cookie format changed
      (it should not);
-   - **upgrade in place, encrypted volume:** 0.6.0 with `Harpo__DatabaseKey`
+   - **upgrade in place, encrypted volume:** 0.7.0 with `Harpo__DatabaseKey`
      → candidate opens it unchanged; then **rollback:** the same volume
-     opened again by 0.6.0 (this is D2's promise);
+     opened again by 0.7.0 (this is D2's promise);
    - key rotation and `Harpo__RemoveDatabaseEncryption` on the candidate;
-   - **mixed versions:** 0.6.0 peer ↔ candidate peer replicating both ways,
+   - **mixed versions:** 0.7.0 peer ↔ candidate peer replicating both ways,
      including an encrypted site on each side;
    - AD lab against the candidate image (LDAP natives, "Who am I?",
      revalidation with the service account);
@@ -147,24 +147,24 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
 5. Release notes must say, in this order: nothing to do for most sites; the
    image needs a CPU with SSE4.2 (any x64 server made after about 2009, any
    Arm64); encrypted databases keep working and keep their format; rollback
-   to 0.6 is supported by changing the tag back; the engine behind
+   to 0.7 is supported by changing the tag back; the engine behind
    `Harpo__DatabaseKey` is now SQLite3 Multiple Ciphers; no schema migration.
 
-## Step 2: release 0.7.0
+## Step 2: release 0.8.0
 
-Follow the release checklist: compose pin to `:0.7` in its own commit, merge
+Follow the release checklist: compose pin to `:0.8` in its own commit, merge
 to `main`, tag, workflow, verify the cold-pulled image with the UI and
-session suites plus the published 0.6.0 → 0.7.0 upgrade (both an unencrypted
+session suites plus the published 0.7.0 → 0.8.0 upgrade (both an unencrypted
 and an encrypted volume), GitHub release, Hub overview to the user, develop
 fast-forwarded, throwaways removed, demo and AD lab moved to the release.
 
-## Afterwards (each its own feature, none in 0.7.0)
+## Afterwards (each its own feature, none in 0.8.0)
 
 - `CloseOnAuthenticationExpiration` and `WithBrowserOptions` for the server
   circuit; possibly retire parts of the hand-written reconnect script.
 - Convert encrypted databases from the SQLCipher scheme to ChaCha20-Poly1305
   with a one-time converter, a marker so each file's scheme is known, and a
-  rollback plan; only after 0.7 has been out for a while.
+  rollback plan; only after 0.8 has been out for a while.
 - C# 15 union types for `DirectoryLookup` and revalidation results.
 - Decide on auto-pause once revealed state is cleared on pause (D4).
 - Re-check the SQLite3MC release cadence twice a year; it is the component
