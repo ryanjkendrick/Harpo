@@ -497,7 +497,9 @@ has placed in the site's icon folder with **Import now**.
 ![The personal vaults table](manual/admin-personal-vaults.png)
 
 Everyone who has opened Harpo has a personal vault, listed here by owner with
-the number of passwords in it. You cannot see inside them. What you can do,
+the number of passwords in it. You cannot see inside them. Your own is marked
+*you* and cannot be taken over: that would only show your private passwords to
+every other site administrator. What you can do,
 when someone leaves and company accounts may be in their vault, is **take it
 over**.
 
