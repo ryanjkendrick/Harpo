@@ -96,8 +96,55 @@ public class AuditService
         }
         // Filtered in the query, not after paging, so "older events" pages
         // through the chosen category instead of through everything.
+        return await InCategory(query, category)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .ThenByDescending(e => e.Id)
+            .Take(Math.Clamp(take, 1, 500))
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// One numbered page of the trail, newest first, of one category and
+    /// matching <paramref name="search"/> (in the user, action, target or detail;
+    /// case-insensitive for ASCII letters, as SQLite's LIKE is). Both filters run
+    /// in the query, so the pages and the total cover every event, not only
+    /// those already on screen. A page past the end gives the last page.
+    /// </summary>
+    public async Task<AuditPage> GetEventPageAsync(
+        UserContext user, AuditCategory category = AuditCategory.All, string? search = null,
+        int page = 1, int pageSize = 50, CancellationToken ct = default)
+    {
+        RequireSiteAdmin(user);
+        await _sessions.RequireLiveAsync(user, ct);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var query = InCategory(db.AuditEvents.AsNoTracking(), category);
+        var term = search?.Trim() ?? "";
+        if (term.Length > 0)
+        {
+            var pattern = "%" + term.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+            query = query.Where(e =>
+                EF.Functions.Like(e.Username, pattern, @"\")
+                || EF.Functions.Like(e.Action, pattern, @"\")
+                || EF.Functions.Like(e.Target, pattern, @"\")
+                || EF.Functions.Like(e.Detail, pattern, @"\"));
+        }
+        var total = await query.CountAsync(ct);
+        var pageCount = Math.Max(1, (total + pageSize - 1) / pageSize);
+        page = Math.Clamp(page, 1, pageCount);
+        var items = await query
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .ThenByDescending(e => e.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+        return new AuditPage(items, page, pageCount, total);
+    }
+
+    private static IQueryable<AuditEvent> InCategory(IQueryable<AuditEvent> query, AuditCategory category)
+    {
         string[] named = [.. AuditActions.Reveals, .. AuditActions.Deletions, .. AuditActions.Background];
-        query = category switch
+        return category switch
         {
             AuditCategory.Reveals => query.Where(e => AuditActions.Reveals.Contains(e.Action)),
             AuditCategory.Deletions => query.Where(e => AuditActions.Deletions.Contains(e.Action)),
@@ -105,11 +152,6 @@ public class AuditService
             AuditCategory.Changes => query.Where(e => !named.Contains(e.Action)),
             _ => query,
         };
-        return await query
-            .OrderByDescending(e => e.OccurredAtUtc)
-            .ThenByDescending(e => e.Id)
-            .Take(Math.Clamp(take, 1, 500))
-            .ToListAsync(ct);
     }
 
     public async Task<int> CountAsync(UserContext user, CancellationToken ct = default)
@@ -181,6 +223,9 @@ public class AuditRetentionService : BackgroundService
         }
     }
 }
+
+/// <summary>One page of <see cref="AuditService.GetEventPageAsync"/>; <see cref="Total"/> counts every matching event.</summary>
+public sealed record AuditPage(List<AuditEvent> Items, int Page, int PageCount, int Total);
 
 /// <summary>Position in the newest-first audit order; pass the last row of a page to fetch the next.</summary>
 public readonly record struct AuditCursor(DateTime OccurredAtUtc, Guid Id)
