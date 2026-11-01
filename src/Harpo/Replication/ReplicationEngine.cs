@@ -1,5 +1,6 @@
 using Harpo.Data;
 using Harpo.Security;
+using Harpo.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -24,20 +25,32 @@ public class ReplicationEngine
     private readonly string _siteId;
     private readonly ILogger<ReplicationEngine> _logger;
     private readonly CryptoService _crypto;
+    private readonly TimeProvider _time;
+    private readonly DatabaseScrubber? _scrubber;
 
     public ReplicationEngine(
         IDbContextFactory<HarpoDbContext> dbFactory,
         IOptions<ReplicationOptions> options,
         IOptions<SiteOptions> site,
         ILogger<ReplicationEngine> logger,
-        CryptoService crypto)
+        CryptoService crypto,
+        TimeProvider? time = null,
+        DatabaseScrubber? scrubber = null)
     {
         _dbFactory = dbFactory;
         _options = options.Value;
         _siteId = site.Value.SiteId;
         _logger = logger;
         _crypto = crypto;
+        _time = time ?? TimeProvider.System;
+        _scrubber = scrubber;
     }
+
+    /// <summary>
+    /// Set after an <see cref="ApplyAsync"/> that erased anything (a purge arrived):
+    /// how many rows it erased or removed. For tests and logs.
+    /// </summary>
+    public int LastErased { get; private set; }
 
     /// <summary>
     /// During a master key rotation, rows from not-yet-rotated peers arrive
@@ -201,18 +214,42 @@ public class ReplicationEngine
         // save would overwrite that newer edit with the older incoming one —
         // last-writer-wins silently broken, the user's change gone on every site.
         using var gate = await db.BeginExclusiveWriteAsync(ct);
+        // The merge saves more than once (a purge is settled before revisions are
+        // stored); one transaction keeps the batch all-or-nothing as before.
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         var accepted = 0;
         var highWater = new Dictionary<string, long>(StringComparer.Ordinal);
+        // Purge tombstones that must be re-issued under this site's stamps: see Reassert.
+        var reassert = new List<(IReplicatedRow Row, DateTime Beat)>();
 
         foreach (var incoming in response.Groups)
         {
             Track(highWater, incoming);
             var local = await db.Groups.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
+            var incomingPurged = Purging.IsTombstone(incoming);
             if (local is null)
             {
+                if (incomingPurged)
+                {
+                    Purging.Erase(incoming);
+                }
                 db.Groups.Add(incoming);
                 accepted++;
+            }
+            else if (local.IsPurged || incomingPurged)
+            {
+                // A purge is final: it wins over any version that is not purged,
+                // whatever the timestamps, and a version that is not purged never
+                // replaces it.
+                if (MergePurge(incoming, local, incomingPurged, local.IsPurged, reassert))
+                {
+                    local.CreatedBy = incoming.CreatedBy;
+                    local.CreatedAtUtc = incoming.CreatedAtUtc;
+                    local.OwnerUsername = incoming.OwnerUsername;
+                    Purging.Erase(local);
+                    accepted++;
+                }
             }
             else if (IncomingWins(incoming, local))
             {
@@ -277,10 +314,28 @@ public class ReplicationEngine
                 incoming.EncryptedNotes = notes;
             }
             var local = await db.PasswordEntries.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
+            var incomingPurged = Purging.IsTombstone(incoming);
             if (local is null)
             {
+                if (incomingPurged)
+                {
+                    // Blank whatever a (faulty or hostile) peer left in a tombstone.
+                    Purging.Erase(incoming);
+                }
                 db.PasswordEntries.Add(incoming);
                 accepted++;
+            }
+            else if (local.IsPurged || incomingPurged)
+            {
+                if (MergePurge(incoming, local, incomingPurged, local.IsPurged, reassert))
+                {
+                    local.GroupId = incoming.GroupId;
+                    local.CreatedBy = incoming.CreatedBy;
+                    local.CreatedAtUtc = incoming.CreatedAtUtc;
+                    local.UpdatedBy = incoming.UpdatedBy;
+                    Purging.Erase(local);
+                    accepted++;
+                }
             }
             else if (IncomingWins(incoming, local))
             {
@@ -299,9 +354,38 @@ public class ReplicationEngine
             }
         }
 
+        // Settle the purges this batch brought (or that its rows ran into) before
+        // any revision is stored: tombstones blanked, the entries of a purged group
+        // purged with it, and the history of every purged entry deleted — also a
+        // revision an earlier batch stored before its entry's purge arrived.
+        await db.SaveChangesAsync(ct);
+        var touchedEntries = response.Entries.Select(e => e.Id)
+            .Concat(response.Revisions.Select(r => r.EntryId))
+            .Distinct().ToList();
+        var touchedGroups = response.Groups.Select(g => g.Id)
+            .Concat(response.Entries.Select(e => e.GroupId))
+            .Distinct().ToList();
+        var erased = await Purging.SettleAsync(db, touchedGroups, touchedEntries, ct);
+
+        // A revision of a purged entry is never stored, whichever order the rows
+        // come in: the entry is purged in the database by now if its tombstone is
+        // in this batch or an earlier one, and if it comes later, settling then
+        // deletes the revision.
+        var revisionEntryIds = response.Revisions.Select(r => r.EntryId).Distinct().ToList();
+        var purgedEntryIds = revisionEntryIds.Count == 0
+            ? []
+            : (await db.PasswordEntries
+                .Where(e => e.IsPurged && revisionEntryIds.Contains(e.Id))
+                .Select(e => e.Id)
+                .ToListAsync(ct)).ToHashSet();
+
         foreach (var incoming in response.Revisions)
         {
             Track(highWater, incoming);
+            if (purgedEntryIds.Contains(incoming.EntryId))
+            {
+                continue;
+            }
             // Revisions are immutable: union by Id, never update.
             var exists = await db.PasswordRevisions.AnyAsync(x => x.Id == incoming.Id, ct);
             if (!exists)
@@ -388,13 +472,113 @@ public class ReplicationEngine
             }
         }
 
+        // After the counter has caught up with any of our own rows coming back,
+        // so a re-issued tombstone never reuses a sequence number.
+        await ReassertAsync(db, reassert, ct);
+        if (erased > 0)
+        {
+            await DatabaseScrubber.MarkPendingAsync(db, ct);
+        }
+
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        LastErased = erased;
+        if (erased > 0)
+        {
+            _logger.LogInformation("A purge from {Peer} erased or removed {Erased} rows here", response.SiteId, erased);
+            _scrubber?.Request();
+        }
         if (accepted > 0)
         {
             _logger.LogInformation("Applied {Accepted} of {Total} replicated rows from {Peer}",
                 accepted, response.RowCount, response.SiteId);
         }
         return accepted;
+    }
+
+    /// <summary>
+    /// The purge side of a merge, for an entry or group row where at least one of
+    /// the two versions is a purge tombstone. True when the local row is to take
+    /// the incoming version (the caller copies its fields and erases the row).
+    /// <para>
+    /// A purge wins over every version that is not purged — incoming or local,
+    /// newer or older. Between two tombstones, last-writer-wins as usual.
+    /// </para>
+    /// <para>
+    /// Where the purge wins only by that rule (the version it beat is the one
+    /// last-writer-wins would have kept: a restore or an edit made on a site that
+    /// had not heard of the purge yet), the tombstone is re-issued under this
+    /// site's stamps, newer than what it beat (see <see cref="ReassertAsync"/>).
+    /// Every site on this version would converge without it; a site still on a
+    /// version without purge knows only last-writer-wins, and the newer tombstone
+    /// is what blanks its copy of the row again rather than leaving it restored.
+    /// It cannot ping-pong: it answers a live version with a tombstone, and two
+    /// tombstones merge by last-writer-wins alone.
+    /// </para>
+    /// </summary>
+    private static bool MergePurge(
+        IReplicatedRow incoming, IReplicatedRow local, bool incomingPurged, bool localPurged,
+        List<(IReplicatedRow Row, DateTime Beat)> reassert)
+    {
+        if (incomingPurged && localPurged)
+        {
+            if (!IncomingWins(incoming, local))
+            {
+                return false;
+            }
+            CopyStamps(incoming, local);
+            return true;
+        }
+        if (incomingPurged)
+        {
+            var localWouldHaveWon = !SameVersion(incoming, local) && !IncomingWins(incoming, local);
+            var beat = local.UpdatedAtUtc;
+            CopyStamps(incoming, local);
+            if (localWouldHaveWon)
+            {
+                reassert.Add((local, beat));
+            }
+            return true;
+        }
+        // The local row is purged and the incoming version is not: ignored.
+        if (IncomingWins(incoming, local))
+        {
+            reassert.Add((local, incoming.UpdatedAtUtc));
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Re-issues purge tombstones as fresh writes of this site: the next
+    /// sequence numbers, and a timestamp later than the version each one beat
+    /// (by a tick, if that version's clock was ahead of ours). See <see cref="MergePurge"/>.
+    /// </summary>
+    private async Task ReassertAsync(
+        HarpoDbContext db, List<(IReplicatedRow Row, DateTime Beat)> reassert, CancellationToken ct)
+    {
+        if (reassert.Count == 0)
+        {
+            return;
+        }
+        var counter = await db.SiteCounters.SingleOrDefaultAsync(ct);
+        if (counter is null)
+        {
+            counter = new SiteCounter { Id = 1, NextSeq = 1 };
+            db.SiteCounters.Add(counter);
+        }
+        var now = _time.GetUtcNow().UtcDateTime;
+        // A row is re-issued once per batch, however many versions it beat.
+        var rows = reassert.GroupBy(r => r.Row).ToList();
+        foreach (var group in rows)
+        {
+            var row = group.Key;
+            var beat = group.Max(r => r.Beat);
+            row.OriginSiteId = _siteId;
+            row.OriginSeq = counter.NextSeq++;
+            row.UpdatedAtUtc = now > beat ? now : beat.AddTicks(1);
+        }
+        _logger.LogInformation(
+            "Re-issued {Count} purge tombstone(s) over versions made without knowledge of the purge", rows.Count);
     }
 
     public async Task<ReplicationStatusResponse> GetStatusAsync(CancellationToken ct = default)

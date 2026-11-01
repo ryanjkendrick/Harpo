@@ -132,6 +132,8 @@ public sealed class TestSite : IDisposable
     public HealthService Health { get; }
     public IconService Icons { get; }
     public ReplicationEngine Engine { get; }
+    public DatabaseScrubber Scrubber { get; }
+    public PurgeService Purge { get; }
 
     /// <summary>
     /// The site's "directory" (Development-mode users): alice, a site admin, bob
@@ -213,12 +215,16 @@ public sealed class TestSite : IDisposable
             NullLogger<HealthService>.Instance, Sessions);
         Icons = new IconService(Db, Time, Audit, Options.Create(new IconOptions()),
             NullLogger<IconService>.Instance, Sessions);
+        Scrubber = new DatabaseScrubber(Db, NullLogger<DatabaseScrubber>.Instance);
+        Purge = new PurgeService(Db, Audit, Sessions, Scrubber, NullLogger<PurgeService>.Instance);
         Engine = new ReplicationEngine(
             Db,
             Options.Create(new ReplicationOptions { Key = "test-key", BatchSize = 100 }),
             Options.Create(new SiteOptions { SiteId = siteId }),
             NullLogger<ReplicationEngine>.Instance,
-            Crypto);
+            Crypto,
+            Time,
+            Scrubber);
     }
 
     /// <summary>Pulls everything this site is missing from <paramref name="source"/> (loops through HasMore batches).</summary>
