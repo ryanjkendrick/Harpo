@@ -182,7 +182,8 @@
                 }
             </div>
             <input class="search" type="search" placeholder="Filter by user, action, or target…"
-                   aria-label="Filter the events shown" @bind="_auditFilter" @bind:event="oninput" />
+                   aria-label="Filter the events shown" @bind="_auditFilter" @bind:event="oninput"
+                   @bind:after="OnAuditFilterTypedAsync" />
         </div>
 
         @if (_auditEvents is null)
@@ -191,7 +192,10 @@
         }
         else if (_auditEvents.Count == 0)
         {
-            <p class="muted">@(_auditCategory == AuditCategory.All ? "No audit events yet." : "No events of this kind.")</p>
+            <p class="muted">
+                @(_auditFilter.Trim().Length > 0 ? "No events match."
+                    : _auditCategory == AuditCategory.All ? "No audit events yet." : "No events of this kind.")
+            </p>
         }
         else
         {
@@ -228,10 +232,8 @@
                     </tbody>
                 </table>
             </div>
-            @if (_auditHasMore)
-            {
-                <button class="btn btn-ghost btn-sm" @onclick="LoadMoreAuditAsync">Load older events</button>
-            }
+            <Pager Page="_auditPage" PageSize="AuditPageSize" Total="_auditTotal" Label="Pages of audit events"
+                   OnPage="GoToAuditPageAsync" ScrollTo="#audit" />
         }
     </section>
 
@@ -285,11 +287,24 @@
         }
         else
         {
+            var matching = FilteredIcons;
+            var shown = Paging.Slice(matching, ref _iconPage, ListPageSize);
+            @if (_icons.Count > ListPageSize || _iconFilter.Length > 0)
+            {
+                <input class="search list-filter icon-filter" type="search" placeholder="Find an icon by name or URL…"
+                       aria-label="Filter the icons shown" @bind="_iconFilter" @bind:event="oninput" @bind:after="() => _iconPage = 1" />
+            }
+            @if (matching.Count == 0)
+            {
+                <p class="muted">No icons match.</p>
+            }
+            else
+            {
             <div class="table-scroll">
-                <table>
+                <table class="icons-table">
                     <thead><tr><th>Icon</th><th>Name</th><th>Matched URLs</th><th>Uploaded by</th><th>Size</th><th>Used by</th><th></th></tr></thead>
                     <tbody>
-                        @foreach (var icon in _icons)
+                        @foreach (var icon in shown)
                         {
                             <tr>
                                 <td><img class="entry-icon-img" src="/api/icons/@icon.Id" alt="🔐" /></td>
@@ -321,6 +336,9 @@
                     </tbody>
                 </table>
             </div>
+            }
+            <Pager Page="_iconPage" PageSize="ListPageSize" Total="matching.Count" Label="Pages of icons"
+                   OnPage="p => _iconPage = p" ScrollTo="#icons" />
         }
     </section>
 
@@ -414,11 +432,24 @@
         }
         else
         {
+            var matching = FilteredPersonalVaults;
+            var shown = Paging.Slice(matching, ref _personalPage, ListPageSize);
+            @if (_personalVaults.Count > ListPageSize || _personalFilter.Length > 0)
+            {
+                <input class="search list-filter personal-vaults-filter" type="search" placeholder="Find a person by username or name…"
+                       aria-label="Filter the personal vaults shown" @bind="_personalFilter" @bind:event="oninput" @bind:after="() => _personalPage = 1" />
+            }
+            @if (matching.Count == 0)
+            {
+                <p class="muted">Nobody matches.</p>
+            }
+            else
+            {
             <div class="table-scroll">
                 <table class="personal-vaults-table">
                     <thead><tr><th>Owner</th><th>Passwords</th><th>Since</th><th></th></tr></thead>
                     <tbody>
-                        @foreach (var vault in _personalVaults)
+                        @foreach (var vault in shown)
                         {
                             <tr>
                                 <td>
@@ -445,6 +476,9 @@
                     </tbody>
                 </table>
             </div>
+            }
+            <Pager Page="_personalPage" PageSize="ListPageSize" Total="matching.Count" Label="Pages of personal vaults"
+                   OnPage="p => _personalPage = p" ScrollTo="#personal-vaults" />
         }
         @if (_takeoverError is not null && _takeover is null)
         {
@@ -452,7 +486,7 @@
         }
     </section>
 
-    <section class="panel">
+    <section class="panel" id="all-groups">
         <h2>All groups</h2>
         @if (_groups is null)
         {
@@ -460,8 +494,24 @@
         }
         else
         {
+            var shared = _groups.Where(g => !g.Group.IsPersonal).ToList();
+            var matching = FilteredGroups(shared);
+            var shown = Paging.Slice(matching, ref _groupPage, GroupPageSize);
+            @if (shared.Count > GroupPageSize || _groupFilter.Length > 0)
+            {
+                <input class="search list-filter all-groups-filter" type="search" placeholder="Find a group by name, description or creator…"
+                       aria-label="Filter the groups shown" @bind="_groupFilter" @bind:event="oninput" @bind:after="() => _groupPage = 1" />
+            }
+            @if (shared.Count == 0)
+            {
+                <p class="muted">No groups yet.</p>
+            }
+            else if (matching.Count == 0)
+            {
+                <p class="muted">No groups match.</p>
+            }
             <div class="card-list">
-                @foreach (var g in _groups.Where(g => !g.Group.IsPersonal))
+                @foreach (var g in shown)
                 {
                     <a class="card group-card" href="/groups/@g.Group.Id">
                         <div class="group-card-main">
@@ -475,6 +525,8 @@
                     </a>
                 }
             </div>
+            <Pager Page="_groupPage" PageSize="GroupPageSize" Total="matching.Count" Label="Pages of groups"
+                   OnPage="p => _groupPage = p" ScrollTo="#all-groups" />
         }
     </section>
 
@@ -578,6 +630,47 @@
     {
         _exportAllOpen = false;
         await LoadAuditAsync(); // a download just made shows up as site.export
+    }
+
+    // ---- the long lists: held in full, filtered and drawn a page at a time ----
+
+    private const int ListPageSize = 25;
+    private const int GroupPageSize = 20;
+    private int _personalPage = 1;
+    private int _iconPage = 1;
+    private int _groupPage = 1;
+    private string _personalFilter = "";
+    private string _iconFilter = "";
+    private string _groupFilter = "";
+
+    private static bool Has(string? text, string term) =>
+        text is not null && text.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private List<PersonalVaultSummary> FilteredPersonalVaults
+    {
+        get
+        {
+            var term = _personalFilter.Trim();
+            return term.Length == 0 ? _personalVaults ?? []
+                : (_personalVaults ?? []).Where(v => Has(v.Group.OwnerUsername, term) || Has(v.OwnerDisplayName, term)).ToList();
+        }
+    }
+
+    private List<IconSummary> FilteredIcons
+    {
+        get
+        {
+            var term = _iconFilter.Trim();
+            return term.Length == 0 ? _icons ?? []
+                : (_icons ?? []).Where(i => Has(i.Name, term) || Has(i.MatchUrls, term)).ToList();
+        }
+    }
+
+    private List<GroupSummary> FilteredGroups(List<GroupSummary> groups)
+    {
+        var term = _groupFilter.Trim();
+        return term.Length == 0 ? groups
+            : groups.Where(g => Has(g.Group.Name, term) || Has(g.Group.Description, term) || Has(g.Group.CreatedBy, term)).ToList();
     }
 
     private List<PersonalVaultSummary>? _personalVaults;
@@ -718,7 +811,10 @@
         _iconUsage = await Icons.GetUsageAsync();
         await LoadAuditAsync();
     }
-    private bool _auditHasMore;
+    private int _auditPage = 1;
+    private int _auditTotal;
+    /// <summary>Bumped by every load: an answer for an older load (a slower query for an earlier keystroke) is dropped.</summary>
+    private int _auditLoads;
     private string _auditFilter = "";
     private AuditCategory _auditCategory = AuditCategory.All;
 
@@ -737,14 +833,15 @@
     /// <summary>
     /// Folds a run of the same person doing the same thing to the same object into
     /// one row ("×4"), so a device syncing every few minutes or a page opened
-    /// repeatedly doesn't push everything else off the screen.
+    /// repeatedly doesn't push everything else off the screen. Runs fold within
+    /// the page shown; one that spans two pages appears on both.
     /// </summary>
     private List<AuditRow> AuditRows
     {
         get
         {
             var rows = new List<AuditRow>();
-            foreach (var e in FilteredAudit)
+            foreach (var e in _auditEvents ?? [])
             {
                 if (rows.Count > 0 && rows[^1].Latest is var previous
                     && previous.Action == e.Action && previous.Username == e.Username
@@ -766,41 +863,44 @@
             ? $"{row.Latest.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC"
             : $"{row.Count} times, from {row.OldestUtc:yyyy-MM-dd HH:mm:ss} to {row.Latest.OccurredAtUtc:yyyy-MM-dd HH:mm:ss} UTC";
 
+    /// <summary>
+    /// Loads the page shown, filtered by category and search in the query, so
+    /// both reach every event and not just the ones already on screen.
+    /// </summary>
     private async Task LoadAuditAsync()
     {
-        _auditEvents = await Audit.GetEventsAsync(_user!, take: AuditPageSize, category: _auditCategory);
-        _auditHasMore = _auditEvents.Count == AuditPageSize;
+        var load = ++_auditLoads;
+        var page = await Audit.GetEventPageAsync(_user!, _auditCategory, _auditFilter, _auditPage, AuditPageSize);
+        if (load != _auditLoads)
+        {
+            return;
+        }
+        _auditEvents = page.Items;
+        _auditTotal = page.Total;
+        _auditPage = page.Page;
     }
 
     private async Task SetAuditCategoryAsync(AuditCategory category)
     {
         _auditCategory = category;
+        _auditPage = 1;
+        await LoadAuditAsync();
+    }
+
+    private async Task OnAuditFilterTypedAsync()
+    {
+        _auditPage = 1;
+        await LoadAuditAsync();
+    }
+
+    private async Task GoToAuditPageAsync(int page)
+    {
+        _auditPage = page;
         await LoadAuditAsync();
     }
     private Timer? _refreshTimer;
 
     private const int AuditPageSize = 50;
-
-    private IEnumerable<AuditEvent> FilteredAudit
-    {
-        get
-        {
-            if (_auditEvents is null)
-            {
-                return [];
-            }
-            var term = _auditFilter.Trim();
-            if (term.Length == 0)
-            {
-                return _auditEvents;
-            }
-            return _auditEvents.Where(e =>
-                e.Username.Contains(term, StringComparison.OrdinalIgnoreCase)
-                || e.Action.Contains(term, StringComparison.OrdinalIgnoreCase)
-                || e.Target.Contains(term, StringComparison.OrdinalIgnoreCase)
-                || e.Detail.Contains(term, StringComparison.OrdinalIgnoreCase));
-        }
-    }
 
     private static string AuditBadgeClass(string action) => action switch
     {
@@ -808,18 +908,6 @@
         _ when AuditActions.CategoryOf(action) == AuditCategory.Deletions => "badge-error",
         _ => "",
     };
-
-    private async Task LoadMoreAuditAsync()
-    {
-        if (_auditEvents is null || _auditEvents.Count == 0)
-        {
-            return;
-        }
-        var oldest = AuditCursor.Of(_auditEvents[^1]);
-        var more = await Audit.GetEventsAsync(_user!, before: oldest, take: AuditPageSize, category: _auditCategory);
-        _auditEvents.AddRange(more);
-        _auditHasMore = more.Count == AuditPageSize;
-    }
 
     private IReadOnlyList<PeerSyncStatus> PeerStatuses =>
         ReplicationConfig.Value.Peers

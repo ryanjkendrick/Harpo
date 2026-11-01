@@ -1,0 +1,42 @@
+@* First / Previous / "51–100 of 1,553" / Next / Last, under a list longer than one page.
+   Shown only when there is more than one page. *@
+@inject IJSRuntime JS
+
+@if (Total > PageSize)
+{
+    var pages = Paging.PageCount(Total, PageSize);
+    var page = Math.Clamp(Page, 1, pages);
+    var first = (page - 1) * PageSize + 1;
+    var last = Math.Min(page * PageSize, Total);
+    <nav class="pager" aria-label="@Label">
+        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoAsync(1)">First</button>
+        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoAsync(page - 1)">Previous</button>
+        <span class="pager-status" role="status">@first.ToString("N0")–@last.ToString("N0") of @Total.ToString("N0")</span>
+        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoAsync(page + 1)">Next</button>
+        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoAsync(pages)">Last</button>
+    </nav>
+}
+
+@code {
+    [Parameter, EditorRequired] public int Page { get; set; }
+    [Parameter, EditorRequired] public int PageSize { get; set; }
+    /// <summary>Items in the whole list (after any filter), not on this page.</summary>
+    [Parameter, EditorRequired] public int Total { get; set; }
+    /// <summary>What the pages are of, for screen readers: "Pages of members".</summary>
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public EventCallback<int> OnPage { get; set; }
+    /// <summary>
+    /// The pager sits under its list; after a page change, the element this
+    /// selector names (the list's heading or toolbar) is scrolled into view.
+    /// </summary>
+    [Parameter] public string? ScrollTo { get; set; }
+
+    private async Task GoAsync(int page)
+    {
+        await OnPage.InvokeAsync(Math.Clamp(page, 1, Paging.PageCount(Total, PageSize)));
+        if (ScrollTo is not null)
+        {
+            await JS.InvokeVoidAsync("harpoScrollIntoView", ScrollTo);
+        }
+    }
+}

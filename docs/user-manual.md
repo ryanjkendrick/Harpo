@@ -363,6 +363,12 @@ The **Members** table lists everyone in the group, their role and who added
 them. Group admins can change a member's role with the drop-down or remove a
 member with the bin button.
 
+In a group with more than 25 members the table shows 25 at a time, with
+**First**, **Previous**, **Next** and **Last** under it. Above the table, the
+chips show only the **Admins**, **Members** or **Viewers**, each with its count,
+and the box finds people by username or display name. Someone you have just added is
+shown straight away, on whichever page they fall.
+
 | Role | Can |
 | --- | --- |
 | **Viewer** | See, reveal and copy passwords and 2FA codes, read details and notes, see history. Change nothing. |
@@ -507,11 +513,15 @@ newest first.
   imports), **Deletions**, or
   **Background** (offline syncs and report views, which are shown dimmed in
   the full list).
-- The filter box matches on the person, the action or the target.
+- The filter box matches on the person, the action, the target or the detail,
+  across the whole log, not only the events on screen.
+- The log is shown 50 events at a time. **First**, **Previous**, **Next** and
+  **Last** under it move between pages, and the count between them says how
+  many events match.
 - A run of the same person doing the same thing to the same object is folded
   into one row with a count (×2, ×3) so routine use does not bury the event
-  you are looking for; hover the time to see the span.
-- **Load older events** continues the list.
+  you are looking for; hover the time to see the span. A run is folded within
+  the page shown.
 
 Password *changes* are not audit events; each entry's history already records
 them permanently. Events in personal vaults name the person and the action but
@@ -523,7 +533,9 @@ Images that people have uploaded for entry icons. You can rename an icon, set
 the **matched URLs** (hostnames whose entries pick the icon up automatically),
 or delete it; entries using a deleted icon fall back to the default glyph. You
 can also add icons here directly, and import any images the server operator
-has placed in the site's icon folder with **Import now**.
+has placed in the site's icon folder with **Import now**. A long catalogue is
+shown 25 icons at a time, and the box above the table finds icons by name or
+matched URL.
 
 ### Groups
 
@@ -536,7 +548,8 @@ has placed in the site's icon folder with **Import now**.
   [Purging](#purging-erasing-for-good), and the group's name and description.
   A purged group disappears from every site, is no longer listed, and cannot
   be restored. It is recorded as `group.purge`, with the number of entries.
-- **All groups** lists every group on the site with its creator and counts.
+- **All groups** lists every group on the site with its creator and counts,
+  20 at a time, and a box to find one by name, description or creator.
   Personal vaults are not listed; they are not groups.
 
 ### Personal vaults
@@ -544,7 +557,8 @@ has placed in the site's icon folder with **Import now**.
 ![The personal vaults table](manual/admin-personal-vaults.png)
 
 Everyone who has opened Harpo has a personal vault, listed here by owner with
-the number of passwords in it. You cannot see inside them. Your own is marked
+the number of passwords in it, 25 at a time. The box above the table finds
+someone by username or display name. You cannot see inside them. Your own is marked
 *you* and cannot be taken over: that would only show your private passwords to
 every other site administrator. What you can do,
 when someone leaves and company accounts may be in their vault, is **take it

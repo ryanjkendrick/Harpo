@@ -530,7 +530,8 @@ Each event stores who, when, what (denormalized names, so the trail outlives
 renames, deletions and purges — the audit trail itself is never purged), the
 site it happened on, and a best-effort client address. Events are **append-only and replicate between sites** like password
 revisions, so every site's admins see the whole organisation's trail on the
-**Administration** page, newest first. It can be narrowed to a category —
+**Administration** page, newest first and 50 events a page. A search over the person,
+action, target and detail runs across the whole trail, not just the page shown. It can be narrowed to a category —
 *Reveals*, *Changes*, *Deletions*, or *Background* (routine events such as
 offline syncs and health-report views) — and a run of the same person doing
 the same thing to the same object is folded into one row with a count, so

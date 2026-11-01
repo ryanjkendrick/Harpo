@@ -897,7 +897,7 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
 .page-narrow section[id], .section-anchor { scroll-margin-top: 3.4rem; }
 .section-anchor { display: block; }
 
-.audit-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: .6rem; }
+.audit-controls, .list-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: .6rem; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: .3rem; }
 
 .chip {
