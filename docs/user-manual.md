@@ -275,7 +275,8 @@ warning seriously: **the file is not encrypted**, and anyone who gets hold of
 it can read every password in it. Every export is recorded in the audit log
 under your name. Use the file for what you needed it for, then delete it.
 Your administrator can turn exporting off for the whole site, in which case
-the button is not there.
+the button is not there. Where it is switched on, site administrators can
+also export every group at once (see [Administration](#export)).
 
 ## Your personal vault
 
@@ -470,7 +471,7 @@ health-report views alongside. Events from every site are shown together,
 newest first.
 
 - The chips narrow the list to **Reveals** (passwords and 2FA codes shown or
-  copied, vaults exported), **Changes** (membership, icons, takeovers,
+  copied, vaults or all groups exported), **Changes** (membership, icons, takeovers,
   imports), **Deletions**, or
   **Background** (offline syncs and report views, which are shown dimmed in
   the full list).
@@ -519,6 +520,30 @@ written to the audit log, and the person gets a fresh, empty personal vault
 on their next visit. This cannot be undone, and if the person is still around
 they will see it happen. Use it for departures, not curiosity.
 
+### Export
+
+**Export all groups…** downloads every shared group on the site in one go, as
+a zip archive — for a move to another system, or a copy kept somewhere safe
+offline. It is off unless the server operator has turned it on
+(`Harpo__Export__AllGroupsEnabled`); until then this section says so, and
+there is no button.
+
+The dialog says how many groups and passwords the archive will hold and lets
+you choose CSV or JSON. Inside the archive is one file per group, the same
+file that group's own **Export…** gives, so any of them can be imported back
+into a Harpo vault as it is, and a `README.txt` that says what the archive is,
+when you made it, from which site, and which group is in which file. A group
+with no passwords is there as an empty file; deleted groups and deleted
+passwords are not. **Personal vaults are not included** — nobody's, yours
+included; export yours from your own vault.
+
+Treat the archive like the master key: **it is not encrypted**, and anyone
+who gets hold of it can read every shared password on the site. The download
+is recorded in the audit log under your name (as `site.export`, with the
+numbers of groups and passwords but no names), and you can make one a
+minute. Delete the archive and everything you extracted from it as soon as
+you have used it.
+
 ## Who can do what
 
 | | Viewer | Member | Group admin | Site admin |
@@ -528,6 +553,7 @@ they will see it happen. Use it for departures, not curiosity.
 | Add, edit, delete and restore passwords | | ✓ | ✓ | ✓ |
 | Import passwords from a file | | ✓ | ✓ | ✓ |
 | Export the whole vault to a file | | | ✓ | ✓ (not personal vaults) |
+| Export every group on the site as one archive (when switched on) | | | | ✓ (never personal vaults) |
 | Rename the group, manage members, delete the group | | | ✓ | ✓ |
 | Create a new group | ✓ | ✓ | ✓ | ✓ |
 | Vault health report | | | own groups | whole vault |

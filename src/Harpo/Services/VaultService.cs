@@ -645,6 +645,116 @@ public class VaultService
         }
     }
 
+    // ---- export of all groups (site administrators) ----
+
+    /// <summary>
+    /// Whether this site offers site administrators the all-groups archive:
+    /// <c>Harpo:Export:AllGroupsEnabled</c> and <c>Harpo:Export:Enabled</c> both on.
+    /// </summary>
+    public bool AllGroupsExportEnabled => _export.AllGroupsAvailable;
+
+    /// <summary>
+    /// The groups the all-groups export covers: every live shared group. Never
+    /// a personal vault — not even the caller's own, which its owner exports
+    /// from the vault itself. A vault a site admin has taken over is an
+    /// ordinary group by then, and is included.
+    /// </summary>
+    private static IQueryable<Group> ExportableGroups(HarpoDbContext db) =>
+        db.Groups.Where(g => !g.IsDeleted && g.OwnerUsername == "");
+
+    /// <summary>The live entries of <see cref="ExportableGroups"/>.</summary>
+    private static IQueryable<PasswordEntry> ExportableEntries(HarpoDbContext db) =>
+        from e in db.PasswordEntries
+        join g in db.Groups on e.GroupId equals g.Id
+        where !e.IsDeleted && !g.IsDeleted && g.OwnerUsername == ""
+        select e;
+
+    /// <summary>
+    /// Checks, without decrypting anything, that the all-groups export is on
+    /// and that the caller is a site administrator with a live session (whose
+    /// role the session check holds to the directory's). The download endpoint
+    /// asks this first, so a refusal costs no rate-limit slot.
+    /// </summary>
+    public async Task RequireCanExportAllGroupsAsync(UserContext user, CancellationToken ct = default)
+    {
+        RequireAllGroupsExportEnabled();
+        await _sessions.RequireLiveAsync(user, ct);
+        if (!user.IsSiteAdmin)
+        {
+            throw new VaultAccessDeniedException("Only site administrators can export all groups.");
+        }
+    }
+
+    /// <summary>How many groups and entries the all-groups export would hold — counted, nothing decrypted.</summary>
+    public async Task<AllGroupsSummary> GetAllGroupsExportSummaryAsync(UserContext user, CancellationToken ct = default)
+    {
+        await RequireCanExportAllGroupsAsync(user, ct);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var groups = await ExportableGroups(db).CountAsync(ct);
+        var entries = await ExportableEntries(db).CountAsync(ct);
+        return new AllGroupsSummary(groups, entries);
+    }
+
+    /// <summary>
+    /// Every live shared group with its live entries, current passwords, 2FA
+    /// secrets and notes decrypted, as one zip of per-group files written
+    /// exactly as <see cref="ExportVaultAsync"/> writes them. The largest bulk
+    /// decrypt Harpo has: site admins only, switched off by default, rate-
+    /// limited at the endpoint, and audited once (format and counts, never a
+    /// group or entry name). Personal vaults never go in.
+    /// </summary>
+    public async Task<AllGroupsExportFile> ExportAllGroupsAsync(
+        UserContext user, ExportFormat format, CancellationToken ct = default)
+    {
+        await RequireCanExportAllGroupsAsync(user, ct);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        var groups = await ExportableGroups(db).ToListAsync(ct);
+        var entries = await ExportableEntries(db)
+            .OrderBy(e => e.Name)
+            .ToListAsync(ct);
+        var latestByEntry = await LatestRevisionsAsync(db, entries.Select(e => e.Id).ToList(), ct);
+        var byGroup = entries.ToLookup(e => e.GroupId);
+        var exported = groups
+            // Ties on name and creation time (two sites, the same second) still give one order.
+            .OrderBy(g => g.Name, StringComparer.Ordinal).ThenBy(g => g.CreatedAtUtc).ThenBy(g => g.Id)
+            .Select(g => new GroupExport(g.Name, byGroup[g.Id]
+                .Select(e => new ExportEntry(
+                    e.Name,
+                    e.Icon,
+                    e.Url,
+                    e.Username,
+                    latestByEntry.TryGetValue(e.Id, out var latest) ? _crypto.Decrypt(latest.EncryptedPassword) : "",
+                    ProtectedNotes.TryRead(_crypto, e.EncryptedNotes, out var notes) ? notes : "",
+                    e.EncryptedTotpSecret is null ? "" : _crypto.Decrypt(e.EncryptedTotpSecret)))
+                .ToList()))
+            .ToList();
+
+        var now = _time.GetUtcNow().UtcDateTime;
+        var content = AllGroupsArchive.Build(exported, format, user.Username, _siteId, now);
+        var file = new AllGroupsExportFile(
+            AllGroupsArchive.FileName(_siteId, now), content, exported.Count, exported.Sum(g => g.Entries.Count));
+
+        _logger.LogWarning("{User} exported all {Groups} groups ({Entries} entries) as {Format}",
+            user.Username, file.GroupCount, file.EntryCount, format);
+        await _audit.RecordAsync(user, AuditActions.SiteExport, AllGroupsAuditTarget,
+            detail: $"{(format == ExportFormat.Json ? "JSON" : "CSV")}, "
+                    + $"{AllGroupsArchive.Count(file.GroupCount, "group", "groups")}, "
+                    + $"{AllGroupsArchive.Count(file.EntryCount, "entry", "entries")}");
+        return file;
+    }
+
+    /// <summary>The audit target of an all-groups export: no group is named.</summary>
+    public const string AllGroupsAuditTarget = "all groups";
+
+    private void RequireAllGroupsExportEnabled()
+    {
+        if (!_export.AllGroupsAvailable)
+        {
+            throw new VaultNotFoundException("Exporting all groups is turned off on this site.");
+        }
+    }
+
     /// <summary>
     /// Everything the user may take offline: groups they are an explicit member of,
     /// with each entry's current password decrypted. Deliberately scoped to real

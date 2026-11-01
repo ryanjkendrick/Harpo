@@ -72,7 +72,9 @@ Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md
   header, previewed before anything is created), and take a vault out as
   Bitwarden-compatible CSV or lossless Harpo JSON. Exports are plain text,
   so they are limited to group admins, audited, rate-limited and can be
-  switched off for the whole site.
+  switched off for the whole site. Site admins can also be allowed (opt-in,
+  off by default) to download every shared group at once as one zip archive;
+  personal vaults never go in.
 - **Installable PWA with an offline vault** — users can keep an encrypted,
   passphrase-protected, read-only copy of their passwords on their device for
   when the server (or the network) is down. Admins can forbid this org-wide
@@ -506,6 +508,7 @@ record captures:
 | `revision.reveal` / `revision.copy` | someone views or copies a historical password value |
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
 | `vault.export` | someone downloads a vault as a CSV or JSON file (a bulk decrypt; counted under *Reveals*) |
+| `site.export` | a site admin downloads every shared group as one archive (target *all groups*, with the format and the group and entry counts, never a name; counted under *Reveals*) |
 | `vault.import` | entries are created in a vault from an imported file (with created/skipped/failed counts) |
 | `entry.delete` / `group.delete` | something is deleted |
 | `member.add` / `member.remove` / `member.role` | group access changes |
@@ -640,6 +643,41 @@ Harpo__Export__Enabled: "false"   # no Export button; the endpoint answers 404
 
 Import is not affected by the switch.
 
+**Export all groups (site administrators, off by default).** For a
+migration or an offline backup of the shared passwords, a site admin can
+download every shared group at once from the *Export* section of the
+Administration page. It is the riskiest thing Harpo can do — every shared
+password on the site, in plain text, in one file — so it is opt-in:
+
+```yaml
+Harpo__Export__AllGroupsEnabled: "true"   # needs Harpo__Export__Enabled as well (the default)
+```
+
+While either switch is off the Administration page says how to enable it and
+the endpoint answers 404. When on, *Export all groups…* shows how many groups
+and passwords the archive will hold (counted without decrypting anything),
+the same plain-text warning as a vault export, and a CSV or JSON choice. The
+download (`GET /api/admin/export?format=csv|json`) is a zip with one file per
+live group — exactly the file that group's own export gives, so each imports
+back into a Harpo vault unchanged — and a `README.txt` saying what the
+archive is, when, by whom, from which site, that it is unencrypted, and which
+group went into which file. Groups with no passwords are there as empty
+files; deleted groups and deleted entries are not. **Personal vaults are
+never included, counted or named** — the exporting admin's own included
+(they export it from their vault); a vault a site admin has taken over is an
+ordinary group by then, and is. File names inside the zip are made from the
+group names with path separators, `..`, control and reserved characters
+removed, cut to 100 bytes, and numbered when two collide (`Ops.csv`,
+`Ops (2).csv`), so the archive extracts safely anywhere.
+
+The endpoint makes the same checks as a vault export, in the same order —
+both switches (404), a request from another site's page (403), the format
+(400), a live session (401), the site admin role as the session holds it
+(403; a group admin is not enough) — then allows one archive per user a
+minute (429 with `Retry-After`), builds it in memory (never on disk), records
+exactly **one** `site.export` event (target *all groups*, detail such as
+`CSV, 12 groups, 340 entries`) and sends it with `Cache-Control: no-store`.
+
 ## 2FA codes (TOTP)
 
 Shared accounts often have 2FA, and then the *second factor* becomes the thing
@@ -748,6 +786,8 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
 | `Harpo__Export__Enabled` | `true` | Allow group admins (and personal-vault owners) to export a vault as a plain-text file — see "Import and export" |
 | `Harpo__Export__MinSecondsBetweenExports` | `10` | Per-user cooldown between exports |
+| `Harpo__Export__AllGroupsEnabled` | `false` | Allow site admins to download every shared group as one plain-text zip archive (never personal vaults); also needs `Harpo__Export__Enabled` — see "Import and export" |
+| `Harpo__Export__MinSecondsBetweenAllGroupsExports` | `60` | Per-user cooldown between all-groups archives |
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`, `Disabled`) |
@@ -787,8 +827,10 @@ All settings can be given as environment variables (`Section__Key` form).
   user's personal vault; notes and passwords are not searched); turn on file
   encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions
-  only** — plus two deliberate, audited bulk decrypts: the offline snapshot
-  and a vault export (see "Import and export", which can be switched off) —
+  only** — plus deliberate, audited bulk decrypts: the offline snapshot, a
+  vault export (see "Import and export", which can be switched off) and, only
+  where `Harpo__Export__AllGroupsEnabled` turns it on, a site admin's archive
+  of every shared group (never a personal vault) —
   and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.

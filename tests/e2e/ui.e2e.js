@@ -1,7 +1,8 @@
 // End-to-end checks of Harpo's interactive UI against the live multisite demo
 // stack: dialog keyboard behaviour and validation, the vault's password and
 // 2FA controls, the entries layout at a range of widths, the links between
-// pages, the Administration page, and personal vaults as two accounts see them.
+// pages, the Administration page (its all-groups export included: the demo
+// and CI stacks switch it on), and personal vaults as two accounts see them.
 //
 // These are the things unit tests cannot see — a control that ends up hidden
 // under another, focus left behind a dialog, an error shown far from its field.
@@ -186,6 +187,62 @@ async function fetchExport(page, url) {
             return r;
         }
         await sleep((Number(r.retryAfter) || 10) * 1000 + 500);
+    }
+}
+
+// The all-groups archive, fetched from the page like fetchExport. The zip is
+// read in the page: its central directory gives the file names, and each file
+// is inflated with the browser's own DecompressionStream so the test can look
+// inside. One archive a minute per user: a 429 is waited out once.
+async function fetchArchive(page, url) {
+    for (let attempt = 0; ; attempt++) {
+        const r = await page.evaluate(async (u) => {
+            const response = await fetch(u, { credentials: "same-origin" });
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            const result = {
+                status: response.status,
+                retryAfter: response.headers.get("retry-after"),
+                type: response.headers.get("content-type") ?? "",
+                disposition: response.headers.get("content-disposition") ?? "",
+                cache: response.headers.get("cache-control") ?? "",
+                pk: bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04,
+                files: {},
+                text: response.status === 200 ? "" : new TextDecoder().decode(bytes),
+            };
+            if (!result.pk) {
+                return result;
+            }
+            const view = new DataView(bytes.buffer);
+            let end = bytes.length - 22; // the end-of-central-directory record, found from the back
+            while (end >= 0 && view.getUint32(end, true) !== 0x06054b50) {
+                end--;
+            }
+            const count = view.getUint16(end + 10, true);
+            let at = view.getUint32(end + 16, true);
+            const utf8 = new TextDecoder();
+            for (let i = 0; i < count && view.getUint32(at, true) === 0x02014b50; i++) {
+                const method = view.getUint16(at + 10, true);
+                const size = view.getUint32(at + 20, true);
+                const nameLength = view.getUint16(at + 28, true);
+                const extraLength = view.getUint16(at + 30, true);
+                const commentLength = view.getUint16(at + 32, true);
+                const local = view.getUint32(at + 42, true);
+                const name = utf8.decode(bytes.subarray(at + 46, at + 46 + nameLength));
+                const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+                let content = bytes.subarray(start, start + size);
+                if (method === 8) {
+                    const inflated = new Blob([content]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+                    content = new Uint8Array(await new Response(inflated).arrayBuffer());
+                }
+                result.files[name] = utf8.decode(content);
+                at += 46 + nameLength + extraLength + commentLength;
+            }
+            return result;
+        }, url);
+        if (r.status !== 429 || attempt >= 1) {
+            return r;
+        }
+        await sleep((Number(r.retryAfter) || 60) * 1000 + 500);
     }
 }
 
@@ -557,19 +614,50 @@ async function groupId(page) {
                 .find((s) => s.querySelector("h2")?.textContent === "Deleted groups")?.querySelectorAll(".group-card").length ?? 0,
         }));
         check("administration has jump links to every section",
-            admin.nav.length === 5 && admin.sticky === "sticky"
+            admin.nav.length === 6 && admin.nav.includes("export") && admin.sticky === "sticky"
             && await page.evaluate((ids) => ids.every((i) => document.getElementById(i)), admin.nav), admin.nav.join(","));
         check("offline stat is spelled out", /^(Allowed offline copies · expire after \d+ days|Off offline copies)$/.test(admin.offline || ""), String(admin.offline));
         check("audit log folds repeated events and offers categories",
             admin.chips === "All,Reveals,Changes,Deletions,Background" && admin.folded > 0, `${admin.chips}; folded rows: ${admin.folded}`);
         check("deleted groups list is capped", admin.deletedShown <= 5, `shown: ${admin.deletedShown}`);
+
+        // ---- 6a. Export all groups (switched on in the demo and CI stacks) ----
+        await openDialog(page, "#export .export-all-open", "Export all groups");
+        await page.waitForSelector(".modal-panel .export-all-groups", { timeout: 10000 });
+        const allGroupsDialog = await page.evaluate(() => ({
+            off: !!document.querySelector("#export .export-all-off"),
+            title: document.querySelector(".modal-panel h2")?.textContent.trim(),
+            warning: document.querySelector(".modal-panel .export-warning")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+            facts: document.querySelector(".modal-panel .export-facts")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+            groups: parseInt(document.querySelector(".modal-panel .export-all-groups")?.textContent ?? "", 10),
+            entries: parseInt(document.querySelector(".modal-panel .export-all-entries")?.textContent ?? "", 10),
+            href: document.querySelector(".modal-panel a.export-download")?.getAttribute("href"),
+            download: document.querySelector(".modal-panel a.export-download")?.hasAttribute("download"),
+        }));
+        let allGroupsJsonHref = null;
+        for (let i = 0; i < 8 && allGroupsJsonHref !== "/api/admin/export?format=json"; i++) {
+            await page.evaluate(() => document.querySelector('.modal-panel input[value="json"]').click());
+            await sleep(400);
+            allGroupsJsonHref = await page.evaluate(() => document.querySelector(".modal-panel a.export-download").getAttribute("href"));
+        }
+        check("the Administration page's Export section opens a dialog that warns, counts the groups and links to the archive",
+            !allGroupsDialog.off && allGroupsDialog.title === "Export all groups"
+            && allGroupsDialog.warning.includes("not encrypted") && allGroupsDialog.warning.includes("every shared password")
+            && allGroupsDialog.facts.includes("audit log") && allGroupsDialog.facts.includes("Delete the archive")
+            && allGroupsDialog.facts.includes("Personal vaults are not included")
+            && allGroupsDialog.groups >= 1 && allGroupsDialog.entries >= 3
+            && allGroupsDialog.href === "/api/admin/export?format=csv" && allGroupsDialog.download
+            && allGroupsJsonHref === "/api/admin/export?format=json", JSON.stringify({ ...allGroupsDialog, allGroupsJsonHref }));
+        await clickText(page, ".modal-panel .modal-actions button", "Cancel");
+        await page.waitForFunction(() => !document.querySelector(".modal-panel"), { timeout: 8000 });
+
         await clickText(page, ".filter-chips .chip", "Reveals");
         await sleep(1500);
         const reveals = await page.evaluate(() =>
             [...document.querySelectorAll(".audit-table tbody tr td:nth-child(3)")].map((td) => td.textContent.trim()));
         check("the Reveals category shows only reveals and copies, including copies from history",
             reveals.length > 0 && reveals.includes("revision.copy") && reveals.includes("vault.export")
-            && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal|vault\.export)$/.test(a)),
+            && reveals.every((a) => /^(password\.(reveal|copy)|revision\.(reveal|copy)|totp\.reveal|vault\.export|site\.export)$/.test(a)),
             [...new Set(reveals)].join(","));
 
         // ---- 7. Personal vaults: one each, owner-only, taken over on departure ----
@@ -591,6 +679,24 @@ async function groupId(page) {
             !!(await page.$(".vault-toolbar .vault-export")) && personalExport.status === 200
             && personalExport.text.includes(PERSONAL_ENTRY) && /harpo-personal-/.test(personalExport.disposition),
             JSON.stringify({ status: personalExport.status, disposition: personalExport.disposition }));
+
+        // The site admin's all-groups archive, now that their personal vault holds
+        // something: the shared test group is in it, the personal vault never is.
+        const archive = await fetchArchive(page, "/api/admin/export?format=csv");
+        const archived = Object.keys(archive.files);
+        const groupFile = archive.files[`${GROUP}.csv`] ?? "";
+        check("the all-groups download is an uncached zip with a file per group, the test group's included",
+            archive.status === 200 && archive.pk && archive.type === "application/zip" && archive.cache.includes("no-store")
+            && /attachment;.*harpo-[a-z0-9-]+-all-groups-\d{4}-\d{2}-\d{2}\.zip/.test(archive.disposition)
+            && archived.includes("README.txt") && groupFile.startsWith(CSV_HEADER)
+            && groupFile.includes(ENTRY) && groupFile.includes(IMPORTED_PASSWORD),
+            JSON.stringify({ status: archive.status, type: archive.type, disposition: archive.disposition, files: archived.length }));
+        check("the archive's README says it is unencrypted and lists the groups, and no personal vault is in it",
+            archive.files["README.txt"]?.includes("NOT ENCRYPTED") && archive.files["README.txt"].includes(`${GROUP}  ->  ${GROUP}.csv`)
+            && archive.files["README.txt"].includes("personal vaults")
+            && !archived.some((n) => /^Personal( \(\d+\))?\.csv$/.test(n))
+            && !Object.values(archive.files).some((text) => text.includes(PERSONAL_ENTRY)),
+            archived.join(", ").slice(0, 200));
 
         // ---- 7a. Global search: an entry in another vault is found from this one ----
         // The shared test group is open and holds nothing called PERSONAL_ENTRY;
@@ -737,6 +843,9 @@ async function groupId(page) {
                 personalExport: [...document.querySelectorAll(".audit-table tbody tr")]
                     .find((r) => r.querySelector("td:nth-child(3)")?.textContent.trim() === "vault.export")
                     ?.querySelector("td:nth-child(4)")?.textContent.replace(/\s+/g, " ").trim() ?? "",
+                siteExport: [...document.querySelectorAll(".audit-table tbody tr")]
+                    .find((r) => r.querySelector("td:nth-child(3)")?.textContent.trim() === "site.export")
+                    ?.textContent.replace(/\s+/g, " ").trim() ?? "",
             };
         }, OTHER_USER);
         check("administration lists personal vaults by owner and size only, and keeps them out of the group list",
@@ -748,6 +857,9 @@ async function groupId(page) {
             adminBefore.auditWhat.slice(0, 3).join(" | "));
         check("the audit log records the personal vault's export as \"a personal vault\", with the count and no names",
             /^a personal vault · CSV, \d+ entr(y|ies)$/.test(adminBefore.personalExport), adminBefore.personalExport);
+        check("the audit log records the all-groups download once, as site.export of \"all groups\" with counts and no names",
+            new RegExp(`${USER} site\\.export all groups · CSV, \\d+ groups?, \\d+ entr(y|ies) `).test(adminBefore.siteExport)
+            && !adminBefore.siteExport.includes(GROUP) && !adminBefore.siteExport.includes("Personal"), adminBefore.siteExport);
 
         // Take the other account's vault over.
         await page.evaluate((otherUser) => {
@@ -814,6 +926,11 @@ async function groupId(page) {
             const row = [...document.querySelectorAll(".members-table tbody tr")].find((r) => r.querySelector(".mono")?.textContent.trim() === u);
             return row?.querySelector("select")?.value ?? row?.querySelector(".badge")?.textContent.trim();
         }, USER);
+        // The second account administers a group of its own now, and still may not take every group away.
+        const otherArchive = await fetchArchive(other, "/api/admin/export?format=csv");
+        check("a group admin who is not a site administrator is refused the all-groups archive with 403",
+            otherArchive.status === 403 && !otherArchive.pk && otherArchive.text.includes("Only site administrators"),
+            JSON.stringify({ status: otherArchive.status, text: otherArchive.text.slice(0, 80) }));
         await other.close();
         await page.bringToFront();
         const asViewerAdmin = await visitVault(page, otherGroupId);

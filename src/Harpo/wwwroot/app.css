@@ -1057,3 +1057,4 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
 .export-format { display: flex; align-items: flex-start; gap: .55rem; line-height: 1.4; }
 .export-format input { margin-top: .25rem; flex-shrink: 0; }
 .export-started { margin: 0 0 .6rem; }
+.export-all-count { margin: 0 0 .9rem; line-height: 1.4; }

@@ -55,10 +55,12 @@ public static class AuditActions
     public const string VaultExport = "vault.export";
     /// <summary>Entries were created in a vault from an imported file.</summary>
     public const string VaultImport = "vault.import";
+    /// <summary>A site admin downloaded every shared group as one archive (the largest bulk decrypt).</summary>
+    public const string SiteExport = "site.export";
 
     /// <summary>A secret left the vault: shown on screen, put on a clipboard, or written to an export file.</summary>
     public static readonly string[] Reveals =
-        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal, VaultExport];
+        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal, VaultExport, SiteExport];
 
     public static readonly string[] Deletions = [EntryDelete, GroupDelete, MemberRemove, IconDelete];
 
