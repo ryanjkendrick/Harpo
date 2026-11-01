@@ -13,6 +13,13 @@ namespace Harpo.Services;
 /// same situation in which its password could not be revealed); Notes is then
 /// empty.
 /// </summary>
+/// <summary>
+/// One page of a vault's live entries, in name order, after the search; plus
+/// how many entries match and how many the vault holds, and the page actually
+/// returned (the one asked for, pulled back if it lies past the end).
+/// </summary>
+public sealed record EntryPage(IReadOnlyList<EntryView> Items, int Page, int PageCount, int Matching, int InVault);
+
 public sealed record EntryView(
     PasswordEntry Entry, string Notes, bool NotesUnreadable, string PasswordUpdatedBy, DateTime? PasswordUpdatedAtUtc);
 
@@ -88,7 +95,49 @@ public class VaultService
             .Where(e => e.GroupId == groupId && !e.IsDeleted)
             .OrderBy(e => e.Name)
             .ToListAsync(ct);
+        return await ViewsAsync(db, entries, ct);
+    }
 
+    /// <summary>
+    /// One page of a vault for the vault page. Search and order need only the
+    /// plain-text columns, so those are read for the whole vault (nothing is
+    /// decrypted); the full rows, their latest revision and their decrypted
+    /// notes are fetched for the one page shown. Reading and decrypting every
+    /// entry on every visit made a 5,000-entry vault take seconds under load.
+    /// Search matches name, URL or username, ignoring case (any alphabet).
+    /// </summary>
+    public async Task<EntryPage> GetEntryPageAsync(
+        UserContext user, Guid groupId, string? search, int page, int pageSize, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        await RequireMemberAsync(db, user, groupId, ct);
+
+        var all = await db.PasswordEntries.AsNoTracking()
+            .Where(e => e.GroupId == groupId && !e.IsDeleted)
+            .OrderBy(e => e.Name).ThenBy(e => e.Id) // a stable order, so pages never overlap
+            .Select(e => new { e.Id, e.Name, e.Url, e.Username })
+            .ToListAsync(ct);
+        var term = search?.Trim() ?? "";
+        var matching = term.Length == 0
+            ? all
+            : all.Where(e => e.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                             || e.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
+                             || e.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
+                 .ToList();
+
+        var pageCount = Math.Max(1, (matching.Count + pageSize - 1) / pageSize);
+        page = Math.Clamp(page, 1, pageCount);
+        var ids = matching.Skip((page - 1) * pageSize).Take(pageSize).Select(e => e.Id).ToList();
+        var rows = await db.PasswordEntries.AsNoTracking().Where(e => ids.Contains(e.Id)).ToListAsync(ct);
+        var position = ids.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
+        var ordered = rows.OrderBy(e => position[e.Id]).ToList();
+        return new EntryPage(await ViewsAsync(db, ordered, ct), page, pageCount, matching.Count, all.Count);
+    }
+
+    /// <summary>Entries with their notes decrypted and who last changed the password, in the order given.</summary>
+    private async Task<List<EntryView>> ViewsAsync(HarpoDbContext db, List<PasswordEntry> entries, CancellationToken ct)
+    {
         var entryIds = entries.Select(e => e.Id).ToList();
         var revisions = await db.PasswordRevisions
             .Where(r => entryIds.Contains(r.EntryId))
