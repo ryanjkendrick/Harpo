@@ -64,7 +64,7 @@
 
         @if (!_group.IsPersonal)
         {
-        <section class="panel">
+        <section class="panel" id="members">
             <h2>Members</h2>
             <p class="muted">Only these people and the site administrators can see the passwords in this group.</p>
             @if (_members is { Count: > 0 } && _members.All(m => m.Role != GroupRole.Admin))
@@ -77,6 +77,32 @@
             }
             @if (_members is not null)
             {
+                var matching = FilteredMembers;
+                var shown = Paging.Slice(matching, ref _memberPage, MemberPageSize);
+                @if (_members.Count > MemberPageSize || _memberFilter.Length > 0 || _memberRole is not null)
+                {
+                    <div class="list-controls member-controls">
+                        <div class="filter-chips" role="group" aria-label="Show">
+                            <button type="button" class="chip @(_memberRole is null ? "selected" : "")"
+                                    aria-pressed="@(_memberRole is null ? "true" : "false")"
+                                    @onclick="() => SetMemberRole(null)">All @_members.Count</button>
+                            @foreach (var (role, label) in RoleChips)
+                            {
+                                var count = _members.Count(m => m.Role == role);
+                                <button type="button" class="chip @(_memberRole == role ? "selected" : "")"
+                                        aria-pressed="@(_memberRole == role ? "true" : "false")"
+                                        @onclick="() => SetMemberRole(role)">@label @count</button>
+                            }
+                        </div>
+                        <input class="search member-filter" type="search" placeholder="Find a member by username or name…"
+                               aria-label="Filter the members shown" @bind="_memberFilter" @bind:event="oninput"
+                               @bind:after="() => _memberPage = 1" />
+                    </div>
+                }
+                @if (matching.Count == 0)
+                {
+                    <p class="muted">No members match.</p>
+                }
                 <div class="table-scroll">
                     <table class="members-table">
                         <thead>
@@ -91,7 +117,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var member in _members)
+                            @foreach (var member in shown)
                             {
                                 <tr>
                                     <td>
@@ -136,6 +162,8 @@
                         </tbody>
                     </table>
                 </div>
+                <Pager Page="_memberPage" PageSize="MemberPageSize" Total="matching.Count" Label="Pages of members"
+                       OnPage="p => _memberPage = p" ScrollTo="#members" />
 
                 @if (CanAdmin)
                 {
@@ -242,6 +270,35 @@
     private string? _error;
     private string? _loadError;
 
+    // ---- the member list: held in full, filtered and drawn a page at a time ----
+    private const int MemberPageSize = 25;
+    private int _memberPage = 1;
+    private string _memberFilter = "";
+    private GroupRole? _memberRole;
+
+    private static readonly (GroupRole Role, string Label)[] RoleChips =
+        [(GroupRole.Admin, "Admins"), (GroupRole.Member, "Members"), (GroupRole.Viewer, "Viewers")];
+
+    private List<GroupMember> FilteredMembers
+    {
+        get
+        {
+            var term = _memberFilter.Trim();
+            return (_members ?? [])
+                .Where(m => _memberRole is null || m.Role == _memberRole)
+                .Where(m => term.Length == 0
+                    || m.Username.Contains(term, StringComparison.OrdinalIgnoreCase)
+                    || m.DisplayName.Contains(term, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    private void SetMemberRole(GroupRole? role)
+    {
+        _memberRole = role;
+        _memberPage = 1;
+    }
+
     // ---- directory suggestions for the add-member field ----
     private const int MinSearchLength = 2;
     private static readonly TimeSpan SearchDebounce = TimeSpan.FromMilliseconds(250);
@@ -301,6 +358,7 @@
         await Guarded(async () =>
         {
             var added = await Groups.AddMemberAsync(_user!, Id, _newMemberUsername, _newMemberDisplayName, _newMemberRole);
+            var username = added.Username;
             // An unverified add means the directory could not be asked just now;
             // say so even if no search ran first (a pasted name, a quick typist).
             _directoryUnavailable = !added.Verified;
@@ -309,6 +367,10 @@
             _newMemberRole = GroupRole.Member;
             _picked = null;
             await LoadAsync();
+            // Show the person just added: on the unfiltered list, at their page.
+            _memberFilter = "";
+            _memberRole = null;
+            _memberPage = Paging.PageOf(_members?.FindIndex(m => m.Username == username) ?? -1, MemberPageSize);
         });
     }
 

@@ -249,21 +249,7 @@
                         </tbody>
                     </table>
                 </div>
-                @if (_matching > PageSize)
-                {
-                    var total = _matching;
-                    var page = _page;
-                    var pages = _pageCount;
-                    var first = (page - 1) * PageSize + 1;
-                    var last = Math.Min(page * PageSize, total);
-                    <nav class="pager" aria-label="Pages of passwords">
-                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(1)">First</button>
-                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(page - 1)">Previous</button>
-                        <span class="pager-status" role="status">@first.ToString("N0")–@last.ToString("N0") of @total.ToString("N0")</span>
-                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(page + 1)">Next</button>
-                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(pages)">Last</button>
-                    </nav>
-                }
+                <Pager Page="_page" PageSize="PageSize" Total="_matching" Label="Pages of passwords" OnPage="GoToPageAsync" />
             }
             @if (OtherMatches is { } others)
             {
