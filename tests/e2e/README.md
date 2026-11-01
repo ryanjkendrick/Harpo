@@ -51,7 +51,13 @@ afterwards.
   links from the health report, the vault search finding an entry in another
   vault (the personal vault, named and linked, with no secret in the result,
   fitting at 1280px and 390px, and the link opening that vault filtered), the Administration page's navigation and
-  audit-log filters, and personal vaults as two accounts see them: one each,
+  audit-log filters, its all-groups export (the dialog's warning, counts and
+  links; the download a zip whose central directory and inflated files are
+  read in the page — the test group's file and a README in it, the personal
+  vault not; a group admin who is not a site admin refused with 403; one
+  `site.export` audit event without names — which needs
+  `Harpo__Export__AllGroupsEnabled=true`, as the demo compose file sets),
+  and personal vaults as two accounts see them: one each,
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
   — after which the second account gets a fresh one — plus a site admin who
@@ -80,7 +86,7 @@ leaves the data behind.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 64/64 checks passed
+npm run test:ui   # interactive UI — expect 69/69 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
 ```
@@ -95,7 +101,8 @@ keeps real passwords there.
 Re-running the offline suite within 30 seconds hits the per-user snapshot
 cooldown; the script waits it out automatically once. The UI suite exports
 three times, and exports have a 10-second per-user cooldown of their own,
-which it waits out the same way.
+which it waits out the same way. It downloads the all-groups archive once;
+that has a one-minute cooldown, so a re-run within a minute waits it out.
 
 ## Things headless Chrome does differently
 

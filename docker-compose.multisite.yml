@@ -31,6 +31,10 @@ x-harpo-common: &harpo-common
     Replication__IntervalSeconds: "5"
     # Offline (PWA) vault is allowed in this demo; set "false" to forbid it.
     Harpo__Offline__Enabled: "true"
+    # The site administrators' "Export all groups" archive is off by default
+    # (a whole-site plain-text export). It is on here only for the demo and for
+    # CI's end-to-end suite; leave it off in production unless you need it.
+    Harpo__Export__AllGroupsEnabled: "true"
 
 services:
   harpo-alpha:
