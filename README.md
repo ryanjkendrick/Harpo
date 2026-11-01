@@ -53,6 +53,10 @@ Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md
   strength rating as you type.
 - **Full password history** — every password change is an immutable revision
   recording *who* changed it and *when*; old values remain viewable.
+- **Recycle bin, and purge** — a deleted password stays restorable, history
+  and all, until a group's admin purges it: a purge erases a deleted entry
+  (or a whole deleted group) for good, on every site and from the database
+  file itself. Audited, and final.
 - **Cross-site replication** — multiple sites (offices, datacenters) each run
   their own Harpo with their own database and continuously merge changes, AD-style.
 - **Encrypted at rest** — passwords, 2FA secrets and entry notes are
@@ -365,7 +369,9 @@ links between sites are down. Replication is modeled on AD's own USN scheme:
   tie-break), so all sites converge to identical data. Password revisions are
   append-only, which means *concurrent password changes on two sites both survive
   in history* — the newer one becomes current.
-- Deletes are tombstones, so they replicate like any other change.
+- Deletes are tombstones, so they replicate like any other change. A
+  **purge** is a tombstone too, but a final one: it wins over every version
+  of the row that is not purged, whatever the timestamps (see "Purging").
 - Rows keep their origin stamps as they spread, so changes flow **transitively**:
   in a chain `A ↔ B ↔ C`, A's changes reach C through B without A and C ever
   talking. Any connected topology works; you don't need a full mesh.
@@ -511,13 +517,16 @@ record captures:
 | `site.export` | a site admin downloads every shared group as one archive (target *all groups*, with the format and the group and entry counts, never a name; counted under *Reveals*) |
 | `vault.import` | entries are created in a vault from an imported file (with created/skipped/failed counts) |
 | `entry.delete` / `group.delete` | something is deleted |
+| `entry.purge` | a deleted entry is purged (erased for good, on every site) |
+| `bin.empty` | every deleted entry of a vault is purged at once (target the vault, detail the count) |
+| `group.purge` | a deleted group is purged, with every entry in it (detail the count) |
 | `member.add` / `member.remove` / `member.role` | group access changes |
 | `personal.takeover` | a site admin converts someone's personal vault into a group |
 | `icon.add` / `icon.delete` | the custom icon catalogue changes |
 
 Each event stores who, when, what (denormalized names, so the trail outlives
-renames and deletions), the site it happened on, and a best-effort client
-address. Events are **append-only and replicate between sites** like password
+renames, deletions and purges — the audit trail itself is never purged), the
+site it happened on, and a best-effort client address. Events are **append-only and replicate between sites** like password
 revisions, so every site's admins see the whole organisation's trail on the
 **Administration** page, newest first. It can be narrowed to a category —
 *Reveals*, *Changes*, *Deletions*, or *Background* (routine events such as
@@ -579,6 +588,79 @@ database — the people who run the server — could read a personal vault the
 way they could read any group; Harpo is a trusted-server design (see
 "Security model"), and a personal vault is private from colleagues and
 administrators, not from the operator.
+
+## Purging
+
+Deleting is the everyday, undoable operation: a deleted entry sits in its
+vault's **Recently deleted** list, history and all, until someone restores it.
+Nothing is purged automatically. **Purge** is the one way to remove something
+for good — for a secret pasted into the wrong vault, or test data that must
+not linger — without resetting the site.
+
+**What it erases.** Purging a deleted entry deletes every revision of its
+password (the whole history: ciphertext, reuse fingerprint, strength score)
+and blanks the entry's encrypted notes and 2FA secret and its name, URL,
+username and icon. **Empty recycle bin** does that to every deleted entry of
+a vault in one operation (thousands at once are fine; the page shows a
+spinner). Purging a **deleted group**, from the Administration page, purges
+every entry in it — deleted or not, since they would come back with the
+group — and blanks the group's name and description; it is no longer listed
+and can no longer be restored. Only what is already deleted can be purged.
+
+**Who may.** In a shared group, its admins and the site administrators; in a
+personal vault, its owner and nobody else (site administrators included, as
+everywhere). Members and viewers can delete and restore, but not purge.
+Deleted groups are purged by site administrators, who alone see them. Every
+purge also requires a live session, like every other action.
+
+**Final, and replicated.** The entry (or group) row stays behind as an empty
+tombstone with fresh replication stamps, so every site learns of the purge,
+and the tombstone wins over every version of that row that is not purged,
+whatever its timestamp: a site that had not heard of the purge yet cannot
+bring the entry back — a restore or an edit made there concurrently loses,
+everywhere. A site that receives a purge erases its own copy and deletes its
+own revisions of the entry, and never stores a revision of a purged entry
+that arrives later (from a site that has not heard yet), in whatever order
+rows arrive. When a purge beats a version that is *newer* than it, the
+purging site re-issues its tombstone with a newer stamp, so that sites that
+only know last-writer-wins (older versions, below) take it too.
+
+**Bytes, not just rows.** Deleting or blanking a row does not remove its
+bytes: SQLite leaves them in the pages it freed and in its write-ahead log.
+After a purge commits, the site rewrites its database file (`VACUUM`) and
+empties the log, as it does after encrypting notes; a site that received a
+purge by replication does the same a few seconds later (once, however many
+batches the purge arrived in). Other writes on the site wait while the file
+is rewritten, which takes time in proportion to the size of the database, not
+of the purge: emptying a 5,000-entry recycle bin took about a second, rewrite
+included, in the test suite. If the rewrite cannot run (a full disk, a reader
+holding the log), it is retried every few minutes and at the next start.
+
+**Audit.** `entry.purge` for each entry purged on its own (named as deletions
+are: "an entry in a personal vault" in a personal vault), one `bin.empty` for
+emptying a recycle bin (target the vault, detail the count), and
+`group.purge` for a group (detail the count). The audit log itself is never
+purged, so an earlier event that named the entry — its deletion, in a shared
+group — still names it.
+
+**What a purge cannot reach.** Copies that left Harpo: exported files,
+backups and volume snapshots of the server, and the offline copy on a device
+that has not refreshed since the entry was deleted (offline copies hold only
+live entries, so the next refresh drops it).
+
+**Mixed versions (upgrading from 0.6.0 or earlier).** A site still on an older
+version keeps replicating: it ignores the purge flag it does not know, and
+takes the blank tombstone by last-writer-wins, so its copy of the entry's
+name, URL, username, notes and 2FA secret is blanked too. **But it cannot
+erase its own copy of the password history until it is upgraded**, and its
+users could still restore the blank entry there and see that history. Rows
+from such a site never undo a purge on an upgraded site (they carry no flag,
+and a row without the flag never replaces a tombstone), and a tombstone that
+passes through it, which loses the flag on the way, is still recognised on the
+other side (a deleted entry or group with no name is only ever a purge: Harpo
+has always required names). The first start after upgrading finishes the
+purges the site received while older and rewrites its file. Upgrade every
+site before relying on purge.
 
 ## Import and export
 
@@ -837,6 +919,10 @@ All settings can be given as environment variables (`Section__Key` form).
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.
 - All access control is enforced in the service layer, not the UI.
+- **Deleting is not erasing; purging is.** A deleted entry keeps its history
+  and can be restored. A purge erases it on every site and rewrites each
+  site's database file so the bytes are gone too — but it cannot reach
+  exports, backups, or a site still on an older version (see "Purging").
 - **Personal vaults are private from colleagues and site admins, not from the
   operator.** The owner-only rule is an access check like group membership;
   the entries are encrypted under the same master key as everything else.
@@ -1017,6 +1103,10 @@ one.
 - **Upgrading from 0.5.0 or earlier: everyone signs in again once.** Cookies
   issued before server-side sessions existed name no session, so they are
   refused (and cleared) on the first request after the upgrade.
+- **Upgrading from 0.6.0 or earlier with replication: upgrade every site
+  before relying on purge.** A site still on the older version blanks a
+  purged entry's fields but keeps its password history until it is upgraded
+  (see "Purging"); the first start after the upgrade finishes the job.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read
@@ -1026,7 +1116,8 @@ one.
   response and local edits are serialized, so a later local edit is never
   overwritten by an older replicated row.
 - **Deleting a group** tombstones the group; its entries stop being visible
-  everywhere but their ciphertext and history remain in the database.
+  everywhere but their ciphertext and history remain in the database until
+  the group is purged (see "Purging").
 - Blazor interactive server rendering keeps secrets and crypto on the server;
   revealed passwords transit the SignalR websocket (over your HTTPS).
 

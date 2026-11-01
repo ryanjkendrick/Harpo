@@ -4,6 +4,7 @@
 @rendermode InteractiveServer
 @inject GroupService Groups
 @inject VaultService Passwords
+@inject PurgeService Purge
 @inject IconService IconCatalogue
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -270,9 +271,18 @@
                 <details class="trash">
                     <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedTotal)</summary>
                     <p class="muted small trash-note">
-                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
-                        nothing is purged automatically.
+                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them
+                        @(SelectedIsPersonal ? "or you purge them" : "or one of the group's admins purges them") —
+                        nothing is purged automatically. A purge erases a password for good, on every site.
                     </p>
+                    @if (CanPurge && _deletedTotal > 0)
+                    {
+                        <div class="trash-actions">
+                            <button type="button" class="btn btn-ghost btn-sm btn-danger-text empty-bin" @onclick="OpenEmptyBin">
+                                <Lucide Name="trash" Size="14" /> Empty recycle bin…
+                            </button>
+                        </div>
+                    }
                     <div class="table-scroll">
                         <table>
                             <tbody>
@@ -286,6 +296,10 @@
                                         <td class="muted">deleted by <span class="mono">@entry.UpdatedBy</span> · @Relative(entry.UpdatedAtUtc)</td>
                                         <td class="cell-actions">
                                             <button class="btn btn-ghost btn-sm" @onclick="() => RestoreEntryAsync(entry)">Restore</button>
+                                            @if (CanPurge)
+                                            {
+                                                <button class="btn btn-ghost btn-sm btn-danger-text purge-entry" @onclick="() => OpenPurge(entry)">Purge…</button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -466,6 +480,52 @@
     }
 </Modal>
 
+<Modal Visible="_purge is not null" Title="@(_purge?.Entry is null ? "Empty recycle bin" : "Purge password")"
+       OnClose="ClosePurge" CloseOnBackdrop="false">
+    @if (_purge is { } purge)
+    {
+        <div class="purge-confirm">
+            @if (purge.Entry is { } purgeEntry)
+            {
+                <p>
+                    <strong>@purgeEntry.Name</strong> will be erased for good: its whole password history,
+                    its notes and its 2FA secret. It disappears from “Recently deleted” on every site
+                    and can never be restored.
+                </p>
+            }
+            else
+            {
+                <p>
+                    All <strong>@purge.Count.ToString("N0") deleted @(purge.Count == 1 ? "password" : "passwords")</strong> in
+                    <strong>@purge.VaultName</strong> will be erased for good, with their password history, notes
+                    and 2FA secrets. They disappear from every site and can never be restored.
+                </p>
+            }
+            <p class="alert alert-warning purge-warning">This cannot be undone.</p>
+            @if (_purgeError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_purgeError</div>
+            }
+            @if (_purgeBusy)
+            {
+                <div class="busy-status" role="status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span>Purging… <span class="muted">Erasing the passwords and rewriting this site's database file.</span></span>
+                </div>
+            }
+            else
+            {
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" @onclick="ClosePurge">Cancel</button>
+                    <button type="button" class="btn btn-danger purge-confirm-button" @onclick="ConfirmPurgeAsync">
+                        @(purge.Entry is null ? "Empty recycle bin" : "Purge")
+                    </button>
+                </div>
+            }
+        </div>
+    }
+</Modal>
+
 @if (_importOpen && SelectedSummary is { } importTarget && _user is not null)
 {
     <ImportDialog User="_user" GroupId="importTarget.Group.Id" VaultName="@importTarget.Group.Name" IsPersonal="importTarget.Group.IsPersonal"
@@ -607,6 +667,19 @@
         Passwords.ExportEnabled
         && SelectedSummary is { } selected
         && (selected.Group.IsPersonal || _user?.IsSiteAdmin == true || selected.MyRole == GroupRole.Admin);
+
+    // Purge is a group admin's call too (PurgeService): the owner of a personal
+    // vault, a group's admins, the site admins. Members and viewers can delete
+    // and restore, not purge.
+    private bool CanPurge =>
+        SelectedSummary is { } selected
+        && (selected.Group.IsPersonal || _user?.IsSiteAdmin == true || selected.MyRole == GroupRole.Admin);
+
+    private sealed record PurgeRequest(PasswordEntry? Entry, int Count, string VaultName);
+
+    private PurgeRequest? _purge;
+    private bool _purgeBusy;
+    private string? _purgeError;
 
     private bool _importOpen;
     private bool _exportOpen;
@@ -1203,6 +1276,66 @@
         {
             ShowToast(ex.Message, isError: true);
         }
+    }
+
+    private void OpenPurge(PasswordEntry entry)
+    {
+        _purge = new PurgeRequest(entry, 1, SelectedSummary?.Group.Name ?? "");
+        _purgeError = null;
+    }
+
+    private void OpenEmptyBin()
+    {
+        var group = SelectedSummary?.Group;
+        _purge = new PurgeRequest(null, _deletedTotal, group is null ? "" : group.IsPersonal ? "your personal vault" : group.Name);
+        _purgeError = null;
+    }
+
+    // While a purge runs, closing would only hide it: it finishes regardless.
+    private void ClosePurge()
+    {
+        if (!_purgeBusy)
+        {
+            _purge = null;
+        }
+    }
+
+    private async Task ConfirmPurgeAsync()
+    {
+        if (_purge is not { } request || _purgeBusy || _user is null || SelectedGroupId is not { } groupId)
+        {
+            return;
+        }
+        _purgeBusy = true;
+        _purgeError = null;
+        // As with an import: show the busy state first, then do the work (thousands
+        // of rows, and a rewrite of the database file) off the circuit's thread.
+        StateHasChanged();
+        await Task.Yield();
+        var user = _user;
+        try
+        {
+            if (request.Entry is { } entry)
+            {
+                await Task.Run(() => Purge.PurgeEntryAsync(user, entry.Id));
+                ShowToast($"\"{entry.Name}\" purged");
+            }
+            else
+            {
+                var purged = await Task.Run(() => Purge.EmptyRecycleBinAsync(user, groupId));
+                ShowToast(purged == 1 ? "1 password purged" : $"{purged:N0} passwords purged");
+            }
+            _purge = null;
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _purgeError = ex.Message;
+        }
+        finally
+        {
+            _purgeBusy = false;
+        }
+        await ReloadAsync();
     }
 
     private async Task DeleteEntryAsync(PasswordEntry entry)

@@ -41,10 +41,11 @@ you are the person running the server, read that too.
   whole. They are chosen by your directory, not inside Harpo.
 - **Your personal vault** is for passwords only you should see. Nobody else can
   open it, site administrators included.
-- **Nothing is forgotten.** Every password an entry has ever had stays in its
-  history, deleted passwords sit in a recycle bin until restored, and revealing,
-  copying or deleting anything is written to an audit log the administrators
-  can read.
+- **Nothing is forgotten by accident.** Every password an entry has ever had
+  stays in its history, deleted passwords sit in a recycle bin until restored,
+  and revealing, copying or deleting anything is written to an audit log the
+  administrators can read. Only a deliberate **purge** by a group's admin
+  erases a deleted password for good.
 
 ## Signing in and out
 
@@ -212,6 +213,36 @@ who can edit the vault.
 Deleting a whole group works the same way, from the group's page (see below);
 a site administrator can restore it from the Administration page.
 
+### Purging: erasing for good
+
+Sometimes a deleted password must not stay restorable: a secret pasted into
+the wrong vault, or test data. **Purge…** on a row of *Recently deleted*
+erases that entry for good, and **Empty recycle bin…** above the list does the
+same to every deleted entry of the vault at once. Both ask first, and the
+confirmation says plainly what happens:
+
+- the entry's whole password history, its notes and its 2FA secret, and its
+  name, URL, username and icon, are erased;
+- it disappears from every site, and can never be restored — not by you, not
+  by an administrator;
+- each site also rewrites its database file, so the erased values are not
+  left behind in the file itself. A large recycle bin takes a few seconds; a
+  spinner shows while it runs.
+
+Only the group's **admins** (and site administrators) see these buttons; in
+your personal vault, you do. Members and viewers can delete and restore, but
+not purge. Only what is already in the recycle bin can be purged: delete an
+entry first.
+
+The audit log records each purge (`entry.purge`, or `bin.empty` with the
+number of entries), and the audit log itself is never purged: an earlier
+event that named the entry — its deletion, say — still names it. In your
+personal vault, as always, no event names your entries.
+
+A purge cannot reach copies outside Harpo: a file someone exported, a backup
+of the server, or an offline copy on a device that has not refreshed since
+the entry was deleted.
+
 ## Importing and exporting
 
 ### Bringing passwords in from another manager
@@ -336,7 +367,7 @@ member with the bin button.
 | --- | --- |
 | **Viewer** | See, reveal and copy passwords and 2FA codes, read details and notes, see history. Change nothing. |
 | **Member** | Everything a viewer can, plus add, edit, delete and restore passwords. |
-| **Admin** | Everything a member can, plus rename the group, manage members, and delete the group. |
+| **Admin** | Everything a member can, plus purge deleted passwords, rename the group, manage members, and delete the group. |
 
 To add someone, type their **AD username** (the account name they sign in
 with). As you type, Harpo looks the name up in the directory and offers
@@ -363,7 +394,8 @@ Group admins change the name and description under **Group settings** and
 click **Save**. **Delete this group** in the danger zone hides the group and
 all its passwords from everyone. Like a deleted password, a deleted group is
 not destroyed: the Administration page lists deleted groups with a **Restore**
-button.
+button, and with **Purge…** for a site administrator who must erase it for
+good.
 
 ## Vault health
 
@@ -499,7 +531,11 @@ has placed in the site's icon folder with **Import now**.
   link to appoint one.
 - **Deleted groups** lists groups that have been deleted, with **Restore**.
   Restoring a group brings back its passwords, except those that had been
-  deleted individually before.
+  deleted individually before. **Purge…** beside it erases the group for good
+  after a confirmation: every password in it (deleted or not) as described in
+  [Purging](#purging-erasing-for-good), and the group's name and description.
+  A purged group disappears from every site, is no longer listed, and cannot
+  be restored. It is recorded as `group.purge`, with the number of entries.
 - **All groups** lists every group on the site with its creator and counts.
   Personal vaults are not listed; they are not groups.
 
@@ -553,6 +589,7 @@ you have used it.
 | See, reveal and copy passwords and 2FA codes | ✓ | ✓ | ✓ | ✓ (all groups) |
 | Read details and notes, see history | ✓ | ✓ | ✓ | ✓ |
 | Add, edit, delete and restore passwords | | ✓ | ✓ | ✓ |
+| Purge deleted passwords, empty the recycle bin | | | ✓ | ✓ (not personal vaults) |
 | Import passwords from a file | | ✓ | ✓ | ✓ |
 | Export the whole vault to a file | | | ✓ | ✓ (not personal vaults) |
 | Export every group on the site as one archive (when switched on) | | | | ✓ (never personal vaults) |
@@ -561,11 +598,11 @@ you have used it.
 | Vault health report | | | own groups | whole vault |
 | Offline copy | own groups | own groups | own groups | own groups |
 | Open someone else's personal vault | | | | |
-| Audit log, icon catalogue, restore groups, take over a personal vault | | | | ✓ |
+| Audit log, icon catalogue, restore or purge deleted groups, take over a personal vault | | | | ✓ |
 
 Roles are per group: the same person can be an admin of one group and a viewer
-of another. In your personal vault you can do everything in the first five rows,
-importing and exporting included. Site administrators are defined by directory group membership,
+of another. In your personal vault you can do everything in the first six rows,
+importing, exporting and purging included. Site administrators are defined by directory group membership,
 which your IT department manages.
 
 ---
