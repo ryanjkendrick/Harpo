@@ -1,0 +1,128 @@
+# Checks every pull request (and every push to develop) before it is merged.
+#
+#   Unit tests  — the xunit suite in Release, plus a check that the EF model has
+#                 no changes missing a migration.
+#   End to end  — builds the image from this commit, starts the two-site demo
+#                 (docker-compose.multisite.yml) on the runner, and drives it
+#                 with headless Chrome: the offline vault, the interactive UI and
+#                 the session suites from tests/e2e. On failure the containers'
+#                 logs are attached to the run.
+#
+# Nothing here publishes anything or needs a secret, so it is safe for pull
+# requests from forks (the `pull_request` event gives them a read-only token).
+# The multi-architecture image is only built by release.yml; the Dockerfile is
+# exercised here for amd64 by the end-to-end job.
+#
+# Actions are pinned to full commit SHAs like in release.yml; see there for how
+# to update one.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request or branch supersedes a run in progress.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: dotnet test
+        run: dotnet test Harpo.slnx --configuration Release
+
+      - name: No model changes without a migration
+        run: |
+          dotnet tool restore
+          dotnet ef migrations has-pending-model-changes --project src/Harpo
+
+  e2e:
+    name: End to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Start the two-site demo from this commit
+        run: |
+          docker compose -f docker-compose.multisite.yml up -d --build
+          for port in 8081 8082; do
+            for i in $(seq 1 60); do
+              if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/login)" = "200" ]; then
+                echo "site on :$port is up"
+                break
+              fi
+              if [ "$i" = "60" ]; then
+                echo "site on :$port did not come up" >&2
+                docker compose -f docker-compose.multisite.yml logs
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+
+      # Ubuntu 24.04 forbids the unprivileged user namespaces Chrome's sandbox
+      # relies on; allowing them keeps the sandbox on rather than passing
+      # --no-sandbox to the browser.
+      - name: Allow Chrome's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install the browser and test dependencies
+        working-directory: tests/e2e
+        run: npm ci
+
+      # Each suite runs even if the one before failed, so a run reports every
+      # broken area at once. The offline suite stops and restarts harpo-alpha.
+      - name: Offline vault (22 checks)
+        id: offline
+        working-directory: tests/e2e
+        run: node offline-vault.e2e.js
+
+      - name: Interactive UI (64 checks)
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        working-directory: tests/e2e
+        run: node ui.e2e.js
+
+      - name: Sessions (9 checks)
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        working-directory: tests/e2e
+        run: node session.e2e.js
+
+      - name: Collect container logs
+        if: ${{ failure() }}
+        run: |
+          mkdir -p e2e-logs
+          for c in harpo-alpha harpo-beta; do docker logs "$c" > "e2e-logs/$c.log" 2>&1 || true; done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ failure() }}
+        with:
+          name: e2e-container-logs
+          path: e2e-logs
+          retention-days: 7
+
+      - name: Stop the demo
+        if: ${{ always() }}
+        run: docker compose -f docker-compose.multisite.yml down -v
