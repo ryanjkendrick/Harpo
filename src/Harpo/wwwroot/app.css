@@ -395,12 +395,13 @@ tbody tr:hover { background: var(--bg); }
    string): they wrap anywhere rather than widen the table past its panel. */
 .cell-name .entry-name { overflow-wrap: anywhere; }
 .cell-actions { white-space: nowrap; text-align: right; }
-/* The password controls and the 2FA controls are two clusters: each stays on
-   one line, but the second may wrap under the first when the column is tight. */
+/* The password controls and the 2FA controls are two clusters, the 2FA one
+   always on its own line under the password, so they never share the width. */
 .cell-password { white-space: normal; }
-.secret-group { display: inline-flex; align-items: center; gap: .15rem; white-space: nowrap; vertical-align: middle; }
+.secret-group { display: flex; width: max-content; align-items: center; gap: .15rem; white-space: nowrap; }
 .secret-group .revealed { white-space: normal; }
-.secret-group:not(:last-child) { margin-right: .8rem; }
+.cell-password .totp-chip { display: flex; width: max-content; }
+.secret-group + .secret-group, .secret-group + .totp-chip { margin-top: .3rem; }
 .mask { letter-spacing: .12em; color: var(--muted); }
 
 .revealed {
@@ -802,13 +803,18 @@ tbody tr:hover { background: var(--bg); }
 
 .entries-table tbody tr:hover td.cell-actions { background: var(--bg); }
 
-/* A revealed password grows its row downward, never sideways. */
+/* A revealed password grows its row downward, never sideways: it wraps after
+   20 characters. Its width is its own (up to those 20), so a crowded table
+   cannot squeeze the column narrower than that and break it every few
+   characters. A 2FA code is short and never breaks. */
 .cell-password .revealed {
     display: inline-block;
+    width: max-content;
     max-width: 20ch;
     word-break: break-all;
     vertical-align: middle;
 }
+.cell-password .totp-group .revealed { max-width: none; word-break: normal; white-space: nowrap; }
 
 .cell-name { min-width: 11rem; }
 
@@ -976,7 +982,7 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
     .entries-table td.cell-url { overflow-wrap: anywhere; }
     .entries-table td.cell-updated { font-size: .8rem; }
     .entries-table td.cell-password { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: center; }
-    .secret-group:not(:last-child) { margin-right: 0; }
+    .secret-group + .secret-group, .secret-group + .totp-chip { margin-top: 0; }
 }
 
 /* Narrow dialogs stack each label over its value. */

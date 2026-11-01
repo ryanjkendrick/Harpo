@@ -162,7 +162,9 @@
                                     <td class="cell-username">
                                         @if (!string.IsNullOrEmpty(entry.Username))
                                         {
-                                            <span class="mono">@entry.Username</span>
+                                            @* An email may break before its @ (and nowhere else), so it does not hold the column wide. *@
+                                            var at = entry.Username.IndexOf('@');
+                                            <span class="mono">@if (at > 0) {@(entry.Username[..at])<wbr />@(entry.Username[at..])} else {@entry.Username}</span>
                                             <button class="btn btn-icon" title="Copy username" aria-label="Copy username"
                                                     @onclick='() => CopyTextAsync(entry.Username, "Username copied")'><Lucide Name="copy" Size="15" /></button>
                                         }
