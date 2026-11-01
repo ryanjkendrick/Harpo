@@ -90,6 +90,11 @@ Select a vault and its passwords appear as a table, one row per entry:
 | **Last updated** | Who last changed the password and how long ago. Hover for the exact time. |
 | Actions | Edit, details and notes, password history, delete. Viewers see only details and history. |
 
+A vault with more than 50 passwords shows them 50 at a time. **First**,
+**Previous**, **Next** and **Last** under the table move between pages, and the
+count between them says which passwords you are looking at. Searching always
+covers the whole vault and starts again at the first match.
+
 The toolbar above the table has the search box and, if you may add passwords
 here, the **Import…** and **New password** buttons; group admins also see
 **Export…** (see [Importing and exporting](#importing-and-exporting)). If you

@@ -610,6 +610,12 @@ tbody tr:hover { background: var(--bg); }
 .reuse-chip { display: inline-flex; align-items: center; gap: .35rem; font-weight: 600; }
 .reuse-chip a { font-weight: 400; }
 
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .4rem .6rem; margin-top: .9rem; }
+.pager-status { min-width: 9.5rem; text-align: center; font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+    /* The count on a line of its own, the four buttons in one row under it. */
+    .pager-status { order: -1; flex-basis: 100%; }
+}
 .trash { margin-top: 1rem; }
 .trash summary { cursor: pointer; }
 .trash-note { margin: .5rem 0 .3rem; }

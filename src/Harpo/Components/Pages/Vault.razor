@@ -144,7 +144,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var view in FilteredEntries)
+                            @foreach (var view in PageOfEntries)
                             {
                                 var entry = view.Entry;
                                 <tr>
@@ -246,6 +246,20 @@
                         </tbody>
                     </table>
                 </div>
+                @if (FilteredEntries.Count is var total && total > PageSize)
+                {
+                    var page = CurrentPage(total);
+                    var pages = PageCount(total);
+                    var first = (page - 1) * PageSize + 1;
+                    var last = Math.Min(page * PageSize, total);
+                    <nav class="pager" aria-label="Pages of passwords">
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(1)">First</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(page - 1)">Previous</button>
+                        <span class="pager-status" role="status">@first.ToString("N0")–@last.ToString("N0") of @total.ToString("N0")</span>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(page + 1)">Next</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(pages)">Last</button>
+                    </nav>
+                }
             }
             @if (OtherMatches is { } others)
             {
@@ -630,6 +644,12 @@
         {
             _appliedQuery = Query;
             _search = Query ?? "";
+            _page = 1;
+        }
+        if (SelectedGroupId != _pagedGroup)
+        {
+            _pagedGroup = SelectedGroupId;
+            _page = 1;
         }
         await LoadEntriesAsync();
         // The other-vaults list is "everything but the open vault", so it is
@@ -659,7 +679,40 @@
             ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
             : null;
 
-    private void OnSearchTyped() => ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+    private void OnSearchTyped()
+    {
+        _page = 1; // a new search starts at its first match
+        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+    }
+
+    // ---- paging ----
+    // The page draws one page of the (filtered) entries: drawing thousands of
+    // rows at once took seconds on every visit. Search still covers them all.
+
+    private const int PageSize = 50;
+    private int _page = 1;
+    private Guid? _pagedGroup;
+
+    private static int PageCount(int total) => Math.Max(1, (total + PageSize - 1) / PageSize);
+
+    /// <summary>The page to show: the one chosen, pulled back if deletions left it past the end.</summary>
+    private int CurrentPage(int total) => Math.Clamp(_page, 1, PageCount(total));
+
+    private List<EntryView> PageOfEntries
+    {
+        get
+        {
+            var all = FilteredEntries;
+            return all.Skip((CurrentPage(all.Count) - 1) * PageSize).Take(PageSize).ToList();
+        }
+    }
+
+    private async Task GoToPageAsync(int page)
+    {
+        _page = Math.Clamp(page, 1, PageCount(FilteredEntries.Count));
+        // The pager sits under the table: bring the top of the new page into view.
+        await JS.InvokeVoidAsync("harpoScrollIntoView", ".vault-toolbar");
+    }
 
     /// <summary>
     /// Debounced, and latest-wins: every call cancels the one before, and an
@@ -1191,6 +1244,7 @@
     {
         _groups = await Groups.GetMyGroupsAsync(_user!);
         await LoadEntriesAsync();
+        _page = CurrentPage(FilteredEntries.Count); // stay on this page, unless it no longer exists
     }
 
     private void ShowToast(string message, bool isError = false)
