@@ -909,6 +909,15 @@ it as `feature/<name>` and merge back with `--no-ff`. A release is `develop`
 merged into `main` and tagged (which publishes the image — see below); an
 urgent fix branches from `main` as `hotfix/<name>` and merges into both.
 
+### Continuous integration
+
+Every pull request into `develop` or `main`, and every push to `develop`, runs
+`.github/workflows/ci.yml`: the unit suite in Release, a check that the EF
+model has no changes missing a migration, and the browser end-to-end suites
+(offline vault, interactive UI, sessions) against the two-site demo built
+from that commit on the runner. It needs no secrets, so pull requests from
+forks run it too. The multi-architecture image is built only when releasing.
+
 ### Releasing
 
 Pushing a version tag publishes the image — the `Release` workflow runs the
