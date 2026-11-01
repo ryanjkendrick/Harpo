@@ -222,6 +222,8 @@ public class ReplicationEngine
         var highWater = new Dictionary<string, long>(StringComparer.Ordinal);
         // Purge tombstones that must be re-issued under this site's stamps: see Reassert.
         var reassert = new List<(IReplicatedRow Row, DateTime Beat)>();
+        // Rows whose content a purge blanked here: their old bytes are in the file until it is scrubbed.
+        var blanked = 0;
 
         foreach (var incoming in response.Groups)
         {
@@ -242,8 +244,10 @@ public class ReplicationEngine
                 // A purge is final: it wins over any version that is not purged,
                 // whatever the timestamps, and a version that is not purged never
                 // replaces it.
-                if (MergePurge(incoming, local, incomingPurged, local.IsPurged, reassert))
+                var wasPurged = local.IsPurged;
+                if (MergePurge(incoming, local, incomingPurged, wasPurged, reassert))
                 {
+                    blanked += wasPurged ? 0 : 1;
                     local.CreatedBy = incoming.CreatedBy;
                     local.CreatedAtUtc = incoming.CreatedAtUtc;
                     local.OwnerUsername = incoming.OwnerUsername;
@@ -327,8 +331,10 @@ public class ReplicationEngine
             }
             else if (local.IsPurged || incomingPurged)
             {
-                if (MergePurge(incoming, local, incomingPurged, local.IsPurged, reassert))
+                var wasPurged = local.IsPurged;
+                if (MergePurge(incoming, local, incomingPurged, wasPurged, reassert))
                 {
+                    blanked += wasPurged ? 0 : 1;
                     local.GroupId = incoming.GroupId;
                     local.CreatedBy = incoming.CreatedBy;
                     local.CreatedAtUtc = incoming.CreatedAtUtc;
@@ -365,7 +371,7 @@ public class ReplicationEngine
         var touchedGroups = response.Groups.Select(g => g.Id)
             .Concat(response.Entries.Select(e => e.GroupId))
             .Distinct().ToList();
-        var erased = await Purging.SettleAsync(db, touchedGroups, touchedEntries, ct);
+        var erased = blanked + await Purging.SettleAsync(db, touchedGroups, touchedEntries, ct);
 
         // A revision of a purged entry is never stored, whichever order the rows
         // come in: the entry is purged in the database by now if its tombstone is

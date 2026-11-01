@@ -724,6 +724,27 @@ public class PurgeTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Every_purge_that_blanks_something_here_asks_for_a_scrub()
+    {
+        // An empty group: nothing but its name and description to erase.
+        using var beta = NewSite("beta");
+        var group = await SharedGroupAsync(_site, "Secret project name");
+        await _site.Groups.DeleteGroupAsync(_bob, group.Id);
+        await beta.PullFromAsync(_site);
+        Assert.False(await beta.Scrubber.IsPendingAsync());
+
+        await _site.Purge.PurgeGroupAsync(_root, group.Id);
+        await beta.PullFromAsync(_site);
+
+        Assert.True(beta.Engine.LastErased > 0);
+        Assert.True(await beta.Scrubber.IsPendingAsync());
+        // A tombstone for a row this site never held has nothing to scrub.
+        using var gamma = NewSite("gamma");
+        await gamma.PullFromAsync(_site);
+        Assert.False(await gamma.Scrubber.IsPendingAsync());
+    }
+
     // ---- the bytes in the file ----
 
     [Fact]
