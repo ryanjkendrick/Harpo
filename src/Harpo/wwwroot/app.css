@@ -1021,6 +1021,20 @@ input[aria-invalid="true"]:focus, textarea[aria-invalid="true"]:focus { outline-
 .import-preview td { font-size: .85rem; white-space: nowrap; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
 
 .import-option { display: flex; align-items: center; gap: .5rem; margin-top: .8rem; }
+.import-busy { justify-content: flex-end; text-align: right; }
+
+/* A small busy indicator: a ring with a gap that turns. Used where an action
+   takes long enough to need one (a large import). */
+.busy-status { display: flex; align-items: center; gap: .6rem; margin: .6rem 0 0; }
+.spinner {
+    flex: none; display: inline-block; width: 1.1em; height: 1.1em;
+    border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%;
+    animation: spinner-turn .8s linear infinite;
+}
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .spinner { animation-duration: 2.4s; }
+}
 
 .import-counts { list-style: none; padding: 0; margin: 0 0 .8rem; display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
 .import-counts strong { font-size: 1.3rem; margin-right: .2rem; }
