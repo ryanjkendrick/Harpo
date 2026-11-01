@@ -53,6 +53,10 @@ Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md
   strength rating as you type.
 - **Full password history** — every password change is an immutable revision
   recording *who* changed it and *when*; old values remain viewable.
+- **Recycle bin, and purge** — a deleted password stays restorable, history
+  and all, until a group's admin purges it: a purge erases a deleted entry
+  (or a whole deleted group) for good, on every site and from the database
+  file itself. Audited, and final.
 - **Cross-site replication** — multiple sites (offices, datacenters) each run
   their own Harpo with their own database and continuously merge changes, AD-style.
 - **Encrypted at rest** — passwords, 2FA secrets and entry notes are
@@ -67,6 +71,14 @@ Using Harpo rather than running it? Read the **[user manual](docs/user-manual.md
   computed from keyed fingerprints and stored strength scores so nothing is
   decrypted to build the page. Site admins see everything; group admins see
   their groups (cross-scope reuse appears as a count, never as names).
+- **Import and export** — bring passwords in from a CSV export of Bitwarden,
+  1Password, KeePass, LastPass or Chrome/Edge (columns recognised from the
+  header, previewed before anything is created), and take a vault out as
+  Bitwarden-compatible CSV or lossless Harpo JSON. Exports are plain text,
+  so they are limited to group admins, audited, rate-limited and can be
+  switched off for the whole site. Site admins can also be allowed (opt-in,
+  off by default) to download every shared group at once as one zip archive;
+  personal vaults never go in.
 - **Installable PWA with an offline vault** — users can keep an encrypted,
   passphrase-protected, read-only copy of their passwords on their device for
   when the server (or the network) is down. Admins can forbid this org-wide
@@ -357,7 +369,9 @@ links between sites are down. Replication is modeled on AD's own USN scheme:
   tie-break), so all sites converge to identical data. Password revisions are
   append-only, which means *concurrent password changes on two sites both survive
   in history* — the newer one becomes current.
-- Deletes are tombstones, so they replicate like any other change.
+- Deletes are tombstones, so they replicate like any other change. A
+  **purge** is a tombstone too, but a final one: it wins over every version
+  of the row that is not purged, whatever the timestamps (see "Purging").
 - Rows keep their origin stamps as they spread, so changes flow **transitively**:
   in a chain `A ↔ B ↔ C`, A's changes reach C through B without A and C ever
   talking. Any connected topology works; you don't need a full mesh.
@@ -499,14 +513,20 @@ record captures:
 | `password.reveal` / `password.copy` | someone views or copies a current password |
 | `revision.reveal` / `revision.copy` | someone views or copies a historical password value |
 | `offline.sync` | a device downloads an offline snapshot (a bulk decrypt) |
+| `vault.export` | someone downloads a vault as a CSV or JSON file (a bulk decrypt; counted under *Reveals*) |
+| `site.export` | a site admin downloads every shared group as one archive (target *all groups*, with the format and the group and entry counts, never a name; counted under *Reveals*) |
+| `vault.import` | entries are created in a vault from an imported file (with created/skipped/failed counts) |
 | `entry.delete` / `group.delete` | something is deleted |
+| `entry.purge` | a deleted entry is purged (erased for good, on every site) |
+| `bin.empty` | every deleted entry of a vault is purged at once (target the vault, detail the count) |
+| `group.purge` | a deleted group is purged, with every entry in it (detail the count) |
 | `member.add` / `member.remove` / `member.role` | group access changes |
 | `personal.takeover` | a site admin converts someone's personal vault into a group |
 | `icon.add` / `icon.delete` | the custom icon catalogue changes |
 
 Each event stores who, when, what (denormalized names, so the trail outlives
-renames and deletions), the site it happened on, and a best-effort client
-address. Events are **append-only and replicate between sites** like password
+renames, deletions and purges — the audit trail itself is never purged), the
+site it happened on, and a best-effort client address. Events are **append-only and replicate between sites** like password
 revisions, so every site's admins see the whole organisation's trail on the
 **Administration** page, newest first. It can be narrowed to a category —
 *Reveals*, *Changes*, *Deletions*, or *Background* (routine events such as
@@ -555,7 +575,9 @@ What makes it personal:
 **When someone leaves.** Company accounts kept in a personal vault must not
 leave with their owner, so a site admin can **take the vault over** from the
 Administration page: it becomes an ordinary group with the admin as an admin
-of it. This is deliberately not quiet — it is one-way, recorded in the audit
+of it. An administrator cannot take over their own personal vault — that would
+only show its passwords to every other site admin — so their own row is marked
+*you* instead. This is deliberately not quiet — it is one-way, recorded in the audit
 log as `personal.takeover`, and the former owner keeps their membership, so if
 they are still around they see exactly what happened. Their next visit gives
 them a fresh, empty personal vault.
@@ -566,6 +588,179 @@ database — the people who run the server — could read a personal vault the
 way they could read any group; Harpo is a trusted-server design (see
 "Security model"), and a personal vault is private from colleagues and
 administrators, not from the operator.
+
+## Purging
+
+Deleting is the everyday, undoable operation: a deleted entry sits in its
+vault's **Recently deleted** list, history and all, until someone restores it.
+Nothing is purged automatically. **Purge** is the one way to remove something
+for good — for a secret pasted into the wrong vault, or test data that must
+not linger — without resetting the site.
+
+**What it erases.** Purging a deleted entry deletes every revision of its
+password (the whole history: ciphertext, reuse fingerprint, strength score)
+and blanks the entry's encrypted notes and 2FA secret and its name, URL,
+username and icon. **Empty recycle bin** does that to every deleted entry of
+a vault in one operation (thousands at once are fine; the page shows a
+spinner). Purging a **deleted group**, from the Administration page, purges
+every entry in it — deleted or not, since they would come back with the
+group — and blanks the group's name and description; it is no longer listed
+and can no longer be restored. Only what is already deleted can be purged.
+
+**Who may.** In a shared group, its admins and the site administrators; in a
+personal vault, its owner and nobody else (site administrators included, as
+everywhere). Members and viewers can delete and restore, but not purge.
+Deleted groups are purged by site administrators, who alone see them. Every
+purge also requires a live session, like every other action.
+
+**Final, and replicated.** The entry (or group) row stays behind as an empty
+tombstone with fresh replication stamps, so every site learns of the purge,
+and the tombstone wins over every version of that row that is not purged,
+whatever its timestamp: a site that had not heard of the purge yet cannot
+bring the entry back — a restore or an edit made there concurrently loses,
+everywhere. A site that receives a purge erases its own copy and deletes its
+own revisions of the entry, and never stores a revision of a purged entry
+that arrives later (from a site that has not heard yet), in whatever order
+rows arrive. When a purge beats a version that is *newer* than it, the
+purging site re-issues its tombstone with a newer stamp, so that sites that
+only know last-writer-wins (older versions, below) take it too.
+
+**Bytes, not just rows.** Deleting or blanking a row does not remove its
+bytes: SQLite leaves them in the pages it freed and in its write-ahead log.
+After a purge commits, the site rewrites its database file (`VACUUM`) and
+empties the log, as it does after encrypting notes; a site that received a
+purge by replication does the same a few seconds later (once, however many
+batches the purge arrived in). Other writes on the site wait while the file
+is rewritten, which takes time in proportion to the size of the database, not
+of the purge: emptying a 5,000-entry recycle bin took about a second, rewrite
+included, in the test suite. If the rewrite cannot run (a full disk, a reader
+holding the log), it is retried every few minutes and at the next start.
+
+**Audit.** `entry.purge` for each entry purged on its own (named as deletions
+are: "an entry in a personal vault" in a personal vault), one `bin.empty` for
+emptying a recycle bin (target the vault, detail the count), and
+`group.purge` for a group (detail the count). The audit log itself is never
+purged, so an earlier event that named the entry — its deletion, in a shared
+group — still names it.
+
+**What a purge cannot reach.** Copies that left Harpo: exported files,
+backups and volume snapshots of the server, and the offline copy on a device
+that has not refreshed since the entry was deleted (offline copies hold only
+live entries, so the next refresh drops it).
+
+**Mixed versions (upgrading from 0.6.0 or earlier).** A site still on an older
+version keeps replicating: it ignores the purge flag it does not know, and
+takes the blank tombstone by last-writer-wins, so its copy of the entry's
+name, URL, username, notes and 2FA secret is blanked too. **But it cannot
+erase its own copy of the password history until it is upgraded**, and its
+users could still restore the blank entry there and see that history. Rows
+from such a site never undo a purge on an upgraded site (they carry no flag,
+and a row without the flag never replaces a tombstone), and a tombstone that
+passes through it, which loses the flag on the way, is still recognised on the
+other side (a deleted entry or group with no name is only ever a purge: Harpo
+has always required names). The first start after upgrading finishes the
+purges the site received while older and rewrites its file. Upgrade every
+site before relying on purge.
+
+## Import and export
+
+Moving to Harpo, or keeping a copy elsewhere, means files. Both directions
+work on the vault that is open on the vault page.
+
+**Import.** *Import…* in the vault's toolbar, for anyone who may add
+passwords there (members and admins of a group, a personal vault's owner).
+It takes a CSV file (`.csv` or `.txt`, comma- or semicolon-separated, up to
+5 MB and 5,000 rows) or a JSON file exported from Harpo. The file is read in
+memory on the server and never written to disk. Harpo recognises the column
+names that Bitwarden, 1Password, KeePass/KeePassXC, LastPass and Chrome/Edge
+write, so their exports need no clicks; the dialog shows the first rows
+(passwords and 2FA secrets masked) with a drop-down per column to change the
+mapping before anything is created. Folder or group columns are shown but not
+used: everything goes into the open vault. Each row is checked like the
+entry editor checks a new entry — a name and a password are required, a 2FA
+secret must be a valid base32 seed or `otpauth://` link — and a row that
+fails is listed with its line number and the reason while the rest are
+created. By default a row whose name and username (ignoring case) already
+exist in the vault is skipped. Imported entries are ordinary entries: a first
+revision by the importer, replicated, in the health report and the offline
+copy. Each import is audited once as `vault.import` with the counts.
+
+**Export.** *Export…* in the same toolbar downloads the vault as a file:
+
+- **CSV** with Bitwarden's column names (`name,login_uri,login_username,login_password,notes,login_totp`),
+  which most password managers — and Harpo — import. UTF-8 with a byte order
+  mark so Excel reads it correctly. Any cell starting with `=`, `+`, `-`,
+  `@`, a tab or a carriage return is prefixed with an apostrophe so a
+  spreadsheet does not run it as a formula (a value that already begins with
+  an apostrophe gets a second one, so the two cases stay distinct). Harpo's
+  import recognises its own export by the header and takes that apostrophe
+  off again, so a round trip is exact; a file from any other manager is
+  imported exactly as written. Other managers may keep the apostrophe (a
+  password beginning with `-`, for example, would then need fixing by hand
+  there).
+- **JSON**, Harpo's own format: every field including the icon, plus the
+  vault's name and where and when it was exported. For moving entries
+  between Harpo vaults or sites.
+
+Only current values are exported — passwords, 2FA secrets and notes; no
+history. Who may export: a personal vault's owner (and nobody else — a site
+admin's rights stop there, as everywhere), a group's admins, and site
+admins. Members and viewers reveal passwords one at a time, each audited; a
+bulk copy is a group admin's decision.
+
+**Read this before allowing it.** An export is a file of every password in
+the vault, in plain text, that leaves Harpo's control the moment it is
+downloaded. Harpo treats it like the offline snapshot, its only other bulk
+decrypt: the download (`GET /api/vault/{id}/export?format=csv|json`) needs a
+live session, checks the rights again, allows one export per user every 10
+seconds, is sent with `Cache-Control: no-store`, and is refused when the
+request comes from another site's page (so a link elsewhere cannot drop a
+file into someone's downloads). Every export is audited as `vault.export`
+with the format and the entry count, in the *Reveals* category. The dialog
+tells the user the file is unencrypted and should be deleted after use. In a
+personal vault both events describe the target only as *a personal vault*.
+To remove the feature, set:
+
+```yaml
+Harpo__Export__Enabled: "false"   # no Export button; the endpoint answers 404
+```
+
+Import is not affected by the switch.
+
+**Export all groups (site administrators, off by default).** For a
+migration or an offline backup of the shared passwords, a site admin can
+download every shared group at once from the *Export* section of the
+Administration page. It is the riskiest thing Harpo can do — every shared
+password on the site, in plain text, in one file — so it is opt-in:
+
+```yaml
+Harpo__Export__AllGroupsEnabled: "true"   # needs Harpo__Export__Enabled as well (the default)
+```
+
+While either switch is off the Administration page says how to enable it and
+the endpoint answers 404. When on, *Export all groups…* shows how many groups
+and passwords the archive will hold (counted without decrypting anything),
+the same plain-text warning as a vault export, and a CSV or JSON choice. The
+download (`GET /api/admin/export?format=csv|json`) is a zip with one file per
+live group — exactly the file that group's own export gives, so each imports
+back into a Harpo vault unchanged — and a `README.txt` saying what the
+archive is, when, by whom, from which site, that it is unencrypted, and which
+group went into which file. Groups with no passwords are there as empty
+files; deleted groups and deleted entries are not. **Personal vaults are
+never included, counted or named** — the exporting admin's own included
+(they export it from their vault); a vault a site admin has taken over is an
+ordinary group by then, and is. File names inside the zip are made from the
+group names with path separators, `..`, control and reserved characters
+removed, cut to 100 bytes, and numbered when two collide (`Ops.csv`,
+`Ops (2).csv`), so the archive extracts safely anywhere.
+
+The endpoint makes the same checks as a vault export, in the same order —
+both switches (404), a request from another site's page (403), the format
+(400), a live session (401), the site admin role as the session holds it
+(403; a group admin is not enough) — then allows one archive per user a
+minute (429 with `Retry-After`), builds it in memory (never on disk), records
+exactly **one** `site.export` event (target *all groups*, detail such as
+`CSV, 12 groups, 340 entries`) and sends it with `Cache-Control: no-store`.
 
 ## 2FA codes (TOTP)
 
@@ -673,6 +868,10 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__Audit__RetentionDays` | `365` | Hard-delete audit events older than this (0 = keep forever) |
 | `Harpo__Offline__Enabled` | `true` | Allow devices to keep an encrypted offline copy of their user's passwords |
 | `Harpo__Offline__SnapshotMaxAgeDays` | `7` | Max age of an offline copy before it must refresh from the server |
+| `Harpo__Export__Enabled` | `true` | Allow group admins (and personal-vault owners) to export a vault as a plain-text file — see "Import and export" |
+| `Harpo__Export__MinSecondsBetweenExports` | `10` | Per-user cooldown between exports |
+| `Harpo__Export__AllGroupsEnabled` | `false` | Allow site admins to download every shared group as one plain-text zip archive (never personal vaults); also needs `Harpo__Export__Enabled` — see "Import and export" |
+| `Harpo__Export__MinSecondsBetweenAllGroupsExports` | `60` | Per-user cooldown between all-groups archives |
 | `Harpo__Connections__MaxPerUser` | `20` | Interactive connections (roughly: open Harpo tabs) one account may hold at once; `0` = no limit |
 | `Auth__Mode` | `Ldap` | `Ldap` or `Development` |
 | `Auth__DevUsers__N__*` | — | Dev-mode users (`Username`, `Password`, `DisplayName`, `IsSiteAdmin`, `Disabled`) |
@@ -712,10 +911,18 @@ All settings can be given as environment variables (`Section__Key` form).
   user's personal vault; notes and passwords are not searched); turn on file
   encryption if those matter too.
 - Password decryption happens **server-side, on explicit reveal/copy actions
-  only**, and every reveal is authorization-checked against group membership. This is a
+  only** — plus deliberate, audited bulk decrypts: the offline snapshot, a
+  vault export (see "Import and export", which can be switched off) and, only
+  where `Harpo__Export__AllGroupsEnabled` turns it on, a site admin's archive
+  of every shared group (never a personal vault) —
+  and every reveal is authorization-checked against group membership. This is a
   *trusted-server* design, matching its role as an internal team tool — it is
   not a zero-knowledge/client-side-crypto product.
 - All access control is enforced in the service layer, not the UI.
+- **Deleting is not erasing; purging is.** A deleted entry keeps its history
+  and can be restored. A purge erases it on every site and rewrites each
+  site's database file so the bytes are gone too — but it cannot reach
+  exports, backups, or a site still on an older version (see "Purging").
 - **Personal vaults are private from colleagues and site admins, not from the
   operator.** The owner-only rule is an access check like group membership;
   the entries are encrypted under the same master key as everything else.
@@ -832,6 +1039,15 @@ it as `feature/<name>` and merge back with `--no-ff`. A release is `develop`
 merged into `main` and tagged (which publishes the image — see below); an
 urgent fix branches from `main` as `hotfix/<name>` and merges into both.
 
+### Continuous integration
+
+Every pull request into `develop` or `main`, and every push to `develop`, runs
+`.github/workflows/ci.yml`: the unit suite in Release, a check that the EF
+model has no changes missing a migration, and the browser end-to-end suites
+(offline vault, interactive UI, sessions) against the two-site demo built
+from that commit on the runner. It needs no secrets, so pull requests from
+forks run it too. The multi-architecture image is built only when releasing.
+
 ### Releasing
 
 Pushing a version tag publishes the image — the `Release` workflow runs the
@@ -849,7 +1065,7 @@ for testing. Forks: change the `IMAGE` name in
 `.github/workflows/release.yml` and in `docker-compose.yml`.
 
 Two things are pinned on purpose and move only by hand. `docker-compose.yml`
-names a release line (`:0.6`) rather than `latest`, so a new minor version
+names a release line (`:0.7`) rather than `latest`, so a new minor version
 means updating that tag as part of the release. And the workflow's actions are
 pinned to commit SHAs rather than tags — the file's header says how to update
 one.
@@ -887,6 +1103,10 @@ one.
 - **Upgrading from 0.5.0 or earlier: everyone signs in again once.** Cookies
   issued before server-side sessions existed name no session, so they are
   refused (and cleared) on the first request after the upgrade.
+- **Upgrading from 0.6.0 or earlier with replication: upgrade every site
+  before relying on purge.** A site still on the older version blanks a
+  purged entry's fields but keeps its password history until it is upgraded
+  (see "Purging"); the first start after the upgrade finishes the job.
 - **LWW granularity** is per row (per entry metadata / per membership); password
   values themselves never conflict because revisions are append-only.
 - **Replication consistency.** Each pull response is built inside one read
@@ -896,7 +1116,8 @@ one.
   response and local edits are serialized, so a later local edit is never
   overwritten by an older replicated row.
 - **Deleting a group** tombstones the group; its entries stop being visible
-  everywhere but their ciphertext and history remain in the database.
+  everywhere but their ciphertext and history remain in the database until
+  the group is purged (see "Purging").
 - Blazor interactive server rendering keeps secrets and crypto on the server;
   revealed passwords transit the SignalR websocket (over your HTTPS).
 

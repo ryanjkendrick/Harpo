@@ -3,6 +3,11 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => { });
 }
 
+// Scrolls the first element matching the selector to the top of the view.
+window.harpoScrollIntoView = (selector) => {
+    document.querySelector(selector)?.scrollIntoView({ block: "start" });
+};
+
 // Small per-browser preference store (e.g. password generator settings).
 window.harpoPrefsGet = (key) => {
     try { return localStorage.getItem(key); } catch { return null; }

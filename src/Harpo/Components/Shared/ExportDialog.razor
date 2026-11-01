@@ -1,0 +1,60 @@
+@* Export the open vault as a file. The download itself is a plain link to the
+   export endpoint, which checks the session, the rights, the site switch and
+   the rate limit, and records the export in the audit log. *@
+@using Harpo.Import
+
+<Modal Visible="true" Title="@(IsPersonal ? "Export your personal vault" : $"Export {VaultName}")" OnClose="CloseAsync">
+    <div class="alert alert-warning export-warning" role="note">
+        <strong>The file is not encrypted.</strong>
+        It contains every current password in @(IsPersonal ? "your personal vault" : "this vault") in plain text,
+        with their 2FA secrets and notes. Anyone who gets hold of it can read all of them.
+    </div>
+    <ul class="export-facts">
+        <li>The export is recorded in the audit log under your name.</li>
+        <li>Delete the file, and empty your computer's recycle bin, as soon as you have used it.</li>
+        <li>Only current passwords are exported; their history stays in Harpo.</li>
+    </ul>
+    <fieldset class="export-formats">
+        <legend class="field-label">Format</legend>
+        <label class="export-format">
+            <input type="radio" name="export-format" value="csv" checked="@(_format == ExportFormat.Csv)"
+                   @onchange="() => _format = ExportFormat.Csv" />
+            <span><strong>CSV</strong> — name, URL, username, password, notes and 2FA secret, under Bitwarden's
+                column names, which most password managers (and Harpo) can import. Values that a spreadsheet
+                would run as a formula are prefixed with an apostrophe; importing the file back into Harpo
+                removes it again.</span>
+        </label>
+        <label class="export-format">
+            <input type="radio" name="export-format" value="json" checked="@(_format == ExportFormat.Json)"
+                   @onchange="() => _format = ExportFormat.Json" />
+            <span><strong>JSON</strong> — everything Harpo keeps for each entry, icon included, and the vault it
+                came from. For moving entries into another Harpo vault or site.</span>
+        </label>
+    </fieldset>
+    <div class="modal-footer">
+        @if (_started)
+        {
+            <p class="muted small export-started" role="status">
+                The download should start now. One export every few seconds; delete the file once you have used it.
+            </p>
+        }
+        <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" @onclick="CloseAsync">@(_started ? "Close" : "Cancel")</button>
+            @* A real link, so the browser saves the file itself; "download" keeps Blazor's router out of it. *@
+            <a class="btn btn-primary export-download" href="@ExportEndpoints.UrlFor(GroupId, _format)" download
+               @onclick="() => _started = true"><Lucide Name="download" Size="16" /> Download @(_format == ExportFormat.Csv ? "CSV" : "JSON")</a>
+        </div>
+    </div>
+</Modal>
+
+@code {
+    [Parameter, EditorRequired] public Guid GroupId { get; set; }
+    [Parameter, EditorRequired] public string VaultName { get; set; } = "";
+    [Parameter] public bool IsPersonal { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private ExportFormat _format = ExportFormat.Csv;
+    private bool _started;
+
+    private Task CloseAsync() => OnClose.InvokeAsync();
+}

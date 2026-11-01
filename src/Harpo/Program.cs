@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Harpo;
 using Harpo.Components;
 using Harpo.Data;
+using Harpo.Import;
 using Harpo.Offline;
 using Harpo.Replication;
 using Harpo.Security;
@@ -31,6 +32,7 @@ builder.Services.AddCascadingAuthenticationState();
 // ---- Options ----
 builder.Services.Configure<SiteOptions>(builder.Configuration.GetSection("Harpo"));
 builder.Services.Configure<Harpo.Offline.OfflineOptions>(builder.Configuration.GetSection("Harpo:Offline"));
+builder.Services.Configure<Harpo.Import.ExportOptions>(builder.Configuration.GetSection("Harpo:Export"));
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Harpo:Audit"));
 builder.Services.Configure<HealthOptions>(builder.Configuration.GetSection("Harpo:Health"));
 builder.Services.Configure<IconOptions>(builder.Configuration.GetSection("Harpo:Icons"));
@@ -56,7 +58,12 @@ builder.Services.AddSingleton<GroupService>();
 builder.Services.AddSingleton<VaultService>();
 builder.Services.AddSingleton<HealthService>();
 builder.Services.AddSingleton<IconService>();
+builder.Services.AddSingleton<DatabaseScrubber>();
+builder.Services.AddHostedService<PurgeScrubService>();
+builder.Services.AddSingleton<PurgeService>();
 builder.Services.AddSingleton<Harpo.Offline.OfflineSnapshotThrottle>();
+builder.Services.AddSingleton<Harpo.Import.ExportThrottle>();
+builder.Services.AddSingleton<Harpo.Import.AllGroupsExportThrottle>();
 
 // ---- Authentication: LDAP bind against Active Directory (or dev users for local testing) ----
 var authMode = builder.Configuration["Auth:Mode"] ?? "Ldap";
@@ -167,6 +174,13 @@ await KeyRotation.EnsureMasterKeyStateAsync(
     app.Services.GetRequiredService<AuditService>(),
     app.Logger);
 
+// Finish any purge this site received but could not carry out yet (while on an
+// earlier version), and remove from the file what an interrupted purge left.
+await Purging.FinishAsync(
+    app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(),
+    app.Services.GetRequiredService<DatabaseScrubber>(),
+    app.Logger);
+
 // Server-level icon catalogue: import whatever the admin mounted into the icons folder.
 await app.Services.GetRequiredService<IconService>().ImportFromDirectoryAsync();
 
@@ -196,6 +210,7 @@ app.MapRazorComponents<App>()
 
 app.MapReplicationEndpoints();
 app.MapOfflineEndpoints();
+app.MapExportEndpoints();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 

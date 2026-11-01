@@ -40,6 +40,12 @@ public static class AuditActions
     public const string EntryRestore = "entry.restore";
     public const string GroupDelete = "group.delete";
     public const string GroupRestore = "group.restore";
+    /// <summary>A deleted entry was erased for good, on every site (see <see cref="Services.PurgeService"/>).</summary>
+    public const string EntryPurge = "entry.purge";
+    /// <summary>Every deleted entry of a vault was purged at once ("Empty recycle bin"); the detail has the count.</summary>
+    public const string BinEmpty = "bin.empty";
+    /// <summary>A deleted group was erased for good, with every entry in it; the detail has the count.</summary>
+    public const string GroupPurge = "group.purge";
     public const string MemberAdd = "member.add";
     public const string MemberRemove = "member.remove";
     public const string MemberRole = "member.role";
@@ -51,12 +57,19 @@ public static class AuditActions
     public const string IconDelete = "icon.delete";
     public const string KeyRotate = "key.rotate";
     public const string PersonalTakeover = "personal.takeover";
+    /// <summary>A whole vault was downloaded as a plain-text file (a bulk decrypt).</summary>
+    public const string VaultExport = "vault.export";
+    /// <summary>Entries were created in a vault from an imported file.</summary>
+    public const string VaultImport = "vault.import";
+    /// <summary>A site admin downloaded every shared group as one archive (the largest bulk decrypt).</summary>
+    public const string SiteExport = "site.export";
 
-    /// <summary>A secret left the vault: shown on screen or put on a clipboard.</summary>
+    /// <summary>A secret left the vault: shown on screen, put on a clipboard, or written to an export file.</summary>
     public static readonly string[] Reveals =
-        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal];
+        [PasswordReveal, PasswordCopy, RevisionReveal, RevisionCopy, TotpReveal, VaultExport, SiteExport];
 
-    public static readonly string[] Deletions = [EntryDelete, GroupDelete, MemberRemove, IconDelete];
+    public static readonly string[] Deletions =
+        [EntryDelete, GroupDelete, MemberRemove, IconDelete, EntryPurge, BinEmpty, GroupPurge];
 
     /// <summary>
     /// Recorded for completeness but routine and frequent: a device syncing its

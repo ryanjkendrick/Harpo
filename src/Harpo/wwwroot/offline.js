@@ -315,6 +315,8 @@ function lock() {
     vaultData = null;
     clearTimeout(idleTimer);
     $("entryList").replaceChildren();
+    $("pager").replaceChildren();
+    page = 1;
     $("unlockPass").value = "";
     enterUnlockState();
 }
@@ -338,6 +340,11 @@ for (const evt of ["click", "keydown", "input"]) {
 }
 
 // ---------- rendering ----------
+
+// The list is drawn 50 entries at a time: thousands of rows at once make the
+// page slow to draw and to scroll. Search covers every entry.
+const PAGE_SIZE = 50;
+let page = 1;
 
 function renderVault() {
     const filter = $("search").value.trim().toLowerCase();
@@ -366,10 +373,25 @@ function renderVault() {
             ? "Your snapshot has no passwords (you may not belong to any group)."
             : "Nothing matches your search.";
         list.appendChild(p);
+        renderPager(0);
         return;
     }
 
-    for (const [groupId, entries] of byGroup) {
+    // One page of the matches, in vault order, under the headings of the
+    // vaults that page reaches into.
+    const matches = [...byGroup.values()].flat();
+    const pages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
+    page = Math.min(Math.max(page, 1), pages);
+    const shown = new Map();
+    for (const entry of matches.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
+        if (!shown.has(entry.groupId)) {
+            shown.set(entry.groupId, []);
+        }
+        shown.get(entry.groupId).push(entry);
+    }
+    renderPager(matches.length);
+
+    for (const [groupId, entries] of shown) {
         const block = document.createElement("div");
         block.className = "group-block";
         const heading = document.createElement("div");
@@ -382,6 +404,40 @@ function renderVault() {
         }
         list.appendChild(block);
     }
+}
+
+function renderPager(total) {
+    const nav = $("pager");
+    nav.replaceChildren();
+    if (total <= PAGE_SIZE) {
+        return;
+    }
+    const pages = Math.ceil(total / PAGE_SIZE);
+    const go = (target) => {
+        page = target;
+        renderVault();
+        $("search").scrollIntoView({ block: "start" });
+    };
+    const button = (label, target, disabled) => {
+        const b = document.createElement("button");
+        b.className = "btn btn-ghost";
+        b.textContent = label;
+        b.disabled = disabled;
+        b.addEventListener("click", () => go(target));
+        return b;
+    };
+    const status = document.createElement("span");
+    status.className = "pager-status";
+    status.setAttribute("role", "status");
+    const first = (page - 1) * PAGE_SIZE + 1;
+    const last = Math.min(page * PAGE_SIZE, total);
+    status.textContent = `${first.toLocaleString()}–${last.toLocaleString()} of ${total.toLocaleString()}`;
+    nav.append(
+        button("First", 1, page === 1),
+        button("Previous", page - 1, page === 1),
+        status,
+        button("Next", page + 1, page === pages),
+        button("Last", pages, page === pages));
 }
 
 function renderEntry(entry) {
@@ -930,7 +986,7 @@ $("unlockBtn").addEventListener("click", doUnlock);
 $("unlockPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doUnlock(); });
 $("refreshBtn").addEventListener("click", doRefresh);
 $("lockBtn").addEventListener("click", () => { lock(); toast("Locked"); });
-$("search").addEventListener("input", renderVault);
+$("search").addEventListener("input", () => { page = 1; renderVault(); });
 for (const id of ["wipeBtn1", "wipeBtn2", "wipeBtn3"]) {
     $(id).addEventListener("click", doWipe);
 }

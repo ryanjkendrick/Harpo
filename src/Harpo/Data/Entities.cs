@@ -38,6 +38,14 @@ public class Group : IReplicatedRow
     /// <summary>Whether this group is somebody's personal vault.</summary>
     public bool IsPersonal => OwnerUsername.Length > 0;
 
+    /// <summary>
+    /// Set when a deleted group has been purged: its name and description are
+    /// blank, its entries are purged with it, and it can never be restored. The
+    /// row stays as a tombstone (with <see cref="IReplicatedRow.IsDeleted"/>)
+    /// so that every site learns of the purge. Final: see <see cref="Services.Purging"/>.
+    /// </summary>
+    public bool IsPurged { get; set; }
+
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
@@ -130,6 +138,16 @@ public class PasswordEntry : IReplicatedRow
     /// <summary>Who last edited the metadata (password changes are tracked on revisions).</summary>
     public string UpdatedBy { get; set; } = "";
 
+    /// <summary>
+    /// Set when a deleted entry has been purged: every field above that held
+    /// anything of the entry is blank, its password history is gone, and it
+    /// can never be restored or edited again. The row stays as a tombstone
+    /// (with <see cref="IReplicatedRow.IsDeleted"/>) so the purge replicates and
+    /// a site that has not heard of it yet cannot bring the entry back.
+    /// Final: see <see cref="Services.Purging"/>.
+    /// </summary>
+    public bool IsPurged { get; set; }
+
     public string OriginSiteId { get; set; } = "";
     public long OriginSeq { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
@@ -139,7 +157,9 @@ public class PasswordEntry : IReplicatedRow
 /// <summary>
 /// Append-only password history. Never updated after creation, so replication is a
 /// simple union of rows and concurrent password changes on two sites both survive
-/// in history (the newest one wins as "current").
+/// in history (the newest one wins as "current"). The one exception is a purge:
+/// every revision of a purged entry is deleted outright, on every site, and one
+/// that arrives later for it is not stored (see <see cref="Services.Purging"/>).
 /// </summary>
 public class PasswordRevision : IReplicatedRow
 {

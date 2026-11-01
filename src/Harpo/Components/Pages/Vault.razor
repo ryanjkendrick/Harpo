@@ -4,6 +4,7 @@
 @rendermode InteractiveServer
 @inject GroupService Groups
 @inject VaultService Passwords
+@inject PurgeService Purge
 @inject IconService IconCatalogue
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -98,6 +99,14 @@
                        @bind="_search" @bind:event="oninput" @bind:after="OnSearchTyped" />
                 @if (CanEdit)
                 {
+                    <button class="btn btn-ghost vault-import" @onclick="() => _importOpen = true"><Lucide Name="upload" Size="16" /> Import…</button>
+                }
+                @if (CanExport)
+                {
+                    <button class="btn btn-ghost vault-export" @onclick="() => _exportOpen = true"><Lucide Name="download" Size="16" /> Export…</button>
+                }
+                @if (CanEdit)
+                {
                     <button class="btn btn-primary" @onclick="OpenNewEntry"><Lucide Name="plus" Size="16" /> New password</button>
                 }
                 else if (SelectedSummary is not null)
@@ -110,12 +119,12 @@
             {
                 <p class="muted">Loading…</p>
             }
-            else if (FilteredEntries.Count == 0)
+            else if (_matching == 0)
             {
                 <div class="empty-state">
                     <span class="empty-icon">🗝️</span>
                     <p class="muted">
-                        @(_entries.Count > 0 ? "Nothing matches your search."
+                        @(_inVault > 0 ? "Nothing matches your search."
                             : SelectedIsPersonal ? "Nothing here yet. Passwords you add to your personal vault are yours alone."
                             : "No passwords in this group yet.")
                     </p>
@@ -136,7 +145,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var view in FilteredEntries)
+                            @foreach (var view in _entries)
                             {
                                 var entry = view.Entry;
                                 <tr>
@@ -153,7 +162,9 @@
                                     <td class="cell-username">
                                         @if (!string.IsNullOrEmpty(entry.Username))
                                         {
-                                            <span class="mono">@entry.Username</span>
+                                            @* An email may break before its @ (and nowhere else), so it does not hold the column wide. *@
+                                            var at = entry.Username.IndexOf('@');
+                                            <span class="mono">@if (at > 0) {@(entry.Username[..at])<wbr />@(entry.Username[at..])} else {@entry.Username}</span>
                                             <button class="btn btn-icon" title="Copy username" aria-label="Copy username"
                                                     @onclick='() => CopyTextAsync(entry.Username, "Username copied")'><Lucide Name="copy" Size="15" /></button>
                                         }
@@ -238,6 +249,21 @@
                         </tbody>
                     </table>
                 </div>
+                @if (_matching > PageSize)
+                {
+                    var total = _matching;
+                    var page = _page;
+                    var pages = _pageCount;
+                    var first = (page - 1) * PageSize + 1;
+                    var last = Math.Min(page * PageSize, total);
+                    <nav class="pager" aria-label="Pages of passwords">
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(1)">First</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == 1)" @onclick="() => GoToPageAsync(page - 1)">Previous</button>
+                        <span class="pager-status" role="status">@first.ToString("N0")–@last.ToString("N0") of @total.ToString("N0")</span>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(page + 1)">Next</button>
+                        <button type="button" class="btn btn-ghost btn-sm" disabled="@(page == pages)" @onclick="() => GoToPageAsync(pages)">Last</button>
+                    </nav>
+                }
             }
             @if (OtherMatches is { } others)
             {
@@ -248,9 +274,18 @@
                 <details class="trash">
                     <summary class="muted"><Lucide Name="trash" Size="14" /> Recently deleted (@_deletedTotal)</summary>
                     <p class="muted small trash-note">
-                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them —
-                        nothing is purged automatically.
+                        @(_deletedTotal == 0 ? "Nothing has been deleted from this group. " : "")Deleted passwords stay here, with their history, until someone restores them
+                        @(SelectedIsPersonal ? "or you purge them" : "or one of the group's admins purges them") —
+                        nothing is purged automatically. A purge erases a password for good, on every site.
                     </p>
+                    @if (CanPurge && _deletedTotal > 0)
+                    {
+                        <div class="trash-actions">
+                            <button type="button" class="btn btn-ghost btn-sm btn-danger-text empty-bin" @onclick="OpenEmptyBin">
+                                <Lucide Name="trash" Size="14" /> Empty recycle bin…
+                            </button>
+                        </div>
+                    }
                     <div class="table-scroll">
                         <table>
                             <tbody>
@@ -264,6 +299,10 @@
                                         <td class="muted">deleted by <span class="mono">@entry.UpdatedBy</span> · @Relative(entry.UpdatedAtUtc)</td>
                                         <td class="cell-actions">
                                             <button class="btn btn-ghost btn-sm" @onclick="() => RestoreEntryAsync(entry)">Restore</button>
+                                            @if (CanPurge)
+                                            {
+                                                <button class="btn btn-ghost btn-sm btn-danger-text purge-entry" @onclick="() => OpenPurge(entry)">Purge…</button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -444,6 +483,63 @@
     }
 </Modal>
 
+<Modal Visible="_purge is not null" Title="@(_purge?.Entry is null ? "Empty recycle bin" : "Purge password")"
+       OnClose="ClosePurge" CloseOnBackdrop="false">
+    @if (_purge is { } purge)
+    {
+        <div class="purge-confirm">
+            @if (purge.Entry is { } purgeEntry)
+            {
+                <p>
+                    <strong>@purgeEntry.Name</strong> will be erased for good: its whole password history,
+                    its notes and its 2FA secret. It disappears from “Recently deleted” on every site
+                    and can never be restored.
+                </p>
+            }
+            else
+            {
+                <p>
+                    All <strong>@purge.Count.ToString("N0") deleted @(purge.Count == 1 ? "password" : "passwords")</strong> in
+                    <strong>@purge.VaultName</strong> will be erased for good, with their password history, notes
+                    and 2FA secrets. They disappear from every site and can never be restored.
+                </p>
+            }
+            <p class="alert alert-warning purge-warning">This cannot be undone.</p>
+            @if (_purgeError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_purgeError</div>
+            }
+            @if (_purgeBusy)
+            {
+                <div class="busy-status" role="status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span>Purging… <span class="muted">Erasing the passwords and rewriting this site's database file.</span></span>
+                </div>
+            }
+            else
+            {
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" @onclick="ClosePurge">Cancel</button>
+                    <button type="button" class="btn btn-danger purge-confirm-button" @onclick="ConfirmPurgeAsync">
+                        @(purge.Entry is null ? "Empty recycle bin" : "Purge")
+                    </button>
+                </div>
+            }
+        </div>
+    }
+</Modal>
+
+@if (_importOpen && SelectedSummary is { } importTarget && _user is not null)
+{
+    <ImportDialog User="_user" GroupId="importTarget.Group.Id" VaultName="@importTarget.Group.Name" IsPersonal="importTarget.Group.IsPersonal"
+                  OnClose="() => _importOpen = false" OnImported="ReloadAsync" />
+}
+@if (_exportOpen && SelectedSummary is { } exportTarget)
+{
+    <ExportDialog GroupId="exportTarget.Group.Id" VaultName="@exportTarget.Group.Name" IsPersonal="exportTarget.Group.IsPersonal"
+                  OnClose="() => _exportOpen = false" />
+}
+
 <EntryDetails View="DetailsView" Updated="@DetailsUpdated" OnClose="CloseDetails" CopyText="CopyFromDetailsAsync" />
 
 <div class="toast-region" role="status" aria-live="polite">
@@ -458,13 +554,20 @@
 
     /// <summary>Pre-fills the search box — lets other pages (the health report) link straight to an entry.</summary>
     [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    /// <summary>Which page of the list to show (?page=N); absent means the first.</summary>
+    [SupplyParameterFromQuery(Name = "page")] public int? PageQuery { get; set; }
     private string? _appliedQuery;
 
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
 
     private UserContext? _user;
     private List<GroupSummary>? _groups;
-    private List<EntryView>? _entries;
+    /// <summary>The page of entries shown (see <see cref="VaultService.GetEntryPageAsync"/>); null while loading.</summary>
+    private IReadOnlyList<EntryView>? _entries;
+    private int _matching;   // entries matching the search, across all pages
+    private int _inVault;    // entries in the vault
+    private int _pageCount = 1;
+    private int _loadVersion;
     private List<PasswordEntry>? _deletedEntries;
     private int _deletedTotal;
     private string _selectedGroupName = "";
@@ -565,26 +668,29 @@
         SelectedSummary is { } selected
         && (_user?.IsSiteAdmin == true || selected.MyRole?.CanWrite() == true);
 
-    private List<EntryView> FilteredEntries
-    {
-        get
-        {
-            if (_entries is null)
-            {
-                return new List<EntryView>();
-            }
-            var term = _search.Trim();
-            if (term.Length == 0)
-            {
-                return _entries;
-            }
-            return _entries
-                .Where(v => v.Entry.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
-                            || v.Entry.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
-                            || v.Entry.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-    }
+    // Export is a group admin's call (VaultService.RequireExportRightsAsync):
+    // the owner of a personal vault, a group's admins, the site admins — and
+    // only while the site allows it.
+    private bool CanExport =>
+        Passwords.ExportEnabled
+        && SelectedSummary is { } selected
+        && (selected.Group.IsPersonal || _user?.IsSiteAdmin == true || selected.MyRole == GroupRole.Admin);
+
+    // Purge is a group admin's call too (PurgeService): the owner of a personal
+    // vault, a group's admins, the site admins. Members and viewers can delete
+    // and restore, not purge.
+    private bool CanPurge =>
+        SelectedSummary is { } selected
+        && (selected.Group.IsPersonal || _user?.IsSiteAdmin == true || selected.MyRole == GroupRole.Admin);
+
+    private sealed record PurgeRequest(PasswordEntry? Entry, int Count, string VaultName);
+
+    private PurgeRequest? _purge;
+    private bool _purgeBusy;
+    private string? _purgeError;
+
+    private bool _importOpen;
+    private bool _exportOpen;
 
     protected override async Task OnInitializedAsync()
     {
@@ -601,7 +707,17 @@
             _appliedQuery = Query;
             _search = Query ?? "";
         }
-        await LoadEntriesAsync();
+        var groupChanged = SelectedGroupId != _pagedGroup;
+        _pagedGroup = SelectedGroupId;
+        // The address says which page (a link to a vault or a search has none: page 1).
+        var requested = Math.Max(1, PageQuery ?? 1);
+        var pageChanged = requested != _page;
+        _page = requested;
+        // Only the page shown is loaded, so moving to another page loads that one.
+        if (queryChanged || groupChanged || pageChanged || _entries is null)
+        {
+            await LoadEntriesAsync();
+        }
         // The other-vaults list is "everything but the open vault", so it is
         // stale once the open vault changes, and a ?q= deep link needs its own
         // search. Not while prerendering: nothing there could receive the result.
@@ -629,7 +745,36 @@
             ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
             : null;
 
-    private void OnSearchTyped() => ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+    private async Task OnSearchTyped()
+    {
+        _page = 1; // a new search starts at its first match
+        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+        await LoadEntriesAsync();
+        if (PageQuery is not null)
+        {
+            // …and, once the matches are shown, the address stops naming a page of the old list.
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", (int?)null), replace: true);
+        }
+    }
+
+    // ---- paging ----
+    // One page of the (searched) entries is loaded and drawn at a time: loading,
+    // decrypting and drawing thousands at once took seconds on every visit.
+
+    private const int PageSize = 50;
+    private int _page = 1;
+    private Guid? _pagedGroup;
+
+    private async Task GoToPageAsync(int page)
+    {
+        var target = Math.Clamp(page, 1, _pageCount);
+        // In the address, so a reload or a shared link shows the same page and
+        // Back returns to the previous one; page 1 is the address without ?page.
+        // The address change loads the page (OnParametersSetAsync).
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", target == 1 ? null : (int?)target));
+        // The pager sits under the table: bring the top of the new page into view.
+        await JS.InvokeVoidAsync("harpoScrollIntoView", ".vault-toolbar");
+    }
 
     /// <summary>
     /// Debounced, and latest-wins: every call cancels the one before, and an
@@ -706,10 +851,21 @@
             _entries = null;
             return;
         }
+        // Typing fires a load per keystroke: only the newest one may land.
+        var version = ++_loadVersion;
         try
         {
             _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
-            _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
+            var result = await Passwords.GetEntryPageAsync(_user, groupId.Value, _search, _page, PageSize);
+            if (version != _loadVersion)
+            {
+                return;
+            }
+            _entries = result.Items;
+            _matching = result.Matching;
+            _inVault = result.InVault;
+            _pageCount = result.PageCount;
+            _page = result.Page;
             if (CanEdit)
             {
                 var trash = await Passwords.GetDeletedEntriesAsync(_user, groupId.Value);
@@ -724,7 +880,9 @@
         }
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
         {
-            _entries = new List<EntryView>();
+            _entries = Array.Empty<EntryView>();
+            _matching = _inVault = 0;
+            _pageCount = 1;
             ShowToast(ex.Message, isError: true);
         }
     }
@@ -1109,6 +1267,66 @@
         }
     }
 
+    private void OpenPurge(PasswordEntry entry)
+    {
+        _purge = new PurgeRequest(entry, 1, SelectedSummary?.Group.Name ?? "");
+        _purgeError = null;
+    }
+
+    private void OpenEmptyBin()
+    {
+        var group = SelectedSummary?.Group;
+        _purge = new PurgeRequest(null, _deletedTotal, group is null ? "" : group.IsPersonal ? "your personal vault" : group.Name);
+        _purgeError = null;
+    }
+
+    // While a purge runs, closing would only hide it: it finishes regardless.
+    private void ClosePurge()
+    {
+        if (!_purgeBusy)
+        {
+            _purge = null;
+        }
+    }
+
+    private async Task ConfirmPurgeAsync()
+    {
+        if (_purge is not { } request || _purgeBusy || _user is null || SelectedGroupId is not { } groupId)
+        {
+            return;
+        }
+        _purgeBusy = true;
+        _purgeError = null;
+        // As with an import: show the busy state first, then do the work (thousands
+        // of rows, and a rewrite of the database file) off the circuit's thread.
+        StateHasChanged();
+        await Task.Yield();
+        var user = _user;
+        try
+        {
+            if (request.Entry is { } entry)
+            {
+                await Task.Run(() => Purge.PurgeEntryAsync(user, entry.Id));
+                ShowToast($"\"{entry.Name}\" purged");
+            }
+            else
+            {
+                var purged = await Task.Run(() => Purge.EmptyRecycleBinAsync(user, groupId));
+                ShowToast(purged == 1 ? "1 password purged" : $"{purged:N0} passwords purged");
+            }
+            _purge = null;
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _purgeError = ex.Message;
+        }
+        finally
+        {
+            _purgeBusy = false;
+        }
+        await ReloadAsync();
+    }
+
     private async Task DeleteEntryAsync(PasswordEntry entry)
     {
         var confirmed = await JS.InvokeAsync<bool>("confirm",
@@ -1161,6 +1379,12 @@
     {
         _groups = await Groups.GetMyGroupsAsync(_user!);
         await LoadEntriesAsync();
+        // Stay on this page, unless deletions left it past the end (the load
+        // pulled _page back): then the address follows.
+        if (_page != Math.Max(1, PageQuery ?? 1))
+        {
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", _page == 1 ? null : (int?)_page), replace: true);
+        }
     }
 
     private void ShowToast(string message, bool isError = false)

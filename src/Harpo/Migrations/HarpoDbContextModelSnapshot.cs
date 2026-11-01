@@ -143,6 +143,9 @@ namespace Harpo.Migrations
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("IsPurged")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -255,6 +258,9 @@ namespace Harpo.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("IsDeleted")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsPurged")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Name")

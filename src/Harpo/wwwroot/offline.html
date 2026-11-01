@@ -91,6 +91,12 @@
         .entry .pw { font-family: var(--mono); font-size: .88em; letter-spacing: .06em; color: var(--muted); }
         .entry .pw.shown { color: var(--ink); background: var(--accent-soft); padding: .12rem .4rem; border-radius: 6px;
                            user-select: all; letter-spacing: 0; }
+        .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .4rem .6rem; margin-top: .9rem; }
+        .pager:empty { display: none; }
+        .pager .btn { padding: .3rem .7rem; font-size: .85rem; }
+        .pager .btn:disabled { cursor: default; }
+        .pager-status { min-width: 9.5rem; text-align: center; font-size: .85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+        @media (max-width: 600px) { .pager-status { order: -1; flex-basis: 100%; } }
         .footerline { color: var(--muted); font-size: .8rem; margin-top: 1rem; display: flex;
                       justify-content: space-between; gap: .8rem; flex-wrap: wrap; }
         .toast {
@@ -150,6 +156,7 @@
         </div>
         <div id="vaultError" class="alert alert-error hidden" role="alert"></div>
         <div id="entryList"></div>
+        <nav id="pager" class="pager" aria-label="Pages of passwords"></nav>
         <div class="footerline">
             <span id="syncInfo"></span>
             <span>

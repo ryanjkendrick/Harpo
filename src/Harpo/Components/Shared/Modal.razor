@@ -7,7 +7,7 @@
 @if (Visible)
 {
     <div class="modal-backdrop" @onclick="BackdropClickAsync">
-        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="@_titleId" tabindex="-1"
+        <div class="modal-panel @(Wide ? "modal-wide" : "")" role="dialog" aria-modal="true" aria-labelledby="@_titleId" tabindex="-1"
              @ref="_panel" @onclick:stopPropagation="true">
             <div class="modal-header">
                 <h2 id="@_titleId">@Title</h2>
@@ -26,6 +26,8 @@
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public bool CloseOnBackdrop { get; set; } = true;
+    /// <summary>Room for a table (the import preview) rather than a form.</summary>
+    [Parameter] public bool Wide { get; set; }
 
     private readonly string _titleId = "modal-title-" + Guid.NewGuid().ToString("N")[..8];
     private ElementReference _panel;

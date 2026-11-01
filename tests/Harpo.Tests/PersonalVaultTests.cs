@@ -239,6 +239,30 @@ public class PersonalVaultTests : IDisposable
     }
 
     [Fact]
+    public async Task A_site_admin_cannot_take_over_their_own_personal_vault()
+    {
+        var entry = await AddPersonalEntryAsync(_site, _root, "My own", "root-pw");
+        var vault = entry.GroupId;
+
+        var ex = await Assert.ThrowsAsync<VaultValidationException>(() => _site.Groups.TakeOverPersonalVaultAsync(_root, vault, ""));
+        Assert.Contains("your own personal vault", ex.Message);
+        // The same account spelled differently is still the owner.
+        await Assert.ThrowsAsync<VaultValidationException>(() =>
+            _site.Groups.TakeOverPersonalVaultAsync(TestSite.User("ROOT", siteAdmin: true), vault, ""));
+
+        // Nothing changed: still personal, still listed, nothing audited.
+        var listed = Assert.Single(await _site.Groups.GetPersonalVaultsAsync(_root));
+        Assert.Equal((vault, "root"), (listed.Group.Id, listed.Group.OwnerUsername));
+        Assert.DoesNotContain(await _site.Audit.GetEventsAsync(_root), e => e.Action == AuditActions.PersonalTakeover);
+        Assert.Equal("root-pw", await _site.Vault.RevealPasswordAsync(_root, entry.Id));
+
+        // Another site administrator still can, which is what takeover is for.
+        var other = TestSite.User("admin2", siteAdmin: true);
+        var group = await _site.Groups.TakeOverPersonalVaultAsync(other, vault, "");
+        Assert.False(group.IsPersonal);
+    }
+
+    [Fact]
     public async Task A_site_admin_can_take_a_personal_vault_over_and_its_owner_gets_a_fresh_one()
     {
         var entry = await AddPersonalEntryAsync(_site, _alice, "Payroll portal", "payroll-pw");

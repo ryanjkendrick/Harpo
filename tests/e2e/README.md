@@ -39,18 +39,34 @@ afterwards.
 - **`ui.e2e.js`** — the interactive UI: dialog keyboard behaviour (focus moves
   in, Tab stays in, Escape closes, focus returns), validation shown at the
   field it concerns, the password and 2FA controls, notes through the editor,
-  copying from history, the entry details dialog as a Viewer on a 390px touch
+  copying from history, importing a Bitwarden-style CSV through the Import
+  dialog (columns mapped without a click, secrets masked in the preview, a
+  summary of created, skipped and failed rows) and exporting the group (the
+  CSV header and its formula guard, the JSON holding the 2FA secrets, a
+  Viewer refused with 403, a personal vault's export audited without names),
+  the entry details dialog as a Viewer on a 390px touch
   screen (notes as selectable text with a copy button, a notes indicator on
   the row, "No notes" when empty), the entries layout at seven widths (nothing may
   overflow or sit under another element, at rest or with secrets revealed),
   links from the health report, the vault search finding an entry in another
   vault (the personal vault, named and linked, with no secret in the result,
   fitting at 1280px and 390px, and the link opening that vault filtered), the Administration page's navigation and
-  audit-log filters, and personal vaults as two accounts see them: one each,
+  audit-log filters, its all-groups export (the dialog's warning, counts and
+  links; the download a zip whose central directory and inflated files are
+  read in the page — the test group's file and a README in it, the personal
+  vault not; a group admin who is not a site admin refused with 403; one
+  `site.export` audit event without names — which needs
+  `Harpo__Export__AllGroupsEnabled=true`, as the demo compose file sets),
+  and personal vaults as two accounts see them: one each,
   closed to the other (the site administrator included), described in the
   audit log without entry names, and taken over from the Administration page
   — after which the second account gets a fresh one — plus a site admin who
-  is given an explicit Viewer membership keeping the edit controls. It also holds the
+  is given an explicit Viewer membership keeping the edit controls; purging,
+  in a throwaway group of its own: a Member is offered Restore but no Purge,
+  the same account made the group's admin purges one deleted entry behind a
+  confirmation (it leaves the recycle bin for good) and empties the bin, the
+  deleted group is purged from the Administration page, and the audit log
+  shows `entry.purge`, `bin.empty` and `group.purge`. It also holds the
   content security policy to its word:
   every page must be served with it, nothing the app does may be blocked by
   it, and an injected inline script or style must have no effect — so a
@@ -75,7 +91,7 @@ leaves the data behind.
 ```bash
 npm install
 npm test          # offline vault — expect 22/22 checks passed
-npm run test:ui   # interactive UI — expect 52/52 checks passed
+npm run test:ui   # interactive UI — expect 75/75 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
 ```
@@ -88,7 +104,10 @@ vault, so point it at a throwaway stack, not at one whose second account
 keeps real passwords there.
 
 Re-running the offline suite within 30 seconds hits the per-user snapshot
-cooldown; the script waits it out automatically once.
+cooldown; the script waits it out automatically once. The UI suite exports
+three times, and exports have a 10-second per-user cooldown of their own,
+which it waits out the same way. It downloads the all-groups archive once;
+that has a one-minute cooldown, so a re-run within a minute waits it out.
 
 ## Things headless Chrome does differently
 

@@ -20,13 +20,14 @@ you are the person running the server, read that too.
 7. [Password history](#password-history)
 8. [Searching](#searching)
 9. [Deleting and restoring](#deleting-and-restoring)
-10. [Your personal vault](#your-personal-vault)
-11. [Groups and members](#groups-and-members)
-12. [Vault health](#vault-health)
-13. [The offline vault](#the-offline-vault)
-14. [On a phone or tablet](#on-a-phone-or-tablet)
-15. [Administration](#administration) (site administrators)
-16. [Who can do what](#who-can-do-what)
+10. [Importing and exporting](#importing-and-exporting)
+11. [Your personal vault](#your-personal-vault)
+12. [Groups and members](#groups-and-members)
+13. [Vault health](#vault-health)
+14. [The offline vault](#the-offline-vault)
+15. [On a phone or tablet](#on-a-phone-or-tablet)
+16. [Administration](#administration) (site administrators)
+17. [Who can do what](#who-can-do-what)
 
 ## The ideas in one minute
 
@@ -40,10 +41,11 @@ you are the person running the server, read that too.
   whole. They are chosen by your directory, not inside Harpo.
 - **Your personal vault** is for passwords only you should see. Nobody else can
   open it, site administrators included.
-- **Nothing is forgotten.** Every password an entry has ever had stays in its
-  history, deleted passwords sit in a recycle bin until restored, and revealing,
-  copying or deleting anything is written to an audit log the administrators
-  can read.
+- **Nothing is forgotten by accident.** Every password an entry has ever had
+  stays in its history, deleted passwords sit in a recycle bin until restored,
+  and revealing, copying or deleting anything is written to an audit log the
+  administrators can read. Only a deliberate **purge** by a group's admin
+  erases a deleted password for good.
 
 ## Signing in and out
 
@@ -89,9 +91,18 @@ Select a vault and its passwords appear as a table, one row per entry:
 | **Last updated** | Who last changed the password and how long ago. Hover for the exact time. |
 | Actions | Edit, details and notes, password history, delete. Viewers see only details and history. |
 
+A vault with more than 50 passwords shows them 50 at a time. **First**,
+**Previous**, **Next** and **Last** under the table move between pages, and the
+count between them says which passwords you are looking at. The page is part
+of the address, so reloading keeps it and the browser's Back button returns to
+the page before. Searching always covers the whole vault and starts again at
+the first match.
+
 The toolbar above the table has the search box and, if you may add passwords
-here, the **New password** button. If you are a viewer, the button is replaced
-by a *viewer* badge and the edit and delete buttons are not shown.
+here, the **Import…** and **New password** buttons; group admins also see
+**Export…** (see [Importing and exporting](#importing-and-exporting)). If you
+are a viewer, the buttons are replaced by a *viewer* badge and the edit and
+delete buttons are not shown.
 
 ![The same group as a viewer sees it](manual/viewer.png)
 
@@ -202,6 +213,102 @@ who can edit the vault.
 Deleting a whole group works the same way, from the group's page (see below);
 a site administrator can restore it from the Administration page.
 
+### Purging: erasing for good
+
+Sometimes a deleted password must not stay restorable: a secret pasted into
+the wrong vault, or test data. **Purge…** on a row of *Recently deleted*
+erases that entry for good, and **Empty recycle bin…** above the list does the
+same to every deleted entry of the vault at once. Both ask first, and the
+confirmation says plainly what happens:
+
+- the entry's whole password history, its notes and its 2FA secret, and its
+  name, URL, username and icon, are erased;
+- it disappears from every site, and can never be restored — not by you, not
+  by an administrator;
+- each site also rewrites its database file, so the erased values are not
+  left behind in the file itself. A large recycle bin takes a few seconds; a
+  spinner shows while it runs.
+
+Only the group's **admins** (and site administrators) see these buttons; in
+your personal vault, you do. Members and viewers can delete and restore, but
+not purge. Only what is already in the recycle bin can be purged: delete an
+entry first.
+
+The audit log records each purge (`entry.purge`, or `bin.empty` with the
+number of entries), and the audit log itself is never purged: an earlier
+event that named the entry — its deletion, say — still names it. In your
+personal vault, as always, no event names your entries.
+
+A purge cannot reach copies outside Harpo: a file someone exported, a backup
+of the server, or an offline copy on a device that has not refreshed since
+the entry was deleted.
+
+## Importing and exporting
+
+### Bringing passwords in from another manager
+
+If your team's passwords live in Bitwarden, 1Password, KeePass, LastPass or a
+browser today, export them from there as a **CSV file**, open the Harpo vault
+they belong in, and click **Import…**. Anyone who can add passwords to the
+vault can import into it.
+
+![The import dialog, before anything is imported](manual/import.png)
+
+Choose the file and Harpo shows what it found before anything is created:
+
+- **One drop-down per column** says what that column becomes: name,
+  username, password, URL, notes, 2FA secret, or *Ignore*. Exports from the
+  managers above are recognised by their column names, so usually there is
+  nothing to change. A name and a password column are required.
+- **The first few rows** are shown so you can check the columns line up.
+  Passwords and 2FA secrets are shown as dots.
+- **Folders are not used.** Other managers' folder or group columns are
+  shown but ignored: everything goes into the vault you have open. Import
+  each folder into its own group if you want them apart.
+- **Skip rows whose name and username are already in this vault** is on by
+  default, so importing the same file twice does not give you every entry
+  twice. Untick it to create them anyway.
+
+Click **Import** and a summary says how many entries were created, how many
+were skipped because the vault already had them, and which rows could not be
+imported and why: a row with no name or no password (a secure note, say), or
+a 2FA secret that is not one. The row number is the line in the file, so you
+can find it. Imported passwords are ordinary entries from then on, with you as
+the person who set them.
+
+The file you imported from holds those passwords in plain text. Delete it once
+you are done, and empty your computer's recycle bin.
+
+### Taking a copy out
+
+Group admins and site administrators can download a whole group as a file
+with **Export…**, and you can download your own personal vault the same way
+(nobody else can, site administrators included). Members and viewers cannot; they reveal
+passwords one at a time.
+
+![The export dialog](manual/export.png)
+
+Choose a format:
+
+- **CSV** is what other password managers import (it uses Bitwarden's column
+  names). It holds each entry's name, URL, username, password, notes and 2FA
+  secret. Values that a spreadsheet would treat as a formula, such as a
+  password starting with `-` or `=`, are written with an apostrophe in front
+  so opening the file in Excel cannot run anything. Harpo recognises its own
+  file when you import it back and removes the apostrophe again, so nothing
+  changes on a round trip; files from other managers are imported exactly as
+  they are. Other managers may keep the apostrophe.
+- **JSON** is Harpo's own format, with icons too. Use it to move entries into
+  another Harpo vault or site.
+
+Only the current passwords are exported, not their history. Take the dialog's
+warning seriously: **the file is not encrypted**, and anyone who gets hold of
+it can read every password in it. Every export is recorded in the audit log
+under your name. Use the file for what you needed it for, then delete it.
+Your administrator can turn exporting off for the whole site, in which case
+the button is not there. Where it is switched on, site administrators can
+also export every group at once (see [Administration](#export)).
+
 ## Your personal vault
 
 The first time you open the vault page, Harpo creates your **personal vault**
@@ -260,7 +367,7 @@ member with the bin button.
 | --- | --- |
 | **Viewer** | See, reveal and copy passwords and 2FA codes, read details and notes, see history. Change nothing. |
 | **Member** | Everything a viewer can, plus add, edit, delete and restore passwords. |
-| **Admin** | Everything a member can, plus rename the group, manage members, and delete the group. |
+| **Admin** | Everything a member can, plus purge deleted passwords, rename the group, manage members, and delete the group. |
 
 To add someone, type their **AD username** (the account name they sign in
 with). As you type, Harpo looks the name up in the directory and offers
@@ -287,7 +394,8 @@ Group admins change the name and description under **Group settings** and
 click **Save**. **Delete this group** in the danger zone hides the group and
 all its passwords from everyone. Like a deleted password, a deleted group is
 not destroyed: the Administration page lists deleted groups with a **Restore**
-button.
+button, and with **Purge…** for a site administrator who must erase it for
+good.
 
 ## Vault health
 
@@ -332,6 +440,9 @@ entries, encrypts them with your passphrase, and shows them.
 below) and enter your passphrase. You get your entries grouped by vault, with
 search, reveal and copy, and 2FA codes generated on the device. You cannot add
 or change anything offline; changes are made online, in the normal vault.
+
+The offline list also shows 50 passwords at a time, with the same buttons
+under it; search covers everything, and locking starts again at the first page.
 
 Good to know:
 
@@ -392,7 +503,8 @@ health-report views alongside. Events from every site are shown together,
 newest first.
 
 - The chips narrow the list to **Reveals** (passwords and 2FA codes shown or
-  copied), **Changes** (membership, icons, takeovers), **Deletions**, or
+  copied, vaults or all groups exported), **Changes** (membership, icons, takeovers,
+  imports), **Deletions**, or
   **Background** (offline syncs and report views, which are shown dimmed in
   the full list).
 - The filter box matches on the person, the action or the target.
@@ -419,7 +531,11 @@ has placed in the site's icon folder with **Import now**.
   link to appoint one.
 - **Deleted groups** lists groups that have been deleted, with **Restore**.
   Restoring a group brings back its passwords, except those that had been
-  deleted individually before.
+  deleted individually before. **Purge…** beside it erases the group for good
+  after a confirmation: every password in it (deleted or not) as described in
+  [Purging](#purging-erasing-for-good), and the group's name and description.
+  A purged group disappears from every site, is no longer listed, and cannot
+  be restored. It is recorded as `group.purge`, with the number of entries.
 - **All groups** lists every group on the site with its creator and counts.
   Personal vaults are not listed; they are not groups.
 
@@ -428,7 +544,9 @@ has placed in the site's icon folder with **Import now**.
 ![The personal vaults table](manual/admin-personal-vaults.png)
 
 Everyone who has opened Harpo has a personal vault, listed here by owner with
-the number of passwords in it. You cannot see inside them. What you can do,
+the number of passwords in it. You cannot see inside them. Your own is marked
+*you* and cannot be taken over: that would only show your private passwords to
+every other site administrator. What you can do,
 when someone leaves and company accounts may be in their vault, is **take it
 over**.
 
@@ -440,6 +558,30 @@ written to the audit log, and the person gets a fresh, empty personal vault
 on their next visit. This cannot be undone, and if the person is still around
 they will see it happen. Use it for departures, not curiosity.
 
+### Export
+
+**Export all groups…** downloads every shared group on the site in one go, as
+a zip archive — for a move to another system, or a copy kept somewhere safe
+offline. It is off unless the server operator has turned it on
+(`Harpo__Export__AllGroupsEnabled`); until then this section says so, and
+there is no button.
+
+The dialog says how many groups and passwords the archive will hold and lets
+you choose CSV or JSON. Inside the archive is one file per group, the same
+file that group's own **Export…** gives, so any of them can be imported back
+into a Harpo vault as it is, and a `README.txt` that says what the archive is,
+when you made it, from which site, and which group is in which file. A group
+with no passwords is there as an empty file; deleted groups and deleted
+passwords are not. **Personal vaults are not included** — nobody's, yours
+included; export yours from your own vault.
+
+Treat the archive like the master key: **it is not encrypted**, and anyone
+who gets hold of it can read every shared password on the site. The download
+is recorded in the audit log under your name (as `site.export`, with the
+numbers of groups and passwords but no names), and you can make one a
+minute. Delete the archive and everything you extracted from it as soon as
+you have used it.
+
 ## Who can do what
 
 | | Viewer | Member | Group admin | Site admin |
@@ -447,15 +589,20 @@ they will see it happen. Use it for departures, not curiosity.
 | See, reveal and copy passwords and 2FA codes | ✓ | ✓ | ✓ | ✓ (all groups) |
 | Read details and notes, see history | ✓ | ✓ | ✓ | ✓ |
 | Add, edit, delete and restore passwords | | ✓ | ✓ | ✓ |
+| Purge deleted passwords, empty the recycle bin | | | ✓ | ✓ (not personal vaults) |
+| Import passwords from a file | | ✓ | ✓ | ✓ |
+| Export the whole vault to a file | | | ✓ | ✓ (not personal vaults) |
+| Export every group on the site as one archive (when switched on) | | | | ✓ (never personal vaults) |
 | Rename the group, manage members, delete the group | | | ✓ | ✓ |
 | Create a new group | ✓ | ✓ | ✓ | ✓ |
 | Vault health report | | | own groups | whole vault |
 | Offline copy | own groups | own groups | own groups | own groups |
 | Open someone else's personal vault | | | | |
-| Audit log, icon catalogue, restore groups, take over a personal vault | | | | ✓ |
+| Audit log, icon catalogue, restore or purge deleted groups, take over a personal vault | | | | ✓ |
 
 Roles are per group: the same person can be an admin of one group and a viewer
-of another. Site administrators are defined by directory group membership,
+of another. In your personal vault you can do everything in the first six rows,
+importing, exporting and purging included. Site administrators are defined by directory group membership,
 which your IT department manages.
 
 ---

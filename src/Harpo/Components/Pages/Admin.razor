@@ -11,6 +11,8 @@
 @inject AuditService Audit
 @inject IconService Icons
 @inject Harpo.Security.CryptoService Crypto
+@inject VaultService Vault
+@inject PurgeService Purge
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -25,6 +27,7 @@
         <a href="/admin#audit">Audit log</a>
         <a href="/admin#icons">Icons</a>
         <a href="/admin#groups">Groups</a>
+        <a href="/admin#export">Export</a>
     </nav>
 
     <section class="panel" id="site">
@@ -353,7 +356,14 @@
     {
         <section class="panel">
             <h2>Deleted groups</h2>
-            <p class="muted">@_deletedGroupsTotal deleted. Restoring a group brings back the passwords that were not deleted individually.</p>
+            <p class="muted">
+                @_deletedGroupsTotal deleted. Restoring a group brings back the passwords that were not deleted individually.
+                Purging one erases it and every password in it for good, on every site.
+            </p>
+            @if (_purgedGroupMessage is not null)
+            {
+                <p class="purge-result" role="status">@_purgedGroupMessage</p>
+            }
             <div class="card-list">
                 @foreach (var g in _showAllDeletedGroups ? _deletedGroups : _deletedGroups.Take(DeletedGroupsShown))
                 {
@@ -364,6 +374,7 @@
                         </div>
                         <div class="group-card-meta">
                             <button class="btn btn-ghost btn-sm" @onclick="() => RestoreGroupAsync(g)">Restore</button>
+                            <button class="btn btn-ghost btn-sm btn-danger-text purge-group" @onclick="() => OpenPurgeGroup(g)">Purge…</button>
                         </div>
                     </div>
                 }
@@ -420,7 +431,14 @@
                                 <td>@vault.EntryCount</td>
                                 <td class="muted" title="@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC">@vault.Group.CreatedAtUtc.ToString("yyyy-MM-dd")</td>
                                 <td class="cell-actions">
-                                    <button class="btn btn-ghost btn-sm" @onclick="() => OpenTakeover(vault)">Take over…</button>
+                                    @if (IsMine(vault))
+                                    {
+                                        <span class="badge" title="Your own personal vault: only someone else can take it over, if you leave.">you</span>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => OpenTakeover(vault)">Take over…</button>
+                                    }
                                 </td>
                             </tr>
                         }
@@ -459,7 +477,71 @@
             </div>
         }
     </section>
+
+    <section class="panel" id="export">
+        <h2>Export</h2>
+        @if (Vault.AllGroupsExportEnabled)
+        {
+            <p class="muted">
+                Download every shared group on this site as one archive: a file per group, each the same as
+                that group's own export, so it imports back into a Harpo vault unchanged. The archive is
+                <strong>not encrypted</strong> and is recorded in the audit log. Personal vaults are never
+                included.
+            </p>
+            <button type="button" class="btn btn-ghost export-all-open" @onclick="() => _exportAllOpen = true">
+                <Lucide Name="download" Size="16" /> Export all groups…
+            </button>
+        }
+        else
+        {
+            <p class="muted export-all-off">
+                Exporting all groups at once is off. To allow it, set
+                <span class="mono">Harpo__Export__AllGroupsEnabled=true</span>@if (!Vault.ExportEnabled)
+                {
+                    <text> and </text><span class="mono">Harpo__Export__Enabled=true</span>
+                }
+                and restart — and read "Import and export" in the README first.
+            </p>
+        }
+    </section>
 </div>
+
+@if (_exportAllOpen && Vault.AllGroupsExportEnabled)
+{
+    <ExportAllGroupsDialog User="_user!" OnClose="CloseExportAllAsync" />
+}
+
+<Modal Visible="_purgeGroup is not null" Title="Purge a deleted group" OnClose="ClosePurgeGroup" CloseOnBackdrop="false">
+    @if (_purgeGroup is { } purging)
+    {
+        <div class="purge-confirm">
+            <p>
+                <strong>@purging.Name</strong> and every password in it — deleted or not — will be erased for good:
+                their password history, notes and 2FA secrets, and the group's name and description. It
+                disappears from every site and can never be restored.
+            </p>
+            <p class="alert alert-warning purge-warning">This cannot be undone.</p>
+            @if (_purgeGroupError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_purgeGroupError</div>
+            }
+            @if (_purgeGroupBusy)
+            {
+                <div class="busy-status" role="status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span>Purging… <span class="muted">Erasing the group and rewriting this site's database file.</span></span>
+                </div>
+            }
+            else
+            {
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" @onclick="ClosePurgeGroup">Cancel</button>
+                    <button type="button" class="btn btn-danger purge-confirm-button" @onclick="PurgeGroupAsync">Purge group</button>
+                </div>
+            }
+        </div>
+    }
+</Modal>
 
 <Modal Visible="_takeover is not null" Title="Take over a personal vault" OnClose="() => _takeover = null">
     @if (_takeover is { } taking)
@@ -490,13 +572,28 @@
 @code {
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
 
+    private bool _exportAllOpen;
+
+    private async Task CloseExportAllAsync()
+    {
+        _exportAllOpen = false;
+        await LoadAuditAsync(); // a download just made shows up as site.export
+    }
+
     private List<PersonalVaultSummary>? _personalVaults;
     private PersonalVaultSummary? _takeover;
     private string _takeoverName = "";
     private string? _takeoverError;
 
+    private bool IsMine(PersonalVaultSummary vault) =>
+        string.Equals(vault.Group.OwnerUsername, _user?.Username, StringComparison.OrdinalIgnoreCase);
+
     private void OpenTakeover(PersonalVaultSummary vault)
     {
+        if (IsMine(vault))
+        {
+            return; // no button for it; and the service refuses it anyway
+        }
         _takeover = vault;
         _takeoverName = $"{vault.Group.OwnerUsername}'s personal vault";
         _takeoverError = null;
@@ -628,7 +725,7 @@
     private static readonly (AuditCategory Category, string Label, string Hint)[] AuditCategoryChips =
     [
         (AuditCategory.All, "All", "Every recorded event"),
-        (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied"),
+        (AuditCategory.Reveals, "Reveals", "Passwords and 2FA codes shown or copied, vaults and all groups exported"),
         (AuditCategory.Changes, "Changes", "Memberships, roles, restores, icons, key rotation, personal-vault takeovers"),
         (AuditCategory.Deletions, "Deletions", "Passwords, groups, members and icons removed"),
         (AuditCategory.Background, "Background", "Routine activity: offline syncs, health report views"),
@@ -791,6 +888,55 @@
         var page = await Groups.GetDeletedGroupsAsync(_user!, new DeletedCursor(last.UpdatedAtUtc, last.Id));
         _deletedGroups.AddRange(page.Items);
         _deletedGroupsTotal = page.Total;
+    }
+
+    private Group? _purgeGroup;
+    private bool _purgeGroupBusy;
+    private string? _purgeGroupError;
+    private string? _purgedGroupMessage;
+
+    private void OpenPurgeGroup(Group group)
+    {
+        _purgeGroup = group;
+        _purgeGroupError = null;
+        _purgedGroupMessage = null;
+    }
+
+    private void ClosePurgeGroup()
+    {
+        if (!_purgeGroupBusy)
+        {
+            _purgeGroup = null;
+        }
+    }
+
+    private async Task PurgeGroupAsync()
+    {
+        if (_purgeGroup is not { } group || _purgeGroupBusy)
+        {
+            return;
+        }
+        _purgeGroupBusy = true;
+        _purgeGroupError = null;
+        StateHasChanged();
+        await Task.Yield();
+        var user = _user!;
+        try
+        {
+            var purged = await Task.Run(() => Purge.PurgeGroupAsync(user, group.Id));
+            _purgedGroupMessage = $"Purged {group.Name} ({(purged == 1 ? "1 password" : $"{purged:N0} passwords")}).";
+            _purgeGroup = null;
+        }
+        catch (Exception ex) when (ex is VaultValidationException or VaultAccessDeniedException or VaultNotFoundException)
+        {
+            _purgeGroupError = ex.Message;
+        }
+        finally
+        {
+            _purgeGroupBusy = false;
+        }
+        await LoadDeletedGroupsAsync();
+        await LoadAuditAsync();
     }
 
     private async Task RestoreGroupAsync(Group group)
