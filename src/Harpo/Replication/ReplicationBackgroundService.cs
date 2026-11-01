@@ -4,8 +4,8 @@ using Microsoft.Extensions.Options;
 namespace Harpo.Replication;
 
 /// <summary>
-/// Pull loop: every IntervalSeconds, asks each configured peer for rows newer than
-/// our high-watermark vector and merges them. Pulling (rather than pushing) keeps
+/// Pull loops, one per peer: every IntervalSeconds, asks the peer for rows newer
+/// than our high-watermark vector and merges them. Pulling (rather than pushing) keeps
 /// each site in charge of its own ingest and makes the topology easy to reason
 /// about; because rows carry their origin site, changes also flow transitively
 /// through intermediate sites, so a full mesh is not required.
@@ -45,26 +45,34 @@ public class ReplicationBackgroundService : BackgroundService
         _logger.LogInformation("Replication enabled: site {SiteId}, {PeerCount} peer(s), every {Interval}s",
             _engine.SiteId, _options.Peers.Count, _options.IntervalSeconds);
 
+        // Each peer has its own loop. A link that drops packets gives no error,
+        // just a request that waits out the whole HTTP timeout, every cycle; with
+        // one loop visiting peers in turn, that wait held up every other peer too.
+        // Merges still run one at a time (ApplyAsync takes the write gate), and two
+        // peers relaying the same rows is harmless: a merge is idempotent and a
+        // watermark only moves forward.
+        await Task.WhenAll(_options.Peers.Select(peer => RunPeerAsync(peer, stoppingToken)));
+    }
+
+    private async Task RunPeerAsync(ReplicationOptions.Peer peer, CancellationToken stoppingToken)
+    {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(2, _options.IntervalSeconds)));
         do
         {
-            foreach (var peer in _options.Peers)
+            try
             {
-                try
-                {
-                    await SyncPeerAsync(peer, stoppingToken);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    var status = _tracker.GetOrAdd(peer.Name, peer.Url);
-                    status.LastAttemptUtc = DateTime.UtcNow;
-                    status.LastError = ex.Message;
-                    _logger.LogWarning("Sync with peer {Peer} failed: {Error}", peer.Name, ex.Message);
-                }
+                await SyncPeerAsync(peer, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                var status = _tracker.GetOrAdd(peer.Name, peer.Url);
+                status.LastAttemptUtc = DateTime.UtcNow;
+                status.LastError = ex.Message;
+                _logger.LogWarning("Sync with peer {Peer} failed: {Error}", peer.Name, ex.Message);
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }

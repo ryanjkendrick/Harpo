@@ -364,7 +364,9 @@ links between sites are down. Replication is modeled on AD's own USN scheme:
   that site's monotonically increasing change number.
 - Every site keeps a **high-watermark vector**: the highest sequence it has seen
   from each origin. On a timer it sends that vector to each peer, which replies
-  with only the rows the caller hasn't seen.
+  with only the rows the caller hasn't seen. Each peer has its own timer, so a
+  peer that stops answering (a link that drops packets makes every request
+  wait out the 30-second timeout) delays only its own sync, never the others'.
 - Conflicts resolve **last-writer-wins** (timestamp, with a deterministic
   tie-break), so all sites converge to identical data. Password revisions are
   append-only, which means *concurrent password changes on two sites both survive
