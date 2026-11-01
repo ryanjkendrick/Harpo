@@ -119,12 +119,12 @@
             {
                 <p class="muted">Loading…</p>
             }
-            else if (FilteredEntries.Count == 0)
+            else if (_matching == 0)
             {
                 <div class="empty-state">
                     <span class="empty-icon">🗝️</span>
                     <p class="muted">
-                        @(_entries.Count > 0 ? "Nothing matches your search."
+                        @(_inVault > 0 ? "Nothing matches your search."
                             : SelectedIsPersonal ? "Nothing here yet. Passwords you add to your personal vault are yours alone."
                             : "No passwords in this group yet.")
                     </p>
@@ -145,7 +145,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var view in PageOfEntries)
+                            @foreach (var view in _entries)
                             {
                                 var entry = view.Entry;
                                 <tr>
@@ -247,10 +247,11 @@
                         </tbody>
                     </table>
                 </div>
-                @if (FilteredEntries.Count is var total && total > PageSize)
+                @if (_matching > PageSize)
                 {
-                    var page = CurrentPage(total);
-                    var pages = PageCount(total);
+                    var total = _matching;
+                    var page = _page;
+                    var pages = _pageCount;
                     var first = (page - 1) * PageSize + 1;
                     var last = Math.Min(page * PageSize, total);
                     <nav class="pager" aria-label="Pages of passwords">
@@ -559,7 +560,12 @@
 
     private UserContext? _user;
     private List<GroupSummary>? _groups;
-    private List<EntryView>? _entries;
+    /// <summary>The page of entries shown (see <see cref="VaultService.GetEntryPageAsync"/>); null while loading.</summary>
+    private IReadOnlyList<EntryView>? _entries;
+    private int _matching;   // entries matching the search, across all pages
+    private int _inVault;    // entries in the vault
+    private int _pageCount = 1;
+    private int _loadVersion;
     private List<PasswordEntry>? _deletedEntries;
     private int _deletedTotal;
     private string _selectedGroupName = "";
@@ -684,27 +690,6 @@
     private bool _importOpen;
     private bool _exportOpen;
 
-    private List<EntryView> FilteredEntries
-    {
-        get
-        {
-            if (_entries is null)
-            {
-                return new List<EntryView>();
-            }
-            var term = _search.Trim();
-            if (term.Length == 0)
-            {
-                return _entries;
-            }
-            return _entries
-                .Where(v => v.Entry.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
-                            || v.Entry.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
-                            || v.Entry.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-    }
-
     protected override async Task OnInitializedAsync()
     {
         _user = UserContext.FromPrincipal((await AuthState).User);
@@ -723,10 +708,11 @@
         var groupChanged = SelectedGroupId != _pagedGroup;
         _pagedGroup = SelectedGroupId;
         // The address says which page (a link to a vault or a search has none: page 1).
-        _page = Math.Max(1, PageQuery ?? 1);
-        // Moving between pages only changes ?page: the entries are already here,
-        // and reloading them would re-decrypt the vault and hide what was revealed.
-        if (queryChanged || groupChanged || _entries is null)
+        var requested = Math.Max(1, PageQuery ?? 1);
+        var pageChanged = requested != _page;
+        _page = requested;
+        // Only the page shown is loaded, so moving to another page loads that one.
+        if (queryChanged || groupChanged || pageChanged || _entries is null)
         {
             await LoadEntriesAsync();
         }
@@ -757,45 +743,33 @@
             ? _otherHits.Where(h => h.GroupId != SelectedGroupId).ToList()
             : null;
 
-    private void OnSearchTyped()
+    private async Task OnSearchTyped()
     {
         _page = 1; // a new search starts at its first match
+        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+        await LoadEntriesAsync();
         if (PageQuery is not null)
         {
-            // …and the address stops naming a page of the old list.
+            // …and, once the matches are shown, the address stops naming a page of the old list.
             Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", (int?)null), replace: true);
         }
-        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
     }
 
     // ---- paging ----
-    // The page draws one page of the (filtered) entries: drawing thousands of
-    // rows at once took seconds on every visit. Search still covers them all.
+    // One page of the (searched) entries is loaded and drawn at a time: loading,
+    // decrypting and drawing thousands at once took seconds on every visit.
 
     private const int PageSize = 50;
     private int _page = 1;
     private Guid? _pagedGroup;
 
-    private static int PageCount(int total) => Math.Max(1, (total + PageSize - 1) / PageSize);
-
-    /// <summary>The page to show: the one chosen, pulled back if deletions left it past the end.</summary>
-    private int CurrentPage(int total) => Math.Clamp(_page, 1, PageCount(total));
-
-    private List<EntryView> PageOfEntries
-    {
-        get
-        {
-            var all = FilteredEntries;
-            return all.Skip((CurrentPage(all.Count) - 1) * PageSize).Take(PageSize).ToList();
-        }
-    }
-
     private async Task GoToPageAsync(int page)
     {
-        _page = Math.Clamp(page, 1, PageCount(FilteredEntries.Count));
+        var target = Math.Clamp(page, 1, _pageCount);
         // In the address, so a reload or a shared link shows the same page and
         // Back returns to the previous one; page 1 is the address without ?page.
-        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", _page == 1 ? null : (int?)_page));
+        // The address change loads the page (OnParametersSetAsync).
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", target == 1 ? null : (int?)target));
         // The pager sits under the table: bring the top of the new page into view.
         await JS.InvokeVoidAsync("harpoScrollIntoView", ".vault-toolbar");
     }
@@ -875,10 +849,21 @@
             _entries = null;
             return;
         }
+        // Typing fires a load per keystroke: only the newest one may land.
+        var version = ++_loadVersion;
         try
         {
             _selectedGroupName = _groups.FirstOrDefault(g => g.Group.Id == groupId)?.Group.Name ?? "";
-            _entries = await Passwords.GetEntriesAsync(_user, groupId.Value);
+            var result = await Passwords.GetEntryPageAsync(_user, groupId.Value, _search, _page, PageSize);
+            if (version != _loadVersion)
+            {
+                return;
+            }
+            _entries = result.Items;
+            _matching = result.Matching;
+            _inVault = result.InVault;
+            _pageCount = result.PageCount;
+            _page = result.Page;
             if (CanEdit)
             {
                 var trash = await Passwords.GetDeletedEntriesAsync(_user, groupId.Value);
@@ -893,7 +878,9 @@
         }
         catch (Exception ex) when (ex is VaultAccessDeniedException or VaultNotFoundException)
         {
-            _entries = new List<EntryView>();
+            _entries = Array.Empty<EntryView>();
+            _matching = _inVault = 0;
+            _pageCount = 1;
             ShowToast(ex.Message, isError: true);
         }
     }
@@ -1390,12 +1377,11 @@
     {
         _groups = await Groups.GetMyGroupsAsync(_user!);
         await LoadEntriesAsync();
-        // Stay on this page, unless deletions left it past the end.
-        var page = CurrentPage(FilteredEntries.Count);
-        if (page != _page)
+        // Stay on this page, unless deletions left it past the end (the load
+        // pulled _page back): then the address follows.
+        if (_page != Math.Max(1, PageQuery ?? 1))
         {
-            _page = page;
-            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", page == 1 ? null : (int?)page), replace: true);
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", _page == 1 ? null : (int?)_page), replace: true);
         }
     }
 
