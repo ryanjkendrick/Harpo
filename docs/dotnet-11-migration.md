@@ -94,9 +94,11 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
 3. Fix whatever else fails to compile; run the unit suite in Release several
    times (the formerly flaky notes-scrub test is the canary for SQLite
    behaviour changes: it depends on free-list pages surviving until VACUUM).
-4. Build the image on `sdk:11.0`/`aspnet:11.0`, confirm `libldap2` still
-   installs on the new base image, run the UI, session, offline and
-   offline-disable e2e suites on a throwaway stack.
+4. Build the image on `sdk:11.0`/`aspnet:11.0-resolute` (keep the Ubuntu
+   26.04 runtime base; plain `11.0` may mean an older Ubuntu), confirm
+   `libldap2` still installs on it and `docker scout quickview` is clean,
+   then run the UI, session, offline and offline-disable e2e suites on a
+   throwaway stack.
 5. Measure: request latency and memory on the UI suite, before and after, on
    the same machine. This is the only place Runtime Async is evaluated.
 6. Check the two behaviours that could change silently:
