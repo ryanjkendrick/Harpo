@@ -10,7 +10,10 @@ COPY src/ src/
 RUN dotnet publish src/Harpo/Harpo.csproj -c Release -o /app /p:UseAppHost=false
 
 # ---- runtime ----
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+# Ubuntu 26.04 rather than the default 24.04: the older base carries OS-package
+# CVEs (pcre2, gnutls, glibc, ...) that Ubuntu has not fixed there, and on 26.04
+# libldap uses OpenSSL instead of gnutls. Check it with `docker scout quickview`.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 LABEL org.opencontainers.image.source="https://github.com/ryanjkendrick/Harpo" \
       org.opencontainers.image.description="Harpo — self-hosted team password manager: AD login, group-gated vaults, cross-site replication, offline PWA" \
       org.opencontainers.image.licenses="MIT"
