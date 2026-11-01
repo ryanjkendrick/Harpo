@@ -491,6 +491,8 @@
 
     /// <summary>Pre-fills the search box — lets other pages (the health report) link straight to an entry.</summary>
     [SupplyParameterFromQuery(Name = "q")] public string? Query { get; set; }
+    /// <summary>Which page of the list to show (?page=N); absent means the first.</summary>
+    [SupplyParameterFromQuery(Name = "page")] public int? PageQuery { get; set; }
     private string? _appliedQuery;
 
     [CascadingParameter] private Task<AuthenticationState> AuthState { get; set; } = default!;
@@ -644,14 +646,17 @@
         {
             _appliedQuery = Query;
             _search = Query ?? "";
-            _page = 1;
         }
-        if (SelectedGroupId != _pagedGroup)
+        var groupChanged = SelectedGroupId != _pagedGroup;
+        _pagedGroup = SelectedGroupId;
+        // The address says which page (a link to a vault or a search has none: page 1).
+        _page = Math.Max(1, PageQuery ?? 1);
+        // Moving between pages only changes ?page: the entries are already here,
+        // and reloading them would re-decrypt the vault and hide what was revealed.
+        if (queryChanged || groupChanged || _entries is null)
         {
-            _pagedGroup = SelectedGroupId;
-            _page = 1;
+            await LoadEntriesAsync();
         }
-        await LoadEntriesAsync();
         // The other-vaults list is "everything but the open vault", so it is
         // stale once the open vault changes, and a ?q= deep link needs its own
         // search. Not while prerendering: nothing there could receive the result.
@@ -682,6 +687,11 @@
     private void OnSearchTyped()
     {
         _page = 1; // a new search starts at its first match
+        if (PageQuery is not null)
+        {
+            // …and the address stops naming a page of the old list.
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", (int?)null), replace: true);
+        }
         ScheduleOtherVaultSearch(OtherSearchDebounceMs);
     }
 
@@ -710,6 +720,9 @@
     private async Task GoToPageAsync(int page)
     {
         _page = Math.Clamp(page, 1, PageCount(FilteredEntries.Count));
+        // In the address, so a reload or a shared link shows the same page and
+        // Back returns to the previous one; page 1 is the address without ?page.
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", _page == 1 ? null : (int?)_page));
         // The pager sits under the table: bring the top of the new page into view.
         await JS.InvokeVoidAsync("harpoScrollIntoView", ".vault-toolbar");
     }
@@ -1244,7 +1257,13 @@
     {
         _groups = await Groups.GetMyGroupsAsync(_user!);
         await LoadEntriesAsync();
-        _page = CurrentPage(FilteredEntries.Count); // stay on this page, unless it no longer exists
+        // Stay on this page, unless deletions left it past the end.
+        var page = CurrentPage(FilteredEntries.Count);
+        if (page != _page)
+        {
+            _page = page;
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("page", page == 1 ? null : (int?)page), replace: true);
+        }
     }
 
     private void ShowToast(string message, bool isError = false)
