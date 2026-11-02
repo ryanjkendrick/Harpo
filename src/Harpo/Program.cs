@@ -46,7 +46,7 @@ builder.Services.Configure<LoginThrottleOptions>(builder.Configuration.GetSectio
 var rawConnectionString = builder.Configuration.GetConnectionString("Harpo") ?? "Data Source=harpo.db";
 var dbEncryption = DbEncryptionOptions.FromConfiguration(builder.Configuration);
 var connectionString = DbEncryption.ApplyKey(rawConnectionString, dbEncryption);
-builder.Services.AddSingleton(new DbEncryptionStatus(rawConnectionString));
+builder.Services.AddSingleton<DbEncryptionStatus>();
 builder.Services.AddDbContextFactory<HarpoDbContext>(options => options.UseSqlite(connectionString));
 builder.Services.AddSingleton(TimeProvider.System);
 
@@ -164,7 +164,8 @@ if (devAuth)
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
-await DbEncryption.LogStateAsync(rawConnectionString, dbEncryption, app.Logger);
+await DbEncryption.ReportStateAsync(
+    rawConnectionString, dbEncryption, app.Services.GetRequiredService<DbEncryptionStatus>(), app.Logger);
 await Harpo.Replication.UpgradeResync.EnsureAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), app.Logger);
 

@@ -46,10 +46,10 @@
                 <span class="stat-value">@(_status?.Entries.ToString() ?? "…")</span>
                 <span class="stat-label">passwords</span>
             </div>
-            <div class="stat" title="Read from the file itself. Set Harpo__DatabaseKey to encrypt the whole file, including entry names, URLs and usernames.">
-                <span class="stat-value">@(_dbEncrypted switch { true => "Encrypted", false => "Not encrypted", null => "…" })</span>
+            <div class="stat" title="Read from the file when Harpo started. Set Harpo__DatabaseKey to encrypt the whole file, including entry names, URLs, usernames, group membership and the audit log.">
+                <span class="stat-value">@(DbFile.IsEncrypted switch { true => "Encrypted", false => "Not encrypted", null => "Unknown" })</span>
                 <span class="stat-label">
-                    @(_dbEncrypted == false ? "database file · passwords are still encrypted" : "database file")
+                    @(DbFile.IsEncrypted == false ? "database file · passwords are still encrypted" : "database file")
                 </span>
             </div>
             <div class="stat" title="Set Harpo__Offline__Enabled=false to forbid offline password storage on devices.">
@@ -722,7 +722,6 @@
 
     private UserContext? _user;
     private ReplicationStatusResponse? _status;
-    private bool? _dbEncrypted;
     private List<GroupSummary>? _groups;
     private List<AuditEvent>? _auditEvents;
     private List<Group>? _deletedGroups;
@@ -927,7 +926,6 @@
         _user = UserContext.FromPrincipal((await AuthState).User);
         _groups = await Groups.GetMyGroupsAsync(_user);
         _status = await Engine.GetStatusAsync();
-        _dbEncrypted = await DbFile.IsEncryptedAsync();
         await LoadAuditAsync();
         await LoadDeletedGroupsAsync();
         _adminlessGroups = await Groups.GetGroupsWithoutAdminAsync(_user);

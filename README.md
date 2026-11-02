@@ -426,7 +426,7 @@ Operational notes:
 ## Encrypting the database file
 
 Passwords, 2FA secrets and notes are always AES-256-GCM encrypted, but the rest
-of the SQLite file (entry names, URLs, usernames, membership) is plaintext by default —
+of the SQLite file (entry and group names, URLs, usernames, membership, the audit log) is plaintext by default —
 protect it with disk encryption and encrypted backups, or turn on **full-file
 encryption** (SQLCipher):
 
@@ -438,18 +438,23 @@ Harpo__DatabaseKey: "…per-site secret…"
   detects a plaintext file and encrypts it in place (and cleans up the WAL
   sidecar files, which would otherwise still hold plaintext pages). This writes
   a second copy of the file first, so it needs about the database's size free
-  on the volume. If there isn't enough, Harpo stops with a clear error and leaves
-  the database as it was.
+  on the volume. If there isn't enough, Harpo stops with a clear error and your
+  data stays as it was. With `restart: unless-stopped` it tries again on each
+  restart until there is room.
 - **Check that it worked** in the **This site** panel of the Administration page,
-  which reads the file itself, or in the log, where Harpo says on every start
-  whether the file is encrypted. A key that arrives blank (for example
+  which shows what Harpo read from the file when it started, or in the log, where
+  Harpo says on every start whether the file is encrypted (at Information level,
+  so not if you log warnings only). A key that arrives blank (for example
   `${HARPO_DATABASE_KEY}` with the variable unset) counts as no key: the file
   stays unencrypted and the log carries a warning.
 - The key is **per-site** — unlike the master key it does not need to match
   other sites, and replication is completely unaffected.
 - **Rotate keys** by setting `Harpo__PreviousDatabaseKey` to the old key next
   to the new `Harpo__DatabaseKey` for one start (the file is rekeyed in place;
-  then remove the previous key from configuration).
+  then remove the previous key from configuration). This also needs about the
+  database's size free. Keep the old key until the log says rotation is complete:
+  if it could not finish, Harpo stops with an error and the old key still opens
+  the file.
 - **Remove encryption** deliberately by adding
   `Harpo__RemoveDatabaseEncryption: "true"` alongside the current key for one
   start. A missing or wrong key never silently falls back — Harpo refuses to

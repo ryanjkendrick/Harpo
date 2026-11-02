@@ -100,9 +100,12 @@ jobs:
         working-directory: tests/e2e
         run: node offline-vault.e2e.js
 
-      - name: Interactive UI (75 checks)
+      # harpo-alpha sets Harpo__DatabaseKey in docker-compose.multisite.yml.
+      - name: Interactive UI (76 checks)
         if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
         working-directory: tests/e2e
+        env:
+          HARPO_DB_ENCRYPTED: "true"
         run: node ui.e2e.js
 
       - name: Sessions (9 checks)

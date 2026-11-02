@@ -25,6 +25,7 @@ const USER = process.env.HARPO_USER || "alice"; // must be a site administrator
 const USER_PASSWORD = process.env.HARPO_PASSWORD || "alice";
 const OTHER_USER = process.env.HARPO_OTHER_USER || "bob"; // not a site administrator
 const OTHER_PASSWORD = process.env.HARPO_OTHER_PASSWORD || "bob";
+const DB_ENCRYPTED = process.env.HARPO_DB_ENCRYPTED; // "true" or "false" when the stack's state is known
 
 const RUN_ID = Date.now();
 const GROUP = `E2E UI ${RUN_ID}`;
@@ -624,7 +625,10 @@ async function groupId(page) {
             admin.nav.length === 6 && admin.nav.includes("export") && admin.sticky === "sticky"
             && await page.evaluate((ids) => ids.every((i) => document.getElementById(i)), admin.nav), admin.nav.join(","));
         check("offline stat is spelled out", /^(Allowed offline copies · expire after \d+ days|Off offline copies)$/.test(admin.offline || ""), String(admin.offline));
-        check("database file encryption is shown", /^(Encrypted database file|Not encrypted database file · passwords are still encrypted)$/.test(admin.dbFile || ""), String(admin.dbFile));
+        // Say which it should be with HARPO_DB_ENCRYPTED=true|false; otherwise either passes.
+        check("database file encryption is shown",
+            new RegExp(`^(${[DB_ENCRYPTED !== "false" && "Encrypted database file", DB_ENCRYPTED !== "true" && "Not encrypted database file · passwords are still encrypted"].filter(Boolean).join("|")})$`).test(admin.dbFile || ""),
+            String(admin.dbFile));
         check("audit log folds repeated events and offers categories",
             admin.chips === "All,Reveals,Changes,Deletions,Background" && admin.folded > 0, `${admin.chips}; folded rows: ${admin.folded}`);
         check("deleted groups list is capped", admin.deletedShown <= 5, `shown: ${admin.deletedShown}`);
