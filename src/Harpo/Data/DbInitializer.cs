@@ -44,6 +44,15 @@ public static class DbInitializer
                 "Existing database baselined at migration {Migration}; newer migrations will now apply.", initialMigration);
         }
 
+        // EF's migration lock is a row in this table, and a process killed mid-migration
+        // leaves it behind. MigrateAsync then waits for it for good, with nothing in the
+        // log. Only one Harpo uses a database file, so a row found here is always stale.
+        if (await TableExistsAsync(db, "__EFMigrationsLock")
+            && await db.Database.ExecuteSqlRawAsync("DELETE FROM \"__EFMigrationsLock\"") > 0)
+        {
+            logger?.LogWarning("Removed the migration lock an interrupted start left behind.");
+        }
+
         await db.Database.MigrateAsync();
 
         // WAL lets the replication loop write while the UI reads.

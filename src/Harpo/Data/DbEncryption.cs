@@ -16,13 +16,13 @@ public sealed record DbEncryptionOptions(
 
     // appsettings.json ships a blank key, so a blank value from there means nothing.
     // From anywhere else it is a mistake: "${HARPO_DATABASE_KEY}" with the variable
-    // unset, or an empty secret file.
+    // unset, an empty secret file, or a blank path to one.
     private static bool IsKeyLeftBlank(IConfiguration configuration) =>
         string.IsNullOrWhiteSpace(configuration["Harpo:DatabaseKey"])
         && configuration is IConfigurationRoot root
         && root.Providers.Any(p =>
             p is not FileConfigurationProvider { Source.Path: "appsettings.json" }
-            && p.TryGet("Harpo:DatabaseKey", out _));
+            && (p.TryGet("Harpo:DatabaseKey", out _) || p.TryGet("Harpo:DatabaseKey" + FileConfigurationSecrets.Suffix, out _)));
 
     private static string? Nullify(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
@@ -52,9 +52,11 @@ public sealed record DbEncryptionOptions(
 public static class DbEncryption
 {
     private const int SqliteError = 1;
+    private const int SqliteReadOnly = 8;
     private const int SqliteIoError = 10;
     private const int SqliteFull = 13;
     private const int SqliteCantOpen = 14;
+    private const int SqliteNotADb = 26;
     private const string TempSuffix = ".recrypt-tmp";
 
     private static readonly byte[] PlainHeader = "SQLite format 3\0"u8.ToArray();
@@ -74,7 +76,20 @@ public static class DbEncryption
     public static async Task EnsureEncryptionStateAsync(string rawConnectionString, DbEncryptionOptions options, ILogger logger)
     {
         var path = new SqliteConnectionStringBuilder(rawConnectionString).DataSource;
-        if (string.IsNullOrEmpty(path) || path == ":memory:" || !File.Exists(path))
+        var isFile = !string.IsNullOrEmpty(path) && path != ":memory:";
+
+        // A copy left by an interrupted run is never used again, and after a decrypt
+        // it holds plaintext, so it goes on every start whatever else happens below.
+        if (isFile)
+        {
+            if (File.Exists(path + TempSuffix))
+            {
+                logger.LogWarning("Removing the partial database copy an interrupted run left at '{Path}'.", path + TempSuffix);
+            }
+            RemoveTemp(path + TempSuffix, logger);
+        }
+
+        if (!isFile || !File.Exists(path))
         {
             if (options.WantsEncryption)
             {
@@ -82,14 +97,6 @@ public static class DbEncryption
             }
             return;
         }
-
-        // A copy left by an interrupted run is never used again, and after a decrypt
-        // it holds plaintext, so it goes on every start whatever else happens below.
-        if (File.Exists(path + TempSuffix))
-        {
-            logger.LogWarning("Removing the partial database copy an interrupted run left at '{Path}'.", path + TempSuffix);
-        }
-        RemoveTemp(path + TempSuffix, logger);
 
         var isPlaintext = await IsPlaintextAsync(path);
 
@@ -214,9 +221,18 @@ public static class DbEncryption
         return header.AsSpan().SequenceEqual(PlainHeader);
     }
 
+    /// <summary>
+    /// Whether this key opens the file. False only when SQLite says the key does not
+    /// fit: told "wrong key" about a full or read-only volume, an operator goes looking
+    /// for old keys and backups when nothing is wrong with either.
+    /// </summary>
     private static async Task<bool> CanOpenAsync(string path, string key)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Password = key }.ToString();
+        // Read-write, because only a writer can roll back a journal an interrupted run
+        // left. That is safe to try with a wrong key: rollback restores the journal's
+        // raw pages without decrypting them. SQLite falls back to read-only by itself
+        // when the file cannot be written.
+        var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWrite, Password = key }.ToString();
         try
         {
             await using var connection = new SqliteConnection(cs);
@@ -226,9 +242,16 @@ public static class DbEncryption
             await command.ExecuteScalarAsync();
             return true;
         }
-        catch (SqliteException)
+        catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) == SqliteNotADb)
         {
             return false;
+        }
+        catch (SqliteException ex)
+        {
+            throw new InvalidOperationException(
+                $"Harpo could not open the database at '{path}' to check its key ({ex.Message}), so this says nothing " +
+                "about the key itself. Check the free space, quotas and permissions on that volume and start Harpo " +
+                "again. If those are fine, the file may be damaged.", ex);
         }
         finally
         {
@@ -238,17 +261,24 @@ public static class DbEncryption
 
     /// <summary>
     /// Re-encrypts the whole database into a temp file with sqlcipher_export
-    /// (targetKey null → plaintext), then atomically swaps it into place.
+    /// (targetKey null → plaintext), then atomically swaps it into place. The WAL has
+    /// to go before the swap, or SQLite would apply it to the new file, so everything
+    /// in it must be in the main file first. <paramref name="swap"/> is for tests.
     /// </summary>
-    private static async Task ExportAsync(string path, string? sourceKey, string? targetKey, ILogger logger)
+    internal static async Task ExportAsync(
+        string path, string? sourceKey, string? targetKey, ILogger logger, Action<string, string>? swap = null)
     {
         var tempPath = path + TempSuffix;
-        var sourceCs = new SqliteConnectionStringBuilder { DataSource = path, Password = sourceKey ?? "" }.ToString();
+        var action = targetKey is null ? "decrypt" : "encrypt";
+        // A short wait: nothing else should have the file open at startup.
+        var sourceCs = new SqliteConnectionStringBuilder { DataSource = path, Password = sourceKey ?? "", DefaultTimeout = 5 }.ToString();
         try
         {
+            CreateCopyFile(path, tempPath);
             await using (var connection = new SqliteConnection(sourceCs))
             {
                 await connection.OpenAsync();
+                await FoldWalAsync(connection, path, action);
                 await using (var attach = connection.CreateCommand())
                 {
                     attach.CommandText = "ATTACH DATABASE $path AS target KEY $key";
@@ -261,6 +291,7 @@ public static class DbEncryption
                     export.CommandText = "SELECT sqlcipher_export('target')";
                     await export.ExecuteScalarAsync();
                 }
+                await RequireSameRowsAsync(connection, path, action);
                 await using (var detach = connection.CreateCommand())
                 {
                     detach.CommandText = "DETACH DATABASE target";
@@ -269,26 +300,121 @@ public static class DbEncryption
             }
             SqliteConnection.ClearAllPools();
 
+            // Closing is a second chance for another process to have written.
+            if (new FileInfo(path + "-wal") is { Exists: true, Length: > 0 })
+            {
+                throw InUse(path, action);
+            }
+            if (!await CanOpenAsync(tempPath, targetKey ?? ""))
+            {
+                throw new InvalidOperationException(
+                    $"The copy made to {action} the database at '{path}' does not open. Your data has not been changed.");
+            }
+            MatchCopyMode(path, tempPath);
+
             // The old WAL/SHM belong to the old file (and, when encrypting, still hold
             // plaintext pages) — they must not survive the swap.
             File.Delete(path + "-wal");
             File.Delete(path + "-shm");
-            File.Move(tempPath, path, overwrite: true);
+            try
+            {
+                (swap ?? ((from, to) => File.Move(from, to, overwrite: true)))(tempPath, path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    $"Harpo could not replace the database file at '{path}' with its {action}ed copy ({ex.Message}). " +
+                    "Your data has not been changed. The file's folder has to be writable and mounted as a folder: a " +
+                    "file mounted on its own cannot be replaced. Fix that and start Harpo again.", ex);
+            }
         }
         catch (Exception ex)
         {
-            // The original still holds everything (closing may fold its WAL in, which
-            // changes no data). A half-written copy only takes up space, and when
-            // decrypting it holds plaintext, so it must not stay.
+            // The original holds everything: FoldWalAsync saw to that before anything
+            // here could fail after the WAL went. A half-written copy only takes up
+            // space, and when decrypting it holds plaintext, so it must not stay.
             SqliteConnection.ClearAllPools();
             RemoveTemp(tempPath, logger);
-            if (WriteFailureMessage(ex, path, targetKey is null ? "decrypt" : "encrypt") is { } message)
+            if (WriteFailureMessage(ex, path, action) is { } message)
             {
                 throw new InvalidOperationException(message, ex);
             }
             throw;
         }
         RemoveTemp(tempPath, logger);
+    }
+
+    /// <summary>
+    /// Moves everything in the WAL into the main file and empties the WAL, or throws.
+    /// Closing the last connection tries this too, but says nothing when it fails.
+    /// </summary>
+    private static async Task FoldWalAsync(SqliteConnection connection, string path, string action)
+    {
+        await using var checkpoint = connection.CreateCommand();
+        checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+        await using var result = await checkpoint.ExecuteReaderAsync();
+        if (await result.ReadAsync() && result.GetInt32(0) != 0)
+        {
+            throw InUse(path, action);
+        }
+    }
+
+    private static InvalidOperationException InUse(string path, string action) => new(
+        $"The database at '{path}' is in use by something else, so Harpo cannot safely {action} it. Your data has not " +
+        "been changed. Stop anything else using the file (only one Harpo may use a database file) and start Harpo again.");
+
+    internal static async Task RequireSameRowsAsync(SqliteConnection connection, string path, string action)
+    {
+        var tables = new List<string>();
+        await using (var list = connection.CreateCommand())
+        {
+            list.CommandText = "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'";
+            await using var reader = await list.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                tables.Add(reader.GetString(0));
+            }
+        }
+        foreach (var table in tables)
+        {
+            var quoted = "\"" + table.Replace("\"", "\"\"") + "\"";
+            await using var count = connection.CreateCommand();
+            count.CommandText = $"SELECT (SELECT count(*) FROM main.{quoted}) = (SELECT count(*) FROM target.{quoted})";
+            if (Convert.ToInt64(await count.ExecuteScalarAsync()) != 1)
+            {
+                throw new InvalidOperationException(
+                    $"The copy made to {action} the database at '{path}' does not match it (table {table}). " +
+                    "Your data has not been changed.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The copy replaces the original, so it must be no easier to read: a file kept
+    /// private, once decrypted, would otherwise end up world-readable. Made before
+    /// SQLite writes anything to it, with write access for now in case the original
+    /// has none.
+    /// </summary>
+    private static void CreateCopyFile(string path, string tempPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var stream = new FileStream(tempPath, new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            UnixCreateMode = File.GetUnixFileMode(path) | UnixFileMode.UserRead | UnixFileMode.UserWrite,
+        });
+    }
+
+    private static void MatchCopyMode(string path, string tempPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(tempPath, File.GetUnixFileMode(path));
+        }
     }
 
     private static void RemoveTemp(string tempPath, ILogger logger)
@@ -310,11 +436,15 @@ public static class DbEncryption
     }
 
     /// <summary>
-    /// What to tell the operator when SQLite could not write what an encryption
-    /// change needs, or null for any other failure (a damaged file, say).
+    /// What to tell the operator when an encryption change could not write what it
+    /// needs, or null for any other failure (a damaged file, say).
     /// </summary>
     internal static string? WriteFailureMessage(Exception ex, string path, string action)
     {
+        if (ex is IOException or UnauthorizedAccessException)
+        {
+            return VolumeMessage(ex.Message, path, action);
+        }
         if (ex is not SqliteException sqlite)
         {
             return null;
@@ -332,19 +462,24 @@ public static class DbEncryption
                 $"{MegabytesNeeded(path)} MB free on that volume. Your data has not been changed. Free up some " +
                 "space and start Harpo again.";
         }
-        if (code is SqliteIoError or SqliteCantOpen || Says("disk I/O error") || Says("unable to open database"))
+        if (code is SqliteReadOnly or SqliteIoError or SqliteCantOpen
+            || Says("disk I/O error") || Says("unable to open database") || Says("readonly database"))
         {
-            return $"Harpo could not write to the volume holding the database at '{path}' to {action} it " +
-                $"({sqlite.Message}). Your data has not been changed. Check the free space, quotas and permissions " +
-                "on that volume and start Harpo again.";
+            return VolumeMessage(sqlite.Message, path, action);
         }
         return null;
     }
 
+    private static string VolumeMessage(string error, string path, string action) =>
+        $"Harpo could not write to the volume holding the database at '{path}' to {action} it " +
+        $"({error}). Your data has not been changed. Check the free space, quotas and permissions " +
+        "on that volume and start Harpo again.";
+
+    /// <summary>A full copy of the file and its WAL, plus what encrypting adds to each page, and some margin.</summary>
     private static string MegabytesNeeded(string path)
     {
         var bytes = new FileInfo(path).Length + (File.Exists(path + "-wal") ? new FileInfo(path + "-wal").Length : 0);
-        return Math.Ceiling(bytes / (1024d * 1024d)).ToString("0");
+        return (Math.Ceiling(bytes * 1.05 / (1024d * 1024d)) + 1).ToString("0");
     }
 
     private static async Task RekeyAsync(string path, string oldKey, string newKey)
@@ -372,11 +507,24 @@ public static class DbEncryption
         // On a full disk PRAGMA rekey reports success and leaves the file under the
         // old key. Saying it worked would have the operator discard the only key that
         // opens the file, so only reopening it counts.
-        if (await CanOpenAsync(path, newKey))
+        bool opensWithNew, opensWithOld = false;
+        try
+        {
+            opensWithNew = await CanOpenAsync(path, newKey);
+            opensWithOld = !opensWithNew && await CanOpenAsync(path, oldKey);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new InvalidOperationException(
+                $"Could not confirm that rotating the key of the database at '{path}' took effect ({ex.InnerException?.Message}). " +
+                "Keep both keys configured: Harpo works out on the next start which one opens the file. Check the " +
+                "free space, quotas and permissions on that volume and start Harpo again.", ex);
+        }
+        if (opensWithNew)
         {
             return;
         }
-        throw new InvalidOperationException(await CanOpenAsync(path, oldKey)
+        throw new InvalidOperationException(opensWithOld
             ? $"Rotating the key of the database at '{path}' did not take effect: it still opens only with " +
               $"Harpo:PreviousDatabaseKey. The usual cause is too little free disk space (this needs about " +
               $"{MegabytesNeeded(path)} MB on that volume). Keep both keys configured, free up some space and start Harpo again."

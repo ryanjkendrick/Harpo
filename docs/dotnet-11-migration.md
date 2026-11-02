@@ -90,6 +90,11 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    so `RekeyAsync` reopens the file to check; encrypting and decrypting need the
    same check once they use it, and the README's "second copy" wording and the
    export temp-file cleanup change with them. Re-test all three on a full volume.
+   Rows only in the WAL must still survive, so keep the checkpoint that `ExportAsync`
+   checks before anything is replaced. `EnsureEncryptionStateAsync` and
+   `IsEncryptedAsync` call `File.Exists` on `DataSource`, which a `file:` URI would
+   break, so they must keep getting the plain path; otherwise reconciliation is
+   skipped and the Administration page shows "Unknown".
    Update the `DbEncryptionTests` and add two:
    *a file encrypted by the old SQLCipher build opens*, and *a file written by
    SQLite3MC opens in the old build* (interop both ways; the second needs a
