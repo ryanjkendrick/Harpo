@@ -436,7 +436,15 @@ Harpo__DatabaseKey: "…per-site secret…"
 
 - **Existing databases are migrated automatically**: on the next start Harpo
   detects a plaintext file and encrypts it in place (and cleans up the WAL
-  sidecar files, which would otherwise still hold plaintext pages).
+  sidecar files, which would otherwise still hold plaintext pages). This writes
+  a second copy of the file first, so it needs about the database's size free
+  on the volume. If there isn't enough, Harpo stops with a clear error and leaves
+  the database as it was.
+- **Check that it worked** in the **This site** panel of the Administration page,
+  which reads the file itself, or in the log, where Harpo says on every start
+  whether the file is encrypted. A key that arrives blank (for example
+  `${HARPO_DATABASE_KEY}` with the variable unset) counts as no key: the file
+  stays unencrypted and the log carries a warning.
 - The key is **per-site** — unlike the master key it does not need to match
   other sites, and replication is completely unaffected.
 - **Rotate keys** by setting `Harpo__PreviousDatabaseKey` to the old key next
@@ -450,7 +458,10 @@ Harpo__DatabaseKey: "…per-site secret…"
 Be clear about what this buys: it protects *copied files* — stolen volumes,
 disk images, careless backups. An attacker on the live host can read the key
 from the container environment, exactly like the master key. It is defence in
-depth, not a new trust boundary. (Implementation: the bundled SQLite is the
+depth, not a new trust boundary. It also only covers the file from now on:
+turning it on later does not reach older backups or disk snapshots, or the blocks
+of the old plaintext file left on the disk, so replace or destroy those if they
+matter. (Implementation: the bundled SQLite is the
 SQLCipher community build, which behaves identically to stock SQLite when no
 key is configured.)
 

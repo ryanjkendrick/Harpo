@@ -5,12 +5,22 @@ namespace Harpo.Data;
 public sealed record DbEncryptionOptions(
     string? DatabaseKey,
     string? PreviousDatabaseKey,
-    bool RemoveEncryption)
+    bool RemoveEncryption,
+    bool KeyLeftBlank = false)
 {
     public static DbEncryptionOptions FromConfiguration(IConfiguration configuration) => new(
         Nullify(configuration["Harpo:DatabaseKey"]),
         Nullify(configuration["Harpo:PreviousDatabaseKey"]),
-        configuration.GetValue("Harpo:RemoveDatabaseEncryption", false));
+        configuration.GetValue("Harpo:RemoveDatabaseEncryption", false),
+        IsKeyLeftBlank(configuration));
+
+    // appsettings.json ships a blank key, so a blank value alone means nothing. It
+    // is a mistake only when someone supplied it: "${HARPO_DATABASE_KEY}" with the
+    // variable unset, or an empty secret file.
+    private static bool IsKeyLeftBlank(IConfiguration configuration) =>
+        string.IsNullOrWhiteSpace(configuration["Harpo:DatabaseKey"])
+        && (Environment.GetEnvironmentVariable("Harpo__DatabaseKey") is not null
+            || !string.IsNullOrWhiteSpace(configuration["Harpo:DatabaseKey:File"]));
 
     private static string? Nullify(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
@@ -39,6 +49,8 @@ public sealed record DbEncryptionOptions(
 /// </summary>
 public static class DbEncryption
 {
+    private const int SqliteFull = 13;
+
     private static readonly byte[] PlainHeader = "SQLite format 3\0"u8.ToArray();
 
     /// <summary>Returns the connection string the app should actually use (adds Password when encrypting).</summary>
@@ -120,10 +132,50 @@ public static class DbEncryption
                 : ", and neither does Harpo:PreviousDatabaseKey."));
     }
 
+    /// <summary>
+    /// What the file on disk actually is, read from the file rather than taken from
+    /// the configuration. Null when there is no file to look at.
+    /// </summary>
+    public static async Task<bool?> IsEncryptedAsync(string rawConnectionString)
+    {
+        var path = new SqliteConnectionStringBuilder(rawConnectionString).DataSource;
+        if (string.IsNullOrEmpty(path) || path == ":memory:" || !File.Exists(path))
+        {
+            return null;
+        }
+        return !await IsPlaintextAsync(path);
+    }
+
+    /// <summary>
+    /// Says on every start whether the file is encrypted. Without this, a key that
+    /// came through blank leaves the site unencrypted with nothing to show for it.
+    /// </summary>
+    public static async Task LogStateAsync(string rawConnectionString, DbEncryptionOptions options, ILogger logger)
+    {
+        switch (await IsEncryptedAsync(rawConnectionString))
+        {
+            case true:
+                logger.LogInformation("The database file is encrypted (SQLCipher).");
+                break;
+            case false when options.KeyLeftBlank:
+                logger.LogWarning(
+                    "The database file is NOT encrypted: Harpo:DatabaseKey was supplied but is blank, so no key " +
+                    "was applied. If you meant to encrypt the file, check the variable or secret it comes from.");
+                break;
+            case false:
+                logger.LogInformation(
+                    "The database file is not encrypted ({Reason}). Passwords, 2FA secrets and notes are still " +
+                    "encrypted under the master key; entry names, URLs and usernames are readable in the file.",
+                    options.RemoveEncryption ? "Harpo:RemoveDatabaseEncryption is set" : "Harpo:DatabaseKey is not set");
+                break;
+        }
+    }
+
     /// <summary>An unencrypted SQLite file starts with the magic header; SQLCipher files look random.</summary>
     public static async Task<bool> IsPlaintextAsync(string path)
     {
-        await using var stream = File.OpenRead(path);
+        // Also read while the app runs, so it must not get in the way of SQLite.
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         if (stream.Length == 0)
         {
             return true;
@@ -162,32 +214,45 @@ public static class DbEncryption
     private static async Task ExportAsync(string path, string? sourceKey, string? targetKey)
     {
         var tempPath = path + ".recrypt-tmp";
-        foreach (var stale in new[] { tempPath, tempPath + "-wal", tempPath + "-shm" })
-        {
-            File.Delete(stale);
-        }
+        DeleteWithSidecars(tempPath);
 
         var sourceCs = new SqliteConnectionStringBuilder { DataSource = path, Password = sourceKey ?? "" }.ToString();
-        await using (var connection = new SqliteConnection(sourceCs))
+        try
         {
-            await connection.OpenAsync();
-            await using (var attach = connection.CreateCommand())
+            await using (var connection = new SqliteConnection(sourceCs))
             {
-                attach.CommandText = "ATTACH DATABASE $path AS target KEY $key";
-                attach.Parameters.AddWithValue("$path", tempPath);
-                attach.Parameters.AddWithValue("$key", targetKey ?? "");
-                await attach.ExecuteNonQueryAsync();
+                await connection.OpenAsync();
+                await using (var attach = connection.CreateCommand())
+                {
+                    attach.CommandText = "ATTACH DATABASE $path AS target KEY $key";
+                    attach.Parameters.AddWithValue("$path", tempPath);
+                    attach.Parameters.AddWithValue("$key", targetKey ?? "");
+                    await attach.ExecuteNonQueryAsync();
+                }
+                await using (var export = connection.CreateCommand())
+                {
+                    export.CommandText = "SELECT sqlcipher_export('target')";
+                    await export.ExecuteScalarAsync();
+                }
+                await using (var detach = connection.CreateCommand())
+                {
+                    detach.CommandText = "DETACH DATABASE target";
+                    await detach.ExecuteNonQueryAsync();
+                }
             }
-            await using (var export = connection.CreateCommand())
+        }
+        catch (Exception ex)
+        {
+            // The original still holds everything (closing may fold its WAL in, which
+            // changes no data). A half-written copy only takes up space, and when
+            // decrypting it holds plaintext, so it must not stay.
+            SqliteConnection.ClearAllPools();
+            DeleteWithSidecars(tempPath);
+            if (IsDiskFull(ex))
             {
-                export.CommandText = "SELECT sqlcipher_export('target')";
-                await export.ExecuteScalarAsync();
+                throw new InvalidOperationException(DiskFullMessage(path, targetKey is null ? "decrypt" : "encrypt"), ex);
             }
-            await using (var detach = connection.CreateCommand())
-            {
-                detach.CommandText = "DETACH DATABASE target";
-                await detach.ExecuteNonQueryAsync();
-            }
+            throw;
         }
         SqliteConnection.ClearAllPools();
 
@@ -198,6 +263,28 @@ public static class DbEncryption
         File.Move(tempPath, path, overwrite: true);
         File.Delete(tempPath + "-wal");
         File.Delete(tempPath + "-shm");
+    }
+
+    private static void DeleteWithSidecars(string path)
+    {
+        File.Delete(path);
+        File.Delete(path + "-wal");
+        File.Delete(path + "-shm");
+    }
+
+    // sqlcipher_export passes the failure on as a generic error 1, keeping only
+    // SQLite's text for it, so the code alone does not catch it.
+    private static bool IsDiskFull(Exception ex) =>
+        ex is SqliteException sqlite
+        && (sqlite.SqliteErrorCode == SqliteFull || sqlite.Message.Contains("database or disk is full", StringComparison.Ordinal));
+
+    private static string DiskFullMessage(string path, string verb)
+    {
+        var bytes = new FileInfo(path).Length + (File.Exists(path + "-wal") ? new FileInfo(path + "-wal").Length : 0);
+        var megabytes = Math.Ceiling(bytes / (1024d * 1024d));
+        return $"There is not enough free disk space to {verb} the database at '{path}'. Harpo writes a second copy " +
+            $"of the file first, which needs about {megabytes:0} MB free on that volume. Nothing has been lost and " +
+            "the file is as it was. Free up some space and start Harpo again.";
     }
 
     private static async Task RekeyAsync(string path, string oldKey, string newKey)
@@ -217,4 +304,17 @@ public static class DbEncryption
         }
         SqliteConnection.ClearAllPools();
     }
+}
+
+/// <summary>Lets the Administration page show what the database file is.</summary>
+public sealed class DbEncryptionStatus
+{
+    private readonly string _rawConnectionString;
+
+    public DbEncryptionStatus(string rawConnectionString)
+    {
+        _rawConnectionString = rawConnectionString;
+    }
+
+    public Task<bool?> IsEncryptedAsync() => DbEncryption.IsEncryptedAsync(_rawConnectionString);
 }

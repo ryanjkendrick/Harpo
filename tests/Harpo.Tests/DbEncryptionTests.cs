@@ -1,6 +1,8 @@
 using Harpo.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -139,5 +141,92 @@ public class DbEncryptionTests : IDisposable
         // Running again with the same key is a no-op, not an error.
         await DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance);
         Assert.Equal(1, await CountGroupsAsync(DbEncryption.ApplyKey(RawCs, options)));
+    }
+
+    [Fact]
+    public async Task Reports_what_the_file_on_disk_is()
+    {
+        Assert.Null(await DbEncryption.IsEncryptedAsync(RawCs)); // no file yet
+        Assert.Null(await DbEncryption.IsEncryptedAsync("Data Source=:memory:"));
+
+        await SeedAsync(RawCs);
+        Assert.False(await DbEncryption.IsEncryptedAsync(RawCs));
+
+        // Asked with the raw connection string, as the app does: the key plays no part.
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-1", null, false), NullLogger.Instance);
+        Assert.True(await DbEncryption.IsEncryptedAsync(RawCs));
+        Assert.True(await new DbEncryptionStatus(RawCs).IsEncryptedAsync());
+    }
+
+    [Fact]
+    public async Task Start_log_says_whether_the_file_is_encrypted()
+    {
+        await SeedAsync(RawCs);
+        var plain = new RecordingLogger();
+        await DbEncryption.LogStateAsync(RawCs, new DbEncryptionOptions(null, null, false), plain);
+        var line = Assert.Single(plain.Lines);
+        Assert.Equal(LogLevel.Information, line.Level);
+        Assert.Contains("not encrypted (Harpo:DatabaseKey is not set)", line.Message);
+
+        var blank = new RecordingLogger();
+        await DbEncryption.LogStateAsync(RawCs, new DbEncryptionOptions(null, null, false, KeyLeftBlank: true), blank);
+        line = Assert.Single(blank.Lines);
+        Assert.Equal(LogLevel.Warning, line.Level);
+        Assert.Contains("NOT encrypted", line.Message);
+        Assert.Contains("blank", line.Message);
+
+        var options = new DbEncryptionOptions("key-1", null, false);
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance);
+        var encrypted = new RecordingLogger();
+        await DbEncryption.LogStateAsync(RawCs, options, encrypted);
+        line = Assert.Single(encrypted.Lines);
+        Assert.Equal(LogLevel.Information, line.Level);
+        Assert.Contains("is encrypted", line.Message);
+    }
+
+    [Fact]
+    public void A_key_counts_as_left_blank_only_when_someone_supplied_it()
+    {
+        static DbEncryptionOptions From(params (string Key, string? Value)[] settings) =>
+            DbEncryptionOptions.FromConfiguration(new ConfigurationBuilder()
+                .AddInMemoryCollection(settings.Select(s => new KeyValuePair<string, string?>(s.Key, s.Value)))
+                .Build());
+
+        // The blank that appsettings.json ships with is not a mistake.
+        Assert.False(From(("Harpo:DatabaseKey", "")).KeyLeftBlank);
+        Assert.False(From(("Harpo:DatabaseKey", "key-1")).KeyLeftBlank);
+        Assert.False(From(("Harpo:DatabaseKey", "key-1"), ("Harpo:DatabaseKey:File", "/run/secrets/key")).KeyLeftBlank);
+
+        // An empty secret file.
+        Assert.True(From(("Harpo:DatabaseKey", ""), ("Harpo:DatabaseKey:File", "/run/secrets/key")).KeyLeftBlank);
+    }
+
+    [Fact]
+    public async Task Failed_encryption_leaves_the_file_alone_and_no_partial_copy()
+    {
+        await SeedAsync(RawCs);
+
+        // Damage every page but the first, so the copy starts and then fails partway.
+        var bytes = await File.ReadAllBytesAsync(DbPath);
+        Array.Fill(bytes, (byte)0xFF, 4096, bytes.Length - 4096);
+        await File.WriteAllBytesAsync(DbPath, bytes);
+
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-1", null, false), NullLogger.Instance));
+
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(DbPath));
+        Assert.Empty(Directory.GetFiles(_dir, "*.recrypt-tmp*"));
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Lines.Add((logLevel, formatter(state, exception)));
     }
 }
