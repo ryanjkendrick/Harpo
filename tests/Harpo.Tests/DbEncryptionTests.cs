@@ -597,16 +597,206 @@ public class DbEncryptionTests : IDisposable
     [Fact]
     public async Task A_copy_replaced_after_the_lock_went_is_not_swapped_in()
     {
-        // Anything starting once the lock is released could replace the copy, even with
-        // an empty file, which opens without complaint.
+        // Something too old to take the lock file, starting once the lock is released,
+        // could replace the copy, even with an empty file, which opens without complaint.
         await SeedAsync(RawCs);
-        var copy = DbPath + ".recrypt-tmp";
-        await File.WriteAllBytesAsync(copy, []);
+        var before = await File.ReadAllBytesAsync(DbPath);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            DbEncryption.RequireRowsAsync(copy, "", 1, DbPath, "encrypt"));
+            DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance,
+                lockReleased: () => File.WriteAllBytesAsync(DbPath + ".recrypt-tmp", [])));
 
         Assert.Contains("does not hold what it should", ex.Message);
+        Assert.Equal(before, await File.ReadAllBytesAsync(DbPath));
+        Assert.Empty(Directory.GetFiles(_dir, "*.recrypt-tmp*"));
+    }
+
+    [Fact]
+    public async Task Something_writing_after_the_lock_went_stops_the_swap()
+    {
+        await SeedAsync(RawCs);
+        await ExecuteAsync(RawCs, "PRAGMA journal_mode=WAL");
+        await using var late = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false }.ToString());
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance, lockReleased: async () =>
+            {
+                await late.OpenAsync();
+                await using var command = late.CreateCommand();
+                command.CommandText = "UPDATE Groups SET Name = 'Written late'";
+                await command.ExecuteNonQueryAsync();
+            }));
+
+        Assert.Contains("in use by something else", ex.Message);
+        Assert.Empty(Directory.GetFiles(_dir, "*.recrypt-tmp*"));
+        await late.CloseAsync();
+        await using var db = CreateContext(RawCs);
+        Assert.Equal("Written late", (await db.Groups.SingleAsync()).Name);
+    }
+
+    [Fact]
+    public async Task An_empty_wal_left_at_the_swap_is_removed()
+    {
+        // Empty, so nothing is lost, but SQLite must not meet an old WAL beside the new file.
+        await SeedAsync(RawCs);
+
+        await DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance,
+            swap: (from, to) =>
+            {
+                Assert.False(File.Exists(to + "-wal"));
+                File.Move(from, to, overwrite: true);
+            },
+            lockReleased: () => File.WriteAllBytesAsync(DbPath + "-wal", []));
+    }
+
+    [Fact]
+    public async Task A_copy_belonging_to_whatever_holds_the_lock_is_left_alone()
+    {
+        await SeedAsync(RawCs);
+        await ExecuteAsync(RawCs, "PRAGMA journal_mode=WAL");
+        var copy = DbPath + ".recrypt-tmp";
+        await File.WriteAllTextAsync(copy, "another process's copy");
+        await using var other = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false }.ToString());
+        await other.OpenAsync();
+        await using var command = other.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM Groups";
+        await command.ExecuteScalarAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance));
+
+        Assert.Contains("in use by something else", ex.Message);
+        Assert.Equal("another process's copy", await File.ReadAllTextAsync(copy));
+    }
+
+    [Fact]
+    public async Task A_writer_on_a_file_in_delete_mode_stops_the_change()
+    {
+        // A shared lock would let this through, and the writer's commit would then land
+        // on a file that is gone.
+        await SeedAsync(RawCs);
+        await ExecuteAsync(RawCs, "PRAGMA journal_mode=DELETE");
+        await using var writer = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false }.ToString());
+        await writer.OpenAsync();
+        await using var command = writer.CreateCommand();
+        command.CommandText = "BEGIN IMMEDIATE; UPDATE Groups SET Name = 'Mid-write';";
+        await command.ExecuteNonQueryAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance));
+
+        Assert.Contains("in use by something else", ex.Message);
+        command.CommandText = "COMMIT";
+        await command.ExecuteNonQueryAsync();
+        await writer.CloseAsync();
+        await using var db = CreateContext(RawCs);
+        Assert.Equal("Mid-write", (await db.Groups.SingleAsync()).Name);
+    }
+
+    [Theory]
+    [InlineData("DELETE")]
+    [InlineData("WAL")]
+    public async Task The_exclusive_lock_keeps_readers_out_whatever_the_journal_mode(string mode)
+    {
+        await SeedAsync(RawCs);
+        await ExecuteAsync(RawCs, $"PRAGMA journal_mode={mode}");
+        await using var locked = await DbEncryption.OpenExclusiveAsync(RawCs, waitSeconds: 1);
+
+        await using var reader = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false, DefaultTimeout = 1 }.ToString());
+        await reader.OpenAsync();
+        await using var command = reader.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM Groups";
+        var ex = await Assert.ThrowsAsync<SqliteException>(() => command.ExecuteScalarAsync());
+
+        Assert.Equal(5, ex.SqliteErrorCode & 0xFF);
+    }
+
+    [Fact]
+    public async Task A_second_harpo_waits_then_stops_and_says_why()
+    {
+        // Asking for it again to see if the lock is real must not have dropped it.
+        using var first = await DbFileLock.AcquireAsync(RawCs, NullLogger.Instance);
+        var logger = new RecordingLogger();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 1));
+
+        Assert.Contains("Another Harpo is using the database", ex.Message);
+        Assert.Contains("Stop the other one", ex.Message);
+        Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("Waiting up to 1 seconds"));
+    }
+
+    [Fact]
+    public async Task A_second_harpo_carries_on_once_the_first_lets_go()
+    {
+        var first = await DbFileLock.AcquireAsync(RawCs, NullLogger.Instance);
+        var logger = new RecordingLogger();
+
+        var second = DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 30);
+        for (var i = 0; i < 100 && logger.Lines.Count == 0; i++)
+        {
+            await Task.Delay(50);
+        }
+        Assert.False(second.IsCompleted);
+        first.Dispose();
+
+        using var held = await second.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbFileLock.AcquireAsync(RawCs, NullLogger.Instance, waitSeconds: 0));
+    }
+
+    [Fact]
+    public async Task The_lock_file_stays_and_a_new_folder_is_created_for_it()
+    {
+        var path = Path.Combine(_dir, "new", "folder", "test.db");
+        var logger = new RecordingLogger();
+        using (await DbFileLock.AcquireAsync(new SqliteConnectionStringBuilder { DataSource = path }.ToString(), logger))
+        {
+        }
+
+        Assert.True(File.Exists(path + DbFileLock.Suffix));
+        Assert.Empty(logger.Lines);
+    }
+
+    [Fact]
+    public async Task An_in_memory_database_needs_no_lock_file()
+    {
+        using (await DbFileLock.AcquireAsync("Data Source=:memory:", NullLogger.Instance))
+        {
+        }
+
+        Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "*memory*" + DbFileLock.Suffix));
+    }
+
+    [Fact]
+    public async Task A_lock_file_that_cannot_be_written_is_not_called_another_harpo()
+    {
+        // The volume's real problem is reported better by what comes next.
+        var lockPath = DbPath + DbFileLock.Suffix;
+        await File.WriteAllBytesAsync(lockPath, []);
+        File.SetUnixFileMode(lockPath, UnixFileMode.UserRead);
+        var logger = new RecordingLogger();
+
+        using (await DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 0))
+        {
+        }
+
+        Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("Could not take the lock file"));
+        Assert.DoesNotContain(logger.Lines, l => l.Message.Contains("Another Harpo"));
+    }
+
+    [Fact]
+    public async Task A_lock_file_that_cannot_be_opened_is_not_called_another_harpo()
+    {
+        // An I/O error, as a full or read-only volume gives, rather than a refused lock.
+        var path = Path.Combine(_dir, new string('x', 300));
+        var logger = new RecordingLogger();
+
+        using (await DbFileLock.AcquireAsync(new SqliteConnectionStringBuilder { DataSource = path }.ToString(), logger, waitSeconds: 0))
+        {
+        }
+
+        Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("Could not take the lock file"));
     }
 
     [Fact]

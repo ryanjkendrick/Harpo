@@ -462,13 +462,17 @@ Harpo__DatabaseKey: "…per-site secret…"
   start. A missing or wrong key never silently falls back — Harpo refuses to
   start with a clear error instead. A full or read-only volume is reported as
   that, not as a wrong key.
-- **Only one Harpo may use a database file**, including during an upgrade, so don't
-  run a new container on the same volume until the old one has stopped. If another
-  running Harpo has the file open when a key change starts, Harpo stops rather than
-  change it, because the other would go on writing to a file that is no longer
-  there and lose it all. It cannot catch a Harpo that starts at the very moment the
-  files are being swapped. So stop the old container first, and don't use a rolling
-  update with overlap for a key change.
+- **Only one Harpo may use a database file**, including during an upgrade, so stop the
+  old container before starting a new one on the same volume. A running Harpo holds a
+  lock on an empty `harpo.db.lock` beside the database. A second one waits up to 30
+  seconds for it, then stops with a message saying why, without touching the file. So
+  a rolling update that starts the new container before stopping the old one won't
+  come up. The lock file stays there and is safe to leave; the lock goes when Harpo
+  stops, however it stops. Older versions don't take this lock, and some filesystems
+  ignore it, such as a Docker Desktop bind mount or some network shares (Harpo logs a
+  warning when it can tell). In those cases a key change still stops if a running Harpo
+  has the file open, but not if one starts just as the change begins, or during it: that
+  one would write to a file that is no longer there and lose it all.
 
 Be clear about what this buys: it protects *copied files* — stolen volumes,
 disk images, careless backups. An attacker on the live host can read the key

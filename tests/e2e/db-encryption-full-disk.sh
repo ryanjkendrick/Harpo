@@ -195,9 +195,11 @@ start "$V" -e Harpo__DatabaseKey=not-the-key
 check "says the key does not open it" says "does not open it"
 check "refuses to start" down
 
+# Without its lock file, as a version too old to take one would run, so that only
+# SQLite's lock stands in the way. db-file-lock.sh covers Harpos that do take it.
 echo "A second Harpo on a file another has open"
 SITE=$RUN-site
-docker run -d --name "$SITE" "${ENVS[@]}" "${ONLY2[@]}" -v "$V:/data" "$IMAGE" >/dev/null
+docker run -d --name "$SITE" "${ENVS[@]}" "${ONLY2[@]}" -e DOTNET_SYSTEM_IO_DISABLEFILELOCKING=1 -v "$V:/data" "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do docker logs "$SITE" 2>&1 | grep -q "Now listening\|Application started" && break; sleep 1; done
 start "$V" -e Harpo__DatabaseKey=full-disk-key-2 -e Harpo__RemoveDatabaseEncryption=true
 check "decrypting refuses to start" down

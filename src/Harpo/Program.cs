@@ -160,6 +160,9 @@ if (devAuth)
         "Never use this outside local testing; set Auth:Mode=Ldap for Active Directory.");
 }
 
+// Before anything touches the database file, and held until the process ends.
+using var databaseLock = await DbFileLock.AcquireAsync(rawConnectionString, app.Logger);
+
 // Encrypt / rekey / decrypt the database file to match configuration, then init.
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(

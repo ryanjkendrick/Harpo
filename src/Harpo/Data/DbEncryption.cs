@@ -287,10 +287,12 @@ public static class DbEncryption
     /// Re-encrypts the whole database into a temp file with sqlcipher_export
     /// (targetKey null → plaintext), then atomically swaps it into place. The WAL has
     /// to go before the swap, or SQLite would apply it to the new file, so everything
-    /// in it must be in the main file first. <paramref name="swap"/> is for tests.
+    /// in it must be in the main file first. <paramref name="swap"/> and
+    /// <paramref name="lockReleased"/> are for tests.
     /// </summary>
     internal static async Task ExportAsync(
-        string path, string? sourceKey, string? targetKey, ILogger logger, Action<string, string>? swap = null)
+        string path, string? sourceKey, string? targetKey, ILogger logger,
+        Action<string, string>? swap = null, Func<Task>? lockReleased = null)
     {
         var tempPath = path + TempSuffix;
         var action = targetKey is null ? "decrypt" : "encrypt";
@@ -325,14 +327,19 @@ public static class DbEncryption
                 }
             }
             SqliteConnection.ClearAllPools();
+            if (lockReleased is not null)
+            {
+                await lockReleased();
+            }
 
             // The lock went with the connection, so what was checked is looked at again:
-            // anything else starting now could have written, or replaced the copy.
+            // something other than a current Harpo starting now could have replaced the
+            // copy, or written. The WAL comes last, so that this slow check is covered.
+            await RequireRowsAsync(tempPath, targetKey ?? "", rows, path, action);
             if (new FileInfo(path + "-wal") is { Exists: true, Length: > 0 })
             {
                 throw InUse(path, $"{action} it");
             }
-            await RequireRowsAsync(tempPath, targetKey ?? "", rows, path, action);
             MatchCopyMode(path, tempPath);
 
             // The old WAL/SHM belong to the old file (and, when encrypting, still hold
@@ -373,10 +380,11 @@ public static class DbEncryption
 
     /// <summary>
     /// Opens the file with an exclusive lock, held until the connection is closed, or
-    /// fails with SQLITE_BUSY if anything else has it open, even idly: a running site in
-    /// WAL mode always holds a shared lock on it. Without this, one Harpo converting the
-    /// file leaves another running on the deleted original, where everything it writes
-    /// is lost without an error.
+    /// fails with SQLITE_BUSY if anything else has it open: a running site in WAL mode
+    /// always holds a shared lock on it, even idle. Without this, a Harpo too old to
+    /// take <see cref="DbFileLock"/> could be left running on the deleted original, where
+    /// everything it writes is lost without an error. No lock can show up a connection
+    /// idle on a file in DELETE mode, which holds none, but Harpo always runs in WAL.
     /// </summary>
     internal static async Task<SqliteConnection> OpenExclusiveAsync(string connectionString, int waitSeconds)
     {
@@ -404,6 +412,10 @@ public static class DbEncryption
             }
             command.CommandText = "SELECT count(*) FROM sqlite_master";
             await command.ExecuteScalarAsync();
+            // In DELETE mode that read only took a shared lock, which lets others read and
+            // start writing. In this mode a lock taken is kept after the transaction.
+            command.CommandText = "BEGIN EXCLUSIVE; COMMIT;";
+            await command.ExecuteNonQueryAsync();
             return connection;
         }
         catch

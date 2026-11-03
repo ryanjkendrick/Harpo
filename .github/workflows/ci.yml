@@ -126,6 +126,10 @@ jobs:
         if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
         run: tests/e2e/db-encryption-full-disk.sh harpo:latest
 
+      - name: Two Harpos on one database file
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        run: tests/e2e/db-file-lock.sh harpo:latest
+
       - name: Collect container logs
         if: ${{ failure() }}
         run: |
