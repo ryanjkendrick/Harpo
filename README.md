@@ -437,9 +437,9 @@ Harpo__DatabaseKey: "…per-site secret…"
 - **Existing databases are migrated automatically**: on the next start Harpo
   detects a plaintext file and encrypts it in place (and cleans up the WAL
   sidecar files, which would otherwise still hold plaintext pages). This writes
-  a second copy of the file first, so it needs a little more than the database's
-  size free on the volume. If there isn't enough, Harpo stops with an error saying
-  how much it needs, and your data stays as it was. With `restart: unless-stopped`
+  a second copy of the file first, so it needs at least the database's size free
+  on the volume, and up to twice that if entries hold a lot of text. If there isn't
+  enough, Harpo stops with an error, and your data stays as it was. With `restart: unless-stopped`
   it tries again on each restart until there is room. The file's folder must be
   mounted as a folder, because a file mounted on its own cannot be replaced.
 - **Check that it worked** in the **This site** panel of the Administration page,
@@ -452,10 +452,10 @@ Harpo__DatabaseKey: "…per-site secret…"
   other sites, and replication is completely unaffected.
 - **Rotate keys** by setting `Harpo__PreviousDatabaseKey` to the old key next
   to the new `Harpo__DatabaseKey` for one start (the file is rekeyed in place;
-  then remove the previous key from configuration). This also needs a little more
-  than the database's size free. Keep the old key until the log says rotation is
-  complete: if it could not finish, Harpo stops with an error and the old key still
-  opens the file. Don't combine this with removing encryption: rotate first, then
+  then remove the previous key from configuration). This needs free space too. Keep
+  the old key until the log says rotation is complete, or that the previous key is
+  no longer needed: if it could not finish, Harpo stops with an error and the old
+  key still opens the file. Don't combine this with removing encryption: rotate first, then
   remove it on a later start.
 - **Remove encryption** deliberately by adding
   `Harpo__RemoveDatabaseEncryption: "true"` alongside the current key for one
@@ -463,8 +463,12 @@ Harpo__DatabaseKey: "…per-site secret…"
   start with a clear error instead. A full or read-only volume is reported as
   that, not as a wrong key.
 - **Only one Harpo may use a database file**, including during an upgrade, so don't
-  run a new container on the same volume until the old one has stopped. If something
-  else has the file open, Harpo stops rather than change it.
+  run a new container on the same volume until the old one has stopped. If another
+  running Harpo has the file open when a key change starts, Harpo stops rather than
+  change it, because the other would go on writing to a file that is no longer
+  there and lose it all. It cannot catch a Harpo that starts at the very moment the
+  files are being swapped. So stop the old container first, and don't use a rolling
+  update with overlap for a key change.
 
 Be clear about what this buys: it protects *copied files* — stolen volumes,
 disk images, careless backups. An attacker on the live host can read the key

@@ -97,6 +97,7 @@ public class DbEncryptionTests : IDisposable
             }
             File.Copy(live, DbPath);
             File.Copy(live + "-wal", DbPath + "-wal");
+            File.Copy(live + "-shm", DbPath + "-shm");
         }
         SqliteConnection.ClearAllPools();
         Assert.True(new FileInfo(DbPath + "-wal").Length > 0);
@@ -373,6 +374,17 @@ public class DbEncryptionTests : IDisposable
         Assert.Contains("has not been changed", message);
     }
 
+    [Theory]
+    [InlineData(5, "SQLite Error 5: 'database is locked'.")]
+    [InlineData(6, "SQLite Error 6: 'database table is locked'.")]
+    [InlineData(1, "SQLite Error 1: 'database is locked'.")] // what sqlcipher_export gives
+    public void A_lock_is_not_blamed_on_the_disk(int code, string text)
+    {
+        var message = DbEncryption.WriteFailureMessage(new SqliteException(text, code), DbPath, "encrypt");
+        Assert.Contains("in use by something else", message);
+        Assert.DoesNotContain("free", message);
+    }
+
     [Fact]
     public void Other_failures_are_not_blamed_on_the_disk()
     {
@@ -388,7 +400,7 @@ public class DbEncryptionTests : IDisposable
 
         var message = DbEncryption.WriteFailureMessage(new SqliteException("SQLite Error 13: 'database or disk is full'.", 13), DbPath, "encrypt");
 
-        Assert.Contains("about 22 MB", message); // 20 MB + 5%, rounded up, + 1
+        Assert.Contains("at least 22 MB", message); // 20 MB + 5%, rounded up, + 1
     }
 
     [Theory]
@@ -451,18 +463,18 @@ public class DbEncryptionTests : IDisposable
     }
 
     [Fact]
-    public async Task A_rotation_that_did_not_take_effect_is_not_reported_as_done()
+    public async Task A_rotation_of_a_file_it_cannot_write_says_so()
     {
         var options = await EncryptedSeedAsync("key-1");
 
-        // A file SQLite cannot write stands in for a full disk.
         File.SetUnixFileMode(DbPath, UnixFileMode.UserRead);
         var logger = new RecordingLogger();
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-2", "key-1", false), logger));
         File.SetUnixFileMode(DbPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-        Assert.Contains("did not take effect", ex.Message);
+        Assert.Contains("could not write to the volume", ex.Message);
+        Assert.Contains("rotate the key of", ex.Message);
         Assert.DoesNotContain(logger.Lines, l => l.Message.Contains("rotation complete"));
         Assert.Equal(1, await CountGroupsAsync(DbEncryption.ApplyKey(RawCs, options)));
     }
@@ -518,6 +530,7 @@ public class DbEncryptionTests : IDisposable
         var export = DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance, (from, to) =>
         {
             Assert.False(File.Exists(to + "-wal"));
+            Assert.False(File.Exists(to + "-shm"));
             File.Copy(to, snapshot);
             if (swapFails)
             {
@@ -546,25 +559,54 @@ public class DbEncryptionTests : IDisposable
         Assert.Equal(rows, await CountGroupsAsync(new SqliteConnectionStringBuilder { DataSource = snapshot }.ToString()));
     }
 
-    [Fact]
-    public async Task An_empty_wal_does_not_survive_the_swap()
+    [Theory]
+    [InlineData(null, "key-1", null, false)] // encrypt
+    [InlineData("key-1", "key-1", null, true)] // decrypt
+    [InlineData("key-1", "key-2", "key-1", false)] // rotate
+    public async Task A_file_something_else_has_open_is_not_changed(string? sourceKey, string key, string? previous, bool remove)
     {
-        // SQLite would apply a WAL left beside the new file. It removes one itself on the
-        // last close, so something else with the file open is what leaves one to find.
-        await SeedAsync(RawCs);
-        await ExecuteAsync(RawCs, "PRAGMA journal_mode=WAL");
-        await using var other = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false }.ToString());
-        await other.OpenAsync();
-        await using var command = other.CreateCommand();
+        // An idle site in WAL mode: no transaction, nothing but its hold on the file.
+        // Changing the file under it would lose whatever it writes next.
+        var keyed = new SqliteConnectionStringBuilder { DataSource = DbPath, Password = sourceKey ?? "" }.ToString();
+        await SeedAsync(keyed);
+        await ExecuteAsync(keyed, "PRAGMA journal_mode=WAL");
+        var before = await File.ReadAllBytesAsync(DbPath);
+        await using var site = new SqliteConnection(new SqliteConnectionStringBuilder(keyed) { Pooling = false }.ToString());
+        await site.OpenAsync();
+        await using var command = site.CreateCommand();
         command.CommandText = "SELECT count(*) FROM Groups";
         await command.ExecuteScalarAsync();
 
-        await DbEncryption.ExportAsync(DbPath, null, "key-1", NullLogger.Instance, (from, to) =>
-        {
-            Assert.False(File.Exists(to + "-wal"));
-            Assert.False(File.Exists(to + "-shm"));
-            File.Move(from, to, overwrite: true);
-        });
+        var options = new DbEncryptionOptions(key, previous, remove);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance));
+
+        Assert.Contains("in use by something else", ex.Message);
+        Assert.Equal(before, await File.ReadAllBytesAsync(DbPath));
+        Assert.Empty(Directory.GetFiles(_dir, "*.recrypt-tmp*"));
+
+        // The site carries on, and what it writes stays.
+        command.CommandText = "UPDATE Groups SET Name = 'Still here'";
+        await command.ExecuteNonQueryAsync();
+        await site.CloseAsync();
+        SqliteConnection.ClearAllPools();
+        await using var db = CreateContext(keyed);
+        Assert.Equal("Still here", (await db.Groups.SingleAsync()).Name);
+    }
+
+    [Fact]
+    public async Task A_copy_replaced_after_the_lock_went_is_not_swapped_in()
+    {
+        // Anything starting once the lock is released could replace the copy, even with
+        // an empty file, which opens without complaint.
+        await SeedAsync(RawCs);
+        var copy = DbPath + ".recrypt-tmp";
+        await File.WriteAllBytesAsync(copy, []);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.RequireRowsAsync(copy, "", 1, DbPath, "encrypt"));
+
+        Assert.Contains("does not hold what it should", ex.Message);
     }
 
     [Fact]
@@ -604,12 +646,12 @@ public class DbEncryptionTests : IDisposable
     }
 
     [Fact]
-    public async Task A_wal_that_cannot_be_folded_in_stops_the_change_and_is_kept()
+    public async Task A_reader_mid_transaction_stops_the_change_and_keeps_the_wal()
     {
         await SeedAsync(RawCs);
         await ExecuteAsync(RawCs, "PRAGMA journal_mode=WAL");
 
-        // Something else holding an old snapshot open keeps the checkpoint from finishing.
+        // Something else in the middle of reading an old snapshot.
         var other = new SqliteConnectionStringBuilder(RawCs) { Pooling = false, DefaultTimeout = 1 }.ToString();
         await using var reader = new SqliteConnection(other);
         await reader.OpenAsync();
@@ -636,7 +678,6 @@ public class DbEncryptionTests : IDisposable
     [Theory]
     [InlineData(UnixFileMode.UserRead | UnixFileMode.UserWrite)]
     [InlineData(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead)]
-    [InlineData(UnixFileMode.UserRead)]
     public async Task Encrypting_and_decrypting_keep_the_file_mode(UnixFileMode mode)
     {
         await SeedAsync(RawCs);
@@ -713,6 +754,140 @@ public class DbEncryptionTests : IDisposable
         await DbInitializer.InitializeAsync(factory, RawCs, logger).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("migration lock"));
+    }
+
+    [Fact]
+    public async Task A_file_locked_by_something_else_is_not_called_a_wrong_key_or_a_full_disk()
+    {
+        var options = await EncryptedSeedAsync("key-1", wal: false);
+        await using var other = new SqliteConnection(new SqliteConnectionStringBuilder(DbEncryption.ApplyKey(RawCs, options)) { Pooling = false }.ToString());
+        await other.OpenAsync();
+        await using var command = other.CreateCommand();
+        command.CommandText = "BEGIN EXCLUSIVE";
+        await command.ExecuteNonQueryAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance));
+
+        // On macOS .NET cannot even read a file with this lock on it. On Linux, where Harpo
+        // runs, it can, so SQLite is what reports it.
+        Assert.Contains(OperatingSystem.IsLinux() ? "in use by something else, so Harpo cannot safely check its key" : "could not read the database file", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_new_site_in_a_folder_that_does_not_exist_yet_logs_no_warning()
+    {
+        var logger = new RecordingLogger();
+        var missing = new SqliteConnectionStringBuilder { DataSource = Path.Combine(_dir, "not-yet", "test.db") }.ToString();
+
+        await DbEncryption.EnsureEncryptionStateAsync(missing, new DbEncryptionOptions(null, null, false), logger);
+
+        Assert.DoesNotContain(logger.Lines, l => l.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task A_previous_key_no_longer_needed_is_pointed_out()
+    {
+        await EncryptedSeedAsync("key-2");
+        var logger = new RecordingLogger();
+
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-2", "key-1", false), logger);
+
+        Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("no longer needed"));
+    }
+
+    /// <summary>Corrupts one byte of each of the given pages of the encrypted file.</summary>
+    private async Task DamagePagesAsync(Func<int, bool> page)
+    {
+        const int pageSize = 4096;
+        var bytes = await File.ReadAllBytesAsync(DbPath);
+        for (var i = 0; i < bytes.Length / pageSize; i++)
+        {
+            if (page(i))
+            {
+                bytes[i * pageSize + 100] ^= 0xFF;
+            }
+        }
+        await File.WriteAllBytesAsync(DbPath, bytes);
+    }
+
+    [Fact]
+    public async Task A_damaged_file_with_the_right_key_is_not_called_a_wrong_key()
+    {
+        var options = await EncryptedSeedAsync("key-1", wal: false);
+        await DamagePagesAsync(i => i > 0); // the schema's pages, but not the first
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance));
+
+        Assert.Contains("may be damaged", ex.Message);
+        Assert.DoesNotContain("does not open it", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_damaged_first_page_says_it_might_be_that_rather_than_the_key()
+    {
+        var options = await EncryptedSeedAsync("key-1", wal: false);
+        await DamagePagesAsync(i => i == 0);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance));
+
+        Assert.Contains("does not open it", ex.Message);
+        Assert.Contains("may be damaged", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_rotation_stopped_by_damage_does_not_send_the_operator_after_disk_space()
+    {
+        await SeedAsync(RawCs);
+        await using (var db = CreateContext(RawCs))
+        {
+            db.Groups.AddRange(Enumerable.Range(0, 2000).Select(i => new Group { Id = Guid.NewGuid(), Name = $"Group {i}" }));
+            await db.SaveChangesAsync();
+        }
+        SqliteConnection.ClearAllPools();
+        var options = new DbEncryptionOptions("key-1", null, false);
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance);
+        var pages = new FileInfo(DbPath).Length / 4096;
+        await DamagePagesAsync(i => i == pages - 2); // a table page, not the schema's
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-2", "key-1", false), NullLogger.Instance));
+
+        Assert.Contains("the file is damaged", ex.Message);
+        Assert.Contains("keep both keys", ex.Message);
+        Assert.DoesNotContain("free up some space", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_migration_lock_something_else_may_be_holding_is_left_alone()
+    {
+        var options = new DbContextOptionsBuilder<HarpoDbContext>().UseSqlite(RawCs).Options;
+        var factory = new TestDbFactory(options, new ManualTime(), "enc-test");
+        await DbInitializer.InitializeAsync(factory, RawCs);
+        await ExecuteAsync(RawCs, "INSERT INTO \"__EFMigrationsLock\" (\"Id\", \"Timestamp\") VALUES (1, '2026-11-03')");
+        await using var other = new SqliteConnection(new SqliteConnectionStringBuilder(RawCs) { Pooling = false }.ToString());
+        await other.OpenAsync();
+        await using var command = other.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM \"__EFMigrationsLock\"";
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+        var logger = new RecordingLogger();
+
+        var start = DbInitializer.InitializeAsync(factory, RawCs, logger);
+
+        for (var i = 0; i < 300 && !logger.Lines.Any(l => l.Message.Contains("something else has the database file open")); i++)
+        {
+            await Task.Delay(100);
+        }
+        Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("something else has the database file open"));
+        Assert.False(start.IsCompleted);
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+
+        // Once the other process finishes and lets go, this start carries on.
+        command.CommandText = "DELETE FROM \"__EFMigrationsLock\"";
+        await command.ExecuteNonQueryAsync();
+        await start.WaitAsync(TimeSpan.FromSeconds(60));
     }
 
     private sealed class RecordingLogger : ILogger

@@ -44,14 +44,7 @@ public static class DbInitializer
                 "Existing database baselined at migration {Migration}; newer migrations will now apply.", initialMigration);
         }
 
-        // EF's migration lock is a row in this table, and a process killed mid-migration
-        // leaves it behind. MigrateAsync then waits for it for good, with nothing in the
-        // log. Only one Harpo uses a database file, so a row found here is always stale.
-        if (await TableExistsAsync(db, "__EFMigrationsLock")
-            && await db.Database.ExecuteSqlRawAsync("DELETE FROM \"__EFMigrationsLock\"") > 0)
-        {
-            logger?.LogWarning("Removed the migration lock an interrupted start left behind.");
-        }
+        await RemoveStaleMigrationLockAsync(db, connectionString, logger);
 
         await db.Database.MigrateAsync();
 
@@ -61,6 +54,38 @@ public static class DbInitializer
         {
             db.SiteCounters.Add(new SiteCounter { Id = 1, NextSeq = 1 });
             await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// EF's migration lock is a row, and a process killed mid-migration leaves it behind.
+    /// MigrateAsync then waits for it for good, with nothing in the log. A row is stale
+    /// only if nothing else has the file open, which an exclusive lock proves: taken
+    /// first, on the connection doing the delete, so that nothing can start in between.
+    /// </summary>
+    private static async Task RemoveStaleMigrationLockAsync(HarpoDbContext db, string connectionString, ILogger? logger)
+    {
+        if (!await TableExistsAsync(db, "__EFMigrationsLock")
+            || await db.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM \"__EFMigrationsLock\"").SingleAsync() == 0)
+        {
+            return;
+        }
+
+        await db.Database.GetDbConnection().CloseAsync();
+        SqliteConnection.ClearAllPools(); // this context's own connection would count as something else
+        try
+        {
+            await using var connection = await DbEncryption.OpenExclusiveAsync(connectionString, waitSeconds: 2);
+            await using var delete = connection.CreateCommand();
+            delete.CommandText = "DELETE FROM \"__EFMigrationsLock\"";
+            await delete.ExecuteNonQueryAsync();
+            logger?.LogWarning("Removed the migration lock an interrupted start left behind.");
+        }
+        catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) is 5 or 6) // SQLITE_BUSY, SQLITE_LOCKED
+        {
+            logger?.LogWarning(
+                "A migration lock is set and something else has the database file open, so this start will wait for " +
+                "it. Only one Harpo may use a database file: if this does not clear, stop whatever else is using it.");
         }
     }
 
