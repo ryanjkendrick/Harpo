@@ -86,7 +86,16 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
 2. Rewrite `DbEncryption` per D2/D3: connection string becomes a `file:` URI
    with `cipher=sqlcipher&legacy=4` plus `Password`; encrypt-in-place and
    decrypt through `PRAGMA rekey`; wrong-key detection keeps reading
-   `sqlite_master`. Update the seven `DbEncryptionTests` and add two:
+   `sqlite_master`. `PRAGMA rekey` reports success on a full disk under SQLCipher,
+   so `RekeyAsync` reopens the file to check; encrypting and decrypting need the
+   same check once they use it, and the README's "second copy" wording and the
+   export temp-file cleanup change with them. Re-test all three on a full volume.
+   Rows only in the WAL must still survive, so keep the checkpoint that `ExportAsync`
+   checks before anything is replaced. `EnsureEncryptionStateAsync` and
+   `IsEncryptedAsync` call `File.Exists` on `DataSource`, which a `file:` URI would
+   break, so they must keep getting the plain path; otherwise reconciliation is
+   skipped and the Administration page shows "Unknown".
+   Update the `DbEncryptionTests` and add two:
    *a file encrypted by the old SQLCipher build opens*, and *a file written by
    SQLite3MC opens in the old build* (interop both ways; the second needs a
    small .NET 10 helper project, or the `sqlcipher` CLI from Homebrew, and

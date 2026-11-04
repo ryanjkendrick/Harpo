@@ -13,6 +13,7 @@
 @inject Harpo.Security.CryptoService Crypto
 @inject VaultService Vault
 @inject PurgeService Purge
+@inject Harpo.Data.DbEncryptionStatus DbFile
 @implements IDisposable
 
 <PageTitle>Administration · Harpo</PageTitle>
@@ -44,6 +45,12 @@
             <div class="stat">
                 <span class="stat-value">@(_status?.Entries.ToString() ?? "…")</span>
                 <span class="stat-label">passwords</span>
+            </div>
+            <div class="stat" title="Read from the file when Harpo started. Set Harpo__DatabaseKey to encrypt the whole file, including entry names, URLs, usernames, group membership and the audit log.">
+                <span class="stat-value">@(DbFile.IsEncrypted switch { true => "Encrypted", false => "Not encrypted", null => "Unknown" })</span>
+                <span class="stat-label">
+                    @(DbFile.IsEncrypted == false ? "database file · passwords are still encrypted" : "database file")
+                </span>
             </div>
             <div class="stat" title="Set Harpo__Offline__Enabled=false to forbid offline password storage on devices.">
                 <span class="stat-value">@(OfflineConfig.Value.Enabled ? "Allowed" : "Off")</span>

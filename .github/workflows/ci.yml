@@ -5,8 +5,9 @@
 #   End to end  — builds the image from this commit, starts the two-site demo
 #                 (docker-compose.multisite.yml) on the runner, and drives it
 #                 with headless Chrome: the offline vault, the interactive UI and
-#                 the session suites from tests/e2e. On failure the containers'
-#                 logs are attached to the run.
+#                 the session suites from tests/e2e. It also fills small volumes
+#                 to check database encryption changes on a really full disk. On
+#                 failure the containers' logs are attached to the run.
 #
 # Nothing here publishes anything or needs a secret, so it is safe for pull
 # requests from forks (the `pull_request` event gives them a read-only token).
@@ -100,15 +101,34 @@ jobs:
         working-directory: tests/e2e
         run: node offline-vault.e2e.js
 
-      - name: Interactive UI (75 checks)
+      # harpo-alpha sets Harpo__DatabaseKey in docker-compose.multisite.yml.
+      - name: Interactive UI (76 checks)
         if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
         working-directory: tests/e2e
+        env:
+          HARPO_DB_ENCRYPTED: "true"
         run: node ui.e2e.js
 
       - name: Sessions (9 checks)
         if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
         working-directory: tests/e2e
         run: node session.e2e.js
+
+      # Closing any handle on the file would have dropped this lock while the app
+      # runs. harpo-alpha has by now been through the Administration page.
+      - name: SQLite still holds its lock on the database file
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        run: |
+          inode=$(docker exec harpo-alpha stat -c %i /data/harpo.db)
+          docker exec harpo-alpha cat /proc/locks | grep ":$inode "
+
+      - name: Database encryption on a full disk
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        run: tests/e2e/db-encryption-full-disk.sh harpo:latest
+
+      - name: Two Harpos on one database file
+        if: ${{ !cancelled() && steps.offline.conclusion != 'skipped' }}
+        run: tests/e2e/db-file-lock.sh harpo:latest
 
       - name: Collect container logs
         if: ${{ failure() }}

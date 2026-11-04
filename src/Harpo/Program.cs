@@ -46,6 +46,7 @@ builder.Services.Configure<LoginThrottleOptions>(builder.Configuration.GetSectio
 var rawConnectionString = builder.Configuration.GetConnectionString("Harpo") ?? "Data Source=harpo.db";
 var dbEncryption = DbEncryptionOptions.FromConfiguration(builder.Configuration);
 var connectionString = DbEncryption.ApplyKey(rawConnectionString, dbEncryption);
+builder.Services.AddSingleton<DbEncryptionStatus>();
 builder.Services.AddDbContextFactory<HarpoDbContext>(options => options.UseSqlite(connectionString));
 builder.Services.AddSingleton(TimeProvider.System);
 
@@ -159,10 +160,15 @@ if (devAuth)
         "Never use this outside local testing; set Auth:Mode=Ldap for Active Directory.");
 }
 
+// Before anything touches the database file, and held until the process ends.
+using var databaseLock = await DbFileLock.AcquireAsync(rawConnectionString, app.Logger);
+
 // Encrypt / rekey / decrypt the database file to match configuration, then init.
 await DbEncryption.EnsureEncryptionStateAsync(rawConnectionString, dbEncryption, app.Logger);
 await DbInitializer.InitializeAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), connectionString, app.Logger);
+await DbEncryption.ReportStateAsync(
+    rawConnectionString, dbEncryption, app.Services.GetRequiredService<DbEncryptionStatus>(), app.Logger);
 await Harpo.Replication.UpgradeResync.EnsureAsync(
     app.Services.GetRequiredService<IDbContextFactory<HarpoDbContext>>(), app.Logger);
 
