@@ -295,5 +295,11 @@ public class IconService
         {
             throw new VaultValidationException("The file's content does not match its image type.");
         }
+        // "RIFF" alone also starts WAV and AVI files; a WebP says so at byte 8.
+        if (contentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase) &&
+            (data.Length < 12 || !data.AsSpan(8, 4).SequenceEqual("WEBP"u8)))
+        {
+            throw new VaultValidationException("The file's content does not match its image type.");
+        }
     }
 }

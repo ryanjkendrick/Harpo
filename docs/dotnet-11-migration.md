@@ -49,6 +49,10 @@ Reason: a clean rollback. A 0.8.0 site can be put back on 0.7 by changing the
 image tag, because the schema is identical and (see D2) the database file
 format is too.
 
+One exception, because it needs a minor version: `Auth:Ldap:AdminGroup` loses
+its shipped default of `Harpo Admins` (see step 2). It doesn't affect rollback,
+since going back to 0.7 only brings the default back.
+
 **D2. Keep the SQLCipher 4 file format, now produced by SQLite3MC.** Every
 connection opens with `cipher=sqlcipher&legacy=4`, for existing and new
 files alike. Reasons: zero data conversion on upgrade, 0.7 can still open a
@@ -160,8 +164,15 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    Arm64); encrypted databases keep working and keep their format; rollback
    to 0.7 is supported by changing the tag back; the engine behind
    `Harpo__DatabaseKey` is now SQLite3 Multiple Ciphers; no schema migration.
+   Separately, as the one action some sites need: an LDAP site that relies on
+   the default `Auth:Ldap:AdminGroup` has no site admins until it sets one.
 
 ## Step 2: release 0.8.0
+
+Before the release, remove `"AdminGroup": "Harpo Admins"` from
+`src/Harpo/appsettings.json`: a short name matches a group of that name in any
+OU, so nobody should get it without asking for it. Blank already means no site
+admins. Short names set on purpose keep working, with the warning from 0.7.5.
 
 Follow the release checklist: compose pin to `:0.8` in its own commit, merge
 to `main`, tag, workflow, verify the cold-pulled image with the UI and

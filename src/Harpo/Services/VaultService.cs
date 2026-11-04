@@ -81,6 +81,7 @@ public class VaultService
         _sessions = sessions;
         _export = export?.Value ?? new ExportOptions();
         _siteId = site?.Value.SiteId ?? "";
+        _recentTotpAudits = new(time);
     }
 
     /// <summary>Whether this site offers vault exports at all (<c>Harpo:Export:Enabled</c>).</summary>
@@ -99,12 +100,13 @@ public class VaultService
     }
 
     /// <summary>
-    /// One page of a vault for the vault page. Search and order need only the
-    /// plain-text columns, so those are read for the whole vault (nothing is
-    /// decrypted); the full rows, their latest revision and their decrypted
-    /// notes are fetched for the one page shown. Reading and decrypting every
-    /// entry on every visit made a 5,000-entry vault take seconds under load.
-    /// Search matches name, URL or username, ignoring case (any alphabet).
+    /// One page of a vault for the vault page. Without a search the database
+    /// pages it. A search reads the plain-text columns for the whole vault and
+    /// matches them here, because it ignores case in any alphabet and SQLite's
+    /// LIKE only does for ASCII. Either way nothing is decrypted until the full
+    /// rows, their latest revision and their notes are fetched for the one page
+    /// shown: reading and decrypting every entry on every visit made a
+    /// 5,000-entry vault take seconds under load.
     /// </summary>
     public async Task<EntryPage> GetEntryPageAsync(
         UserContext user, Guid groupId, string? search, int page, int pageSize, CancellationToken ct = default)
@@ -113,27 +115,40 @@ public class VaultService
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         await RequireMemberAsync(db, user, groupId, ct);
 
-        var all = await db.PasswordEntries.AsNoTracking()
-            .Where(e => e.GroupId == groupId && !e.IsDeleted)
-            .OrderBy(e => e.Name).ThenBy(e => e.Id) // a stable order, so pages never overlap
-            .Select(e => new { e.Id, e.Name, e.Url, e.Username })
-            .ToListAsync(ct);
+        var live = db.PasswordEntries.AsNoTracking().Where(e => e.GroupId == groupId && !e.IsDeleted);
+        var inOrder = live.OrderBy(e => e.Name).ThenBy(e => e.Id); // a stable order, so pages never overlap
         var term = search?.Trim() ?? "";
-        var matching = term.Length == 0
-            ? all
-            : all.Where(e => e.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
-                             || e.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
-                             || e.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
-                 .ToList();
 
-        var pageCount = Math.Max(1, (matching.Count + pageSize - 1) / pageSize);
-        page = Math.Clamp(page, 1, pageCount);
-        var ids = matching.Skip((page - 1) * pageSize).Take(pageSize).Select(e => e.Id).ToList();
+        int inVault, matchingCount, pageCount;
+        List<Guid> ids;
+        if (term.Length == 0)
+        {
+            inVault = matchingCount = await live.CountAsync(ct);
+            pageCount = PageCount(matchingCount, pageSize);
+            page = Math.Clamp(page, 1, pageCount);
+            ids = await inOrder.Skip((page - 1) * pageSize).Take(pageSize).Select(e => e.Id).ToListAsync(ct);
+        }
+        else
+        {
+            var all = await inOrder.Select(e => new { e.Id, e.Name, e.Url, e.Username }).ToListAsync(ct);
+            var matching = all
+                .Where(e => e.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                            || e.Url.Contains(term, StringComparison.OrdinalIgnoreCase)
+                            || e.Username.Contains(term, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            inVault = all.Count;
+            matchingCount = matching.Count;
+            pageCount = PageCount(matchingCount, pageSize);
+            page = Math.Clamp(page, 1, pageCount);
+            ids = matching.Skip((page - 1) * pageSize).Take(pageSize).Select(e => e.Id).ToList();
+        }
         var rows = await db.PasswordEntries.AsNoTracking().Where(e => ids.Contains(e.Id)).ToListAsync(ct);
         var position = ids.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
         var ordered = rows.OrderBy(e => position[e.Id]).ToList();
-        return new EntryPage(await ViewsAsync(db, ordered, ct), page, pageCount, matching.Count, all.Count);
+        return new EntryPage(await ViewsAsync(db, ordered, ct), page, pageCount, matchingCount, inVault);
     }
+
+    private static int PageCount(int rows, int pageSize) => Math.Max(1, (rows + pageSize - 1) / pageSize);
 
     /// <summary>Entries with their notes decrypted and who last changed the password, in the order given.</summary>
     private async Task<List<EntryView>> ViewsAsync(HarpoDbContext db, List<PasswordEntry> entries, CancellationToken ct)
@@ -467,18 +482,15 @@ public class VaultService
         var stored = _crypto.Decrypt(entry.EncryptedTotpSecret);
         var code = Totp.GenerateCurrent(stored, _time.GetUtcNow());
 
-        var auditKey = (user.Username, entryId);
-        var now = _time.GetUtcNow();
-        if (!_recentTotpAudits.TryGetValue(auditKey, out var last) || now - last > TimeSpan.FromMinutes(2))
+        if (_recentTotpAudits.TryAcquire((user.Username, entryId), TimeSpan.FromMinutes(2), out _))
         {
-            _recentTotpAudits[auditKey] = now;
             await _audit.RecordAsync(user, AuditActions.TotpReveal, await DescribeEntryAsync(db, entry, ct),
                 groupId: entry.GroupId, entryId: entry.Id);
         }
         return code;
     }
 
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid), DateTimeOffset> _recentTotpAudits = new();
+    private readonly Cooldown<(string, Guid)> _recentTotpAudits;
 
     public async Task ChangePasswordAsync(UserContext user, Guid entryId, string newPassword, CancellationToken ct = default)
     {
