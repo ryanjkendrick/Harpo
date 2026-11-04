@@ -3,6 +3,7 @@
 **/*.db
 **/*.db-shm
 **/*.db-wal
+**/*.db.lock
 .git/
 .gitignore
 README.md

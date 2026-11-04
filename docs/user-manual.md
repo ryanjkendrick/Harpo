@@ -489,8 +489,12 @@ the title jump to its sections.
 ![The Administration page](manual/admin.png)
 
 **This site** shows the site's name, how many groups and passwords it holds,
-and whether offline copies are allowed and for how long. If the master key is
-being rotated, a notice says so.
+whether the database file is encrypted, and whether offline copies are allowed
+and for how long. "Not encrypted" refers to the file as a whole: passwords, 2FA
+secrets and notes are always encrypted, but the rest, such as entry and group
+names, URLs, usernames, membership and the audit log, can be read by anyone who
+gets a copy of it. If the master key is being rotated, a
+notice says so.
 
 **Cross-site replication** appears when your organisation runs Harpo in more
 than one location. It lists the other sites, when each was last reached, and

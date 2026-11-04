@@ -39,13 +39,15 @@ services:
       # with a top-level `secrets:` block mounting the file. Works for
       # Harpo__DatabaseKey, Replication__Key, etc. as well.
 
-      # Optional: encrypt the SQLite database FILE itself with SQLCipher, so
-      # copied volumes/backups expose nothing (entry names, URLs and usernames
-      # are otherwise plaintext in the file; password values are always
-      # encrypted regardless). Per-site key — it does NOT need to match other
+      # Optional: encrypt the SQLite database FILE itself with SQLCipher, so a
+      # copied database file or backup of it is unreadable (entry names, URLs,
+      # usernames, group membership and the audit log are otherwise plaintext in
+      # the file; password values are always encrypted regardless). Per-site key — it does NOT need to match other
       # sites. An existing unencrypted database is encrypted automatically on
       # the next start. See README → "Encrypting the database file".
-      # Harpo__DatabaseKey: "${HARPO_DATABASE_KEY}"
+      # The :? makes compose refuse to start if the variable is unset; a blank key
+      # would leave the file unencrypted.
+      # Harpo__DatabaseKey: "${HARPO_DATABASE_KEY:?set HARPO_DATABASE_KEY}"
 
       # --- Active Directory ---
       Auth__Mode: "Ldap"
