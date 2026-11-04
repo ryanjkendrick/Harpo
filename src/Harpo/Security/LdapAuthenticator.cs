@@ -17,7 +17,10 @@ public class LdapOptions
     public string UpnSuffix { get; set; } = "";
     /// <summary>Search base for user lookups, e.g. "DC=corp,DC=example,DC=com".</summary>
     public string SearchBase { get; set; } = "";
-    /// <summary>AD group whose members are Harpo site admins. Either a plain CN ("Harpo Admins") or a full DN.</summary>
+    /// <summary>
+    /// AD group whose direct members are Harpo site admins. A full DN names one group.
+    /// A plain CN ("Harpo Admins") matches a group of that name anywhere in the directory.
+    /// </summary>
     public string AdminGroup { get; set; } = "";
     public int TimeoutSeconds { get; set; } = 10;
 
@@ -70,6 +73,15 @@ public class LdapAuthenticator : IAuthenticator, IDirectory
                 throw new InvalidOperationException(
                     "Auth:Ldap:ServiceUser is set but Auth:Ldap:SearchBase is empty — revalidation and member lookups need somewhere to look users up.");
             }
+        }
+
+        if (IsShortGroupName(_options.AdminGroup))
+        {
+            _logger.LogWarning(
+                "Auth:Ldap:AdminGroup is the short name '{Group}', which matches a group of that name anywhere in the " +
+                "directory, so anyone who can create a group in any OU can make its members Harpo site admins. " +
+                "Set it to the group's full DN, such as CN={Group},OU=Groups,DC=corp,DC=example,DC=com.",
+                _options.AdminGroup, _options.AdminGroup);
         }
 
         if (_options.SkipCertificateValidation && !OperatingSystem.IsWindows())
@@ -263,23 +275,33 @@ public class LdapAuthenticator : IAuthenticator, IDirectory
         return new AuthResult(username, displayName, isAdmin);
     }
 
-    private bool IsInAdminGroup(SearchResultEntry entry)
+    private bool IsInAdminGroup(SearchResultEntry entry) =>
+        entry.Attributes.Contains("memberOf") &&
+        IsAdminGroupMember(entry.Attributes["memberOf"].GetValues(typeof(string)).Cast<string>(), _options.AdminGroup);
+
+    /// <summary>
+    /// Whether any of the user's memberOf values is the admin group. memberOf lists
+    /// direct memberships only, so a member of a group nested inside it does not count.
+    /// </summary>
+    internal static bool IsAdminGroupMember(IEnumerable<string> memberOf, string adminGroup)
     {
-        if (string.IsNullOrWhiteSpace(_options.AdminGroup) || !entry.Attributes.Contains("memberOf"))
+        if (string.IsNullOrWhiteSpace(adminGroup))
         {
             return false;
         }
-        var wanted = _options.AdminGroup;
-        foreach (var value in entry.Attributes["memberOf"].GetValues(typeof(string)).Cast<string>())
+        foreach (var value in memberOf)
         {
-            if (string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(FirstRdnValue(value), wanted, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(value, adminGroup, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(FirstRdnValue(value), adminGroup, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
         }
         return false;
     }
+
+    internal static bool IsShortGroupName(string adminGroup) =>
+        !string.IsNullOrWhiteSpace(adminGroup) && !adminGroup.Contains('=');
 
     /// <summary>AD's ACCOUNTDISABLE bit in userAccountControl.</summary>
     private const long AccountDisabledFlag = 0x2;

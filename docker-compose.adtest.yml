@@ -55,7 +55,7 @@ services:
       LDAPTLS_REQCERT: "never"
       Auth__Ldap__UpnSuffix: "harpo.lab"
       Auth__Ldap__SearchBase: "DC=harpo,DC=lab"
-      Auth__Ldap__AdminGroup: "Harpo Admins"
+      Auth__Ldap__AdminGroup: "CN=Harpo Admins,CN=Users,DC=harpo,DC=lab"
       # This lab demonstrates the admin kill switch: offline password storage is
       # forbidden here (no offline vault link, snapshot API dark, devices wipe
       # any existing copy at next contact). Flip to "true" to allow it.

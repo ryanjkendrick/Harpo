@@ -56,8 +56,9 @@ services:
       Auth__Ldap__UseSsl: "true"
       Auth__Ldap__UpnSuffix: "corp.example.com"
       Auth__Ldap__SearchBase: "DC=corp,DC=example,DC=com"
-      # Members of this AD group become Harpo site admins:
-      Auth__Ldap__AdminGroup: "Harpo Admins"
+      # Direct members of this AD group become Harpo site admins. Use its full DN:
+      # a short name matches a group of that name in any OU.
+      Auth__Ldap__AdminGroup: "CN=Harpo Admins,OU=Groups,DC=corp,DC=example,DC=com"
 
       # --- Offline access (PWA) ---
       # Lets signed-in users keep an encrypted, passphrase-protected, READ-ONLY
