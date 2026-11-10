@@ -195,9 +195,19 @@ running with an empty key.
 | `Auth__Ldap__SkipCertificateValidation` | Accept any DC certificate (labs only) | `false` |
 | `Auth__Ldap__UpnSuffix` | Appended when users type a bare account name, so `jsmith` binds as `jsmith@corp.example.com` | `corp.example.com` |
 | `Auth__Ldap__SearchBase` | Where to look up the user's display name and groups — must contain every account that signs in | `DC=corp,DC=example,DC=com` |
-| `Auth__Ldap__AdminGroup` | AD group (CN or full DN) whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted) | `Harpo Admins` |
+| `Auth__Ldap__AdminGroup` | AD group whose members are Harpo **site admins** — they see and manage every group (personal vaults excepted). Use its full DN (see below) | `CN=Harpo Admins,OU=Groups,DC=corp,DC=example,DC=com` |
 | `Auth__Ldap__ServiceUser` | *Optional.* Read-only account used to re-check signed-in users and to look up the accounts group admins add (see below) — UPN, `DOMAIN\name` or DN | `svc-harpo@corp.example.com` |
 | `Auth__Ldap__ServicePassword` | Its password — prefer `Auth__Ldap__ServicePassword__File` | — |
+
+**Set `Auth__Ldap__AdminGroup` to the group's full DN.** A short name such as
+`Harpo Admins` matches a group of that name in any OU, so anyone who can create
+a group anywhere in the directory could make its members site admins. Short
+names still work, and `Harpo Admins` is the default if the setting is left out,
+but Harpo logs a warning at every start. A full DN has to match the directory's
+`memberOf` value exactly apart from case, so a stray space after a comma means
+nobody is an admin; check with `dsquery group -name "Harpo Admins"`. Only direct
+members count: AD's `memberOf` does not list groups nested inside the admin group
+or a user's primary group, so add people to the group itself.
 
 Users sign in with their own AD credentials; Harpo performs a simple bind **as
 the user** to validate them, then reads `displayName` and `memberOf` from their

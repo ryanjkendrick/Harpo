@@ -62,6 +62,22 @@ public class IconTests : IDisposable
     }
 
     [Fact]
+    public async Task Only_a_riff_file_that_says_webp_is_a_webp()
+    {
+        byte[] Riff(string kind) => [.. "RIFF"u8, 4, 0, 0, 0, .. System.Text.Encoding.ASCII.GetBytes(kind)];
+
+        foreach (var notWebp in new[] { Riff("WAVE"), Riff("AVI "), Riff("WEB"), "RIFF"u8.ToArray() })
+        {
+            await Assert.ThrowsAsync<VaultValidationException>(
+                () => _site.Icons.AddAsync(_alice, "Sound", "image/webp", notWebp));
+        }
+        Assert.NotNull(await _site.Icons.AddAsync(_alice, "Picture", "image/webp", [.. Riff("WEBP"), .. "VP8 "u8]));
+        Assert.NotNull(await _site.Icons.AddAsync(_alice, "Upper", "IMAGE/WEBP", [.. Riff("WEBP"), .. "VP8L"u8]));
+        await Assert.ThrowsAsync<VaultValidationException>(
+            () => _site.Icons.AddAsync(_alice, "Upper", "IMAGE/WEBP", Riff("WAVE")));
+    }
+
+    [Fact]
     public async Task Usage_counts_reference_live_entries_only()
     {
         var icon = await _site.Icons.AddAsync(_alice, "GitLab", "image/png", TinyPng);
