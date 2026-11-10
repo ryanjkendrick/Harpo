@@ -897,6 +897,19 @@
     private async Task OnAuditFilterTypedAsync()
     {
         _auditPage = 1;
+
+        // Each load scans the trail, so wait for a pause in the typing.
+        _auditFilterCts?.Cancel();
+        _auditFilterCts?.Dispose();
+        var cts = _auditFilterCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(AuditFilterDebounce, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // another keystroke, or the page closed
+        }
         await LoadAuditAsync();
     }
 
@@ -908,6 +921,8 @@
     private Timer? _refreshTimer;
 
     private const int AuditPageSize = 50;
+    private static readonly TimeSpan AuditFilterDebounce = TimeSpan.FromMilliseconds(250);
+    private CancellationTokenSource? _auditFilterCts;
 
     private static string AuditBadgeClass(string action) => action switch
     {
@@ -1042,7 +1057,12 @@
         await LoadAuditAsync();
     }
 
-    public void Dispose() => _refreshTimer?.Dispose();
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+        _auditFilterCts?.Cancel();
+        _auditFilterCts?.Dispose();
+    }
 
     private static string FormatSkew(TimeSpan skew) =>
         skew.TotalSeconds < 10 ? $"{skew.TotalSeconds:0.0}s"

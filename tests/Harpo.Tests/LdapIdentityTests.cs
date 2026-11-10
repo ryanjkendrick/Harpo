@@ -1,4 +1,5 @@
 using Harpo.Security;
+using Microsoft.Extensions.Logging;
 
 namespace Harpo.Tests;
 
@@ -46,5 +47,63 @@ public class LdapIdentityTests
     public void Unusable_who_am_i_answer_names_no_account(string? authzId)
     {
         Assert.Null(LdapAuthenticator.AccountFromAuthzId(authzId));
+    }
+
+    private const string RealGroup = "CN=Harpo Admins,OU=Groups,DC=corp,DC=example,DC=com";
+    private const string SameNameElsewhere = "CN=Harpo Admins,OU=Branch,DC=corp,DC=example,DC=com";
+
+    [Theory]
+    [InlineData(RealGroup, RealGroup, true)]
+    [InlineData("cn=harpo admins,ou=groups,dc=corp,dc=example,dc=com", RealGroup, true)] // case does not matter
+    [InlineData(RealGroup, SameNameElsewhere, false)]                                    // the point of using a full DN
+    [InlineData("CN=Harpo Admins, OU=Groups,DC=corp,DC=example,DC=com", RealGroup, false)] // not guessed at: nobody gets in
+    [InlineData("Harpo Admins", RealGroup, true)]
+    [InlineData("Harpo Admins", SameNameElsewhere, true)]                                // why a short name draws a warning
+    [InlineData("harpo admins", RealGroup, true)]
+    [InlineData("Harpo Admins", @"CN=Harpo Admins\, Rogue,OU=Branch,DC=corp,DC=example,DC=com", false)]
+    [InlineData("Harpo Admins", "CN=Other,OU=Harpo Admins,DC=corp,DC=example,DC=com", false)]
+    [InlineData("", RealGroup, false)]
+    [InlineData("  ", RealGroup, false)]
+    public void Admin_group_setting_against_a_membership(string setting, string memberOf, bool expected)
+    {
+        Assert.Equal(expected, LdapAuthenticator.IsAdminGroupMember([memberOf], setting));
+    }
+
+    [Fact]
+    public void Admin_group_is_found_among_several_and_absent_without_any()
+    {
+        Assert.True(LdapAuthenticator.IsAdminGroupMember(["CN=Staff,DC=corp", RealGroup], RealGroup));
+        Assert.False(LdapAuthenticator.IsAdminGroupMember([], RealGroup));
+    }
+
+    [Theory]
+    [InlineData("Harpo Admins", true)]
+    [InlineData(RealGroup, false)]
+    [InlineData("", false)] // no admin group is not a risky one
+    [InlineData("  ", false)]
+    public void Only_a_short_admin_group_name_draws_the_warning(string setting, bool warned)
+    {
+        var logger = new RecordingLogger();
+        _ = new LdapAuthenticator(
+            Microsoft.Extensions.Options.Options.Create(new LdapOptions { Server = "dc01", AdminGroup = setting }), logger);
+
+        Assert.Equal(warned, logger.Warnings.Any(w => w.Contains("Auth:Ldap:AdminGroup") && w.Contains("full DN")));
+    }
+
+    private sealed class RecordingLogger : ILogger<LdapAuthenticator>
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Add(formatter(state, exception));
+            }
+        }
     }
 }

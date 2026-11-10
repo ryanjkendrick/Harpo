@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using Harpo.Security;
 
 namespace Harpo.Offline;
 
@@ -57,31 +57,13 @@ public sealed record OfflineEntry(
 /// </summary>
 public class OfflineSnapshotThrottle
 {
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastByUser = new(StringComparer.Ordinal);
-    private readonly TimeProvider _time;
+    private readonly Cooldown<string> _cooldown;
 
     public OfflineSnapshotThrottle(TimeProvider time)
     {
-        _time = time;
+        _cooldown = new Cooldown<string>(time);
     }
 
-    public bool TryAcquire(string username, TimeSpan minInterval, out TimeSpan retryAfter)
-    {
-        var now = _time.GetUtcNow();
-        var granted = false;
-        var updated = _lastByUser.AddOrUpdate(
-            username,
-            _ => { granted = true; return now; },
-            (_, last) =>
-            {
-                if (now - last >= minInterval)
-                {
-                    granted = true;
-                    return now;
-                }
-                return last;
-            });
-        retryAfter = granted ? TimeSpan.Zero : minInterval - (now - updated);
-        return granted;
-    }
+    public bool TryAcquire(string username, TimeSpan minInterval, out TimeSpan retryAfter) =>
+        _cooldown.TryAcquire(username, minInterval, out retryAfter);
 }

@@ -716,12 +716,13 @@
     // ---- search in the user's other vaults ----
 
     private const int OtherSearchMinChars = 2;
-    private const int OtherSearchDebounceMs = 250;
+    private const int SearchDebounceMs = 250;
 
     private List<EntryMatch>? _otherHits;
     private string _otherHitsTerm = "";
     private Guid? _searchedExcluding;
     private CancellationTokenSource? _otherSearchCts;
+    private CancellationTokenSource? _searchCts;
 
     // Shown only while the box holds enough to search on. Until the first answer
     // arrives the section is absent, and a newer answer replaces an older one in
@@ -734,7 +735,20 @@
     private async Task OnSearchTyped()
     {
         _page = 1; // a new search starts at its first match
-        ScheduleOtherVaultSearch(OtherSearchDebounceMs);
+        ScheduleOtherVaultSearch(SearchDebounceMs);
+
+        // Each load reads the vault's plain-text columns, so wait for a pause in the typing.
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
+        var cts = _searchCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(SearchDebounceMs, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // another keystroke, or the page closed
+        }
         await LoadEntriesAsync();
         if (PageQuery is not null)
         {
@@ -938,6 +952,8 @@
         _toastCts?.Cancel();
         _otherSearchCts?.Cancel();
         _otherSearchCts?.Dispose();
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
     }
 
     private async Task CopyPasswordAsync(Guid entryId)

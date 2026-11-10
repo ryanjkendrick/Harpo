@@ -123,6 +123,40 @@ public class VaultPageTests : IDisposable
     }
 
     [Fact]
+    public async Task Paging_without_a_search_agrees_with_a_search_that_matches_everything()
+    {
+        var alice = await _site.SignInAsync("alice");
+        var group = await GroupWithEntriesAsync(alice, 0);
+        var names = new[] { "zebra x", "Apple x", "apple x", "Ünï x", "éa x", "Same x", "Same x", "Same x", "10 x", "9 x", "_ x" };
+        foreach (var name in names)
+        {
+            await _site.Vault.CreateEntryAsync(alice, group.Id, name, "🔑", "", "", "", "pw");
+        }
+        var deleted = await _site.Vault.CreateEntryAsync(alice, group.Id, "Deleted x", "🔑", "", "", "", "pw");
+        await _site.Vault.DeleteEntryAsync(alice, deleted.Id);
+
+        async Task<(List<Guid> Ids, List<EntryPage> Pages)> Walk(string? term)
+        {
+            var pages = new List<EntryPage>();
+            for (var page = 1; page <= 4; page++)
+            {
+                pages.Add(await _site.Vault.GetEntryPageAsync(alice, group.Id, term, page, 3));
+            }
+            return (pages.SelectMany(p => p.Items).Select(v => v.Entry.Id).ToList(), pages);
+        }
+
+        var (paged, pagedPages) = await Walk(null);
+        var (searched, searchedPages) = await Walk("x");
+
+        Assert.Equal(names.Length, paged.Distinct().Count());
+        Assert.Equal(searched, paged);
+        Assert.Equal(
+            searchedPages.Select(p => (p.Page, p.PageCount, p.Matching, p.InVault)),
+            pagedPages.Select(p => (p.Page, p.PageCount, p.Matching, p.InVault)));
+        Assert.Equal(paged, (await Walk("   ")).Ids); // blank is no search
+    }
+
+    [Fact]
     public async Task A_page_size_below_one_is_refused()
     {
         var alice = await _site.SignInAsync("alice");
