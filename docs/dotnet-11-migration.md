@@ -47,11 +47,8 @@ of the migration release (see "Afterwards").
 own version (call it 0.8.0) with no feature work and **no EF migration**.
 Reason: a clean rollback. A 0.8.0 site can be put back on 0.7 by changing the
 image tag, because the schema is identical and (see D2) the database file
-format is too.
-
-One exception, because it needs a minor version: `Auth:Ldap:AdminGroup` loses
-its shipped default of `Harpo Admins` (see step 2). It doesn't affect rollback,
-since going back to 0.7 only brings the default back.
+format is too. Behaviour changes that need a minor version, such as removing
+the `Auth:Ldap:AdminGroup` default, wait for a later release (see Afterwards).
 
 **D2. Keep the SQLCipher 4 file format, now produced by SQLite3MC.** Every
 connection opens with `cipher=sqlcipher&legacy=4`, for existing and new
@@ -164,15 +161,8 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    Arm64); encrypted databases keep working and keep their format; rollback
    to 0.7 is supported by changing the tag back; the engine behind
    `Harpo__DatabaseKey` is now SQLite3 Multiple Ciphers; no schema migration.
-   Separately, as the one action some sites need: an LDAP site that relies on
-   the default `Auth:Ldap:AdminGroup` has no site admins until it sets one.
 
 ## Step 2: release 0.8.0
-
-Before the release, remove `"AdminGroup": "Harpo Admins"` from
-`src/Harpo/appsettings.json`: a short name matches a group of that name in any
-OU, so nobody should get it without asking for it. Blank already means no site
-admins. Short names set on purpose keep working, with the warning from 0.7.5.
 
 Follow the release checklist: compose pin to `:0.8` in its own commit, merge
 to `main`, tag, workflow, verify the cold-pulled image with the UI and
@@ -182,6 +172,14 @@ fast-forwarded, throwaways removed, demo and AD lab moved to the release.
 
 ## Afterwards (each its own feature, none in 0.8.0)
 
+- Remove the `Auth:Ldap:AdminGroup` default in its own minor release (0.9.0):
+  take `"AdminGroup": "Harpo Admins"` out of `src/Harpo/appsettings.json`,
+  because a short name matches a group of that name in any OU, so nobody
+  should get it without asking for it. Blank already means no site admins, and
+  short names set on purpose keep working, with the warning from 0.7.5. The
+  release notes must lead with the one action: an LDAP site that relies on the
+  default has no site admins until it sets one. Going back to 0.8 only brings
+  the default back.
 - `CloseOnAuthenticationExpiration` and `WithBrowserOptions` for the server
   circuit; possibly retire parts of the hand-written reconnect script.
 - Convert encrypted databases from the SQLCipher scheme to ChaCha20-Poly1305
