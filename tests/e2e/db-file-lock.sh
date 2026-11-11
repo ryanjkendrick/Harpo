@@ -137,6 +137,18 @@ ended next
 check "it starts once the first is killed" listening next
 remove site; remove next
 
+echo "A lock file another user left behind"
+restore
+on "touch /data/harpo.db.lock; chown 0:0 /data/harpo.db.lock; chmod 644 /data/harpo.db.lock"
+create site; docker start "$RUN-site" >/dev/null; ended site
+check "the site is up" listening site
+check "with no warning about the lock" bash -c '! docker logs "$1" 2>&1 | grep -q "Could not take the lock file"' _ "$RUN-site"
+create next; docker start "$RUN-next" >/dev/null
+for _ in $(seq 1 60); do waiting next && break; sleep 0.5; done
+check "the next one still waits" waiting next
+check "it has not come up" bash -c '! docker logs "$1" 2>&1 | grep -q "Now listening"' _ "$RUN-next"
+remove site; remove next
+
 echo "A second Harpo that outstays its wait"
 restore
 create site; docker start "$RUN-site" >/dev/null; ended site
