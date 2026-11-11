@@ -730,6 +730,18 @@ exist in the vault is skipped. Imported entries are ordinary entries: a first
 revision by the importer, replicated, in the health report and the offline
 copy. Each import is audited once as `vault.import` with the counts.
 
+An imported entry's id comes from the vault, its name and username (ignoring
+case and surrounding spaces), and its first revision's id from the keyed
+fingerprint of the password, rather than at random. So importing the same file
+on two sites that can't reach each other makes the same entries on both, and
+they merge into one set when the sites reconnect. If the two files disagree on
+a password, the entry keeps both in its history and the later import's is
+current, as with any two changes made apart. Ids already used in the vault,
+by live, deleted or purged entries, are passed over, so importing again after
+a delete makes a new entry and leaves the deleted one in the bin. Older
+versions of Harpo make random ids, so the merge needs the importing sites to
+be on a version that does this.
+
 **Export.** *Export…* in the same toolbar downloads the vault as a file:
 
 - **CSV** with Bitwarden's column names (`name,login_uri,login_username,login_password,notes,login_totp`),

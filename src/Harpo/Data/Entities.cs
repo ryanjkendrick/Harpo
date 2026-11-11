@@ -157,7 +157,9 @@ public class PasswordEntry : IReplicatedRow
 /// <summary>
 /// Append-only password history. Never updated after creation, so replication is a
 /// simple union of rows and concurrent password changes on two sites both survive
-/// in history (the newest one wins as "current"). The one exception is a purge:
+/// in history (the newest one wins as "current"). Importing the same row on two
+/// sites makes one revision under one Id; its two copies (same password, each
+/// site's own ciphertext and time) settle last-writer-wins. The one exception is a purge:
 /// every revision of a purged entry is deleted outright, on every site, and one
 /// that arrives later for it is not stored (see <see cref="Services.Purging"/>).
 /// </summary>
