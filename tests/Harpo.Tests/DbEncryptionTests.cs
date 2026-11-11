@@ -769,12 +769,29 @@ public class DbEncryptionTests : IDisposable
     }
 
     [Fact]
-    public async Task A_lock_file_that_cannot_be_written_is_not_called_another_harpo()
+    public async Task A_lock_file_that_cannot_be_written_is_still_locked()
+    {
+        var lockPath = DbPath + DbFileLock.Suffix;
+        await File.WriteAllBytesAsync(lockPath, []);
+        File.SetUnixFileMode(lockPath, UnixFileMode.UserRead);
+        var logger = new RecordingLogger();
+
+        using (await DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 0))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                DbFileLock.AcquireAsync(RawCs, NullLogger.Instance, waitSeconds: 0));
+        }
+
+        Assert.Empty(logger.Lines);
+    }
+
+    [Fact]
+    public async Task A_lock_file_that_cannot_be_read_is_not_called_another_harpo()
     {
         // The volume's real problem is reported better by what comes next.
         var lockPath = DbPath + DbFileLock.Suffix;
         await File.WriteAllBytesAsync(lockPath, []);
-        File.SetUnixFileMode(lockPath, UnixFileMode.UserRead);
+        File.SetUnixFileMode(lockPath, UnixFileMode.None);
         var logger = new RecordingLogger();
 
         using (await DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 0))
@@ -783,6 +800,20 @@ public class DbEncryptionTests : IDisposable
 
         Assert.Contains(logger.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("Could not take the lock file"));
         Assert.DoesNotContain(logger.Lines, l => l.Message.Contains("Another Harpo"));
+    }
+
+    [Fact]
+    public async Task A_lock_file_that_cannot_be_written_still_keeps_a_second_harpo_out()
+    {
+        // As after a one-off run under another user left the file behind: it can still be locked for reading.
+        using var first = await DbFileLock.AcquireAsync(RawCs, NullLogger.Instance);
+        File.SetUnixFileMode(DbPath + DbFileLock.Suffix, UnixFileMode.UserRead);
+        var logger = new RecordingLogger();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbFileLock.AcquireAsync(RawCs, logger, waitSeconds: 0));
+
+        Assert.Contains("Another Harpo is using the database", ex.Message);
     }
 
     [Fact]
