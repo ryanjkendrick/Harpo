@@ -390,9 +390,6 @@ links between sites are down. Replication is modeled on AD's own USN scheme:
   returns can be deleted again, while one that vanished would take with it a
   change someone has just made, perhaps a new password. To remove an entry
   everywhere for good, whatever happens elsewhere, purge it.
-- Importing the same file on two sites that can't reach each other adds those
-  entries twice, because each site checks for duplicates only among the
-  entries it already has. Import on one site, or delete the copies afterwards.
 - Rows keep their origin stamps as they spread, so changes flow **transitively**:
   in a chain `A ↔ B ↔ C`, A's changes reach C through B without A and C ever
   talking. Any connected topology works; you don't need a full mesh.
