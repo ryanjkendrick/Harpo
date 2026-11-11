@@ -98,6 +98,8 @@ of the address, so reloading keeps it and the browser's Back button returns to
 the page before. Searching always covers the whole vault and starts again at
 the first match.
 
+![The pager under a long vault](manual/vault-pager.png)
+
 The toolbar above the table has the search box and, if you may add passwords
 here, the **Import…** and **New password** buttons; group admins also see
 **Export…** (see [Importing and exporting](#importing-and-exporting)). If you
