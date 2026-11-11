@@ -1,0 +1,3 @@
+# The repository ignores database files; these are test inputs.
+!*.db
+!*.db-wal

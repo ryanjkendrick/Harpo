@@ -1,0 +1,7 @@
+image: ryanjkendrick/harpo:0.7.6
+key (encrypted, encrypted-wal): net10-fixture-database-key
+columns: sqlite_master rows, UserSessions rows, latest migration
+plain:                 37 3 20261101023040_AddPurge 
+encrypted:             37 3 20261101023040_AddPurge 
+encrypted-wal:         37 3 20261101023040_AddPurge 
+encrypted-wal, no WAL: 37 0 20261101023040_AddPurge 
