@@ -2,9 +2,9 @@
 
 Status: plan, written 2026-10-31 against .NET 11 RC 3. .NET 11 became
 generally available on 10 November 2026, and the facts below were re-checked
-against GA on 11 November (see "Re-checked at GA"). Step 0 starts once the
-11.0 SDK is installed on the development machine; the Homebrew formula there
-was still 10.0.403 on 11 November.
+against GA on 11 November (see "Re-checked at GA"). Step 0 was done on
+12 November on branch `feature/dotnet-11`: go, with D3 changed (see "Step 0
+result").
 
 ## What the upgrade really is
 
@@ -85,14 +85,18 @@ reasons only"; it is the same AES-256-CBC + HMAC-SHA512 construction, just
 not their preferred one. Moving to ChaCha20-Poly1305 is a later, separate
 release with a converter and a rollback story of its own.
 
-**D3. Encrypt-in-place via `PRAGMA rekey`, not `sqlcipher_export`.** Harpo's
-current path for "plaintext file found, key configured" attaches an encrypted
-target and calls `sqlcipher_export`, which SQLite3MC does not document. The
-replacement is what SQLite3MC documents: open the plain file, `PRAGMA rekey`
-with the key. The same primitive already does key rotation, and `rekey = ''`
-does the explicit decrypt. The export-to-temp-file code goes away. Checkpoint
-and switch the file out of WAL mode around the rekey, because the docs forbid
-a salt change in WAL mode.
+**D3. Encrypt and decrypt through a copy made with `VACUUM INTO`; rotate with
+`PRAGMA rekey`.** *(Changed by step 0; the plan was rekey in place for all
+three.)* Harpo's path for "plaintext file found, key configured" made an
+encrypted copy with `sqlcipher_export`, which SQLite3MC does not have, checked
+it and swapped it in. The copy, the checks and the swap stay; only the copy is
+now made with SQLite's own `VACUUM INTO`, to a `file:` URI carrying the scheme
+and the key (`key=` empty for a plaintext copy; with no `key` at all the copy
+keeps the source's key). `PRAGMA rekey` in place was tried first and rejected:
+the full-disk suite stopped it part-way through encrypting, and SQLite3MC left
+a file that opened neither with the key nor without, with no journal to roll
+back. Rotation keeps `PRAGMA rekey`, which SQLite3MC rolls back cleanly when
+it fails, and which now raises the failure instead of reporting success.
 
 **D4. Do not enable Blazor auto-pause.** Pausing persists circuit state to the
 browser; a vault page may hold a revealed password in that state. Off until
@@ -168,6 +172,83 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    follow-ups for "Afterwards". If interop in step 2 fails in either
    direction, stop and rethink D2 before going further.
 
+## Step 0 result (2026-11-12)
+
+Go. Branch `feature/dotnet-11`, on develop after 0.7.8. SDK 11.0.100 (the
+Homebrew `dotnet-sdk` cask), runtime 11.0.0, SQLite3MC 2.6.1 (SQLite 3.54.0).
+
+What changed:
+
+- Both projects target `net11.0`; EF Core, `Microsoft.Data.Sqlite` and
+  `System.DirectoryServices.Protocols` 11.0.0; `SQLite3MC.PCLRaw.bundle`
+  2.6.1 replaces `SQLitePCLRaw.bundle_e_sqlcipher`; `Batteries_V2.Init()`
+  unchanged. `dotnet-ef` 11.0.0; CI and release workflows on `11.0.x`; the
+  Dockerfile on `sdk:11.0` and `aspnet:11.0-resolute`. No code outside
+  `DbEncryption` needed changing to compile.
+- The scheme can only be set per connection: `sqlite3mc_config` refuses to
+  change process-wide defaults (it returns -1 without a connection). So every
+  keyed connection string comes from `DbEncryption.KeyedConnectionString` or
+  `ApplyKey`, which turn the Data Source into
+  `file:<path>?cipher=sqlcipher&legacy=4`. A bare `Password=` gets SQLite3MC's
+  default (ChaCha20), which cannot read Harpo's files: a test checks exactly
+  that. `DbEncryption.FilePath` gives the plain path back for everything that
+  looks at the file (the lock file, `DbInitializer`'s folder, `File.Exists`).
+- D3 as changed above.
+- Keys are quoted in C# for `PRAGMA key`/`rekey`: a `SELECT quote()` before
+  the key reads the encrypted schema and fails under SQLite3MC.
+- With a hot journal, a wrong key is reported as error 11 (damaged), not 26;
+  the journal is left alone and the right key rolls it back. `CanOpenAsync`
+  treats 11 with a hot journal as "this key does not fit".
+- SQLite3MC is compiled with `SECURE_DELETE`, `DEFAULT_FOREIGN_KEYS`,
+  `DEFAULT_RECURSIVE_TRIGGERS` and `DEFAULT_AUTOVACUUM`. Foreign keys were
+  already on (EF), Harpo has no triggers, and auto-vacuum applies to new files
+  only (0.7 opens them). Secure delete zeroes freed pages: the purge scrub
+  stays (it is about the WAL and files 0.7 wrote) and its tests now play 0.7's
+  writes with secure delete off.
+
+Interop, both ways: SQLite3MC reads the three files 0.7.6 wrote
+(`Fixtures/net10`, including rows only in the WAL), and the `sqlcipher` 4.6.1
+tool reads files the .NET 11 build created, encrypted (`VACUUM INTO`) and
+rekeyed (`cipher_integrity_check` clean). Rollback: the published 0.7.8 ran
+on an encrypted volume written by the .NET 11 build, and on a plain volume the
+.NET 11 build had just encrypted, and replicated with .NET 11 peers; the
+session suite passed on both.
+
+Tests: unit suite 578, three Release runs green, in about 1 min 10 s (1 min
+55 s on .NET 10). UI 76/76 on an encrypted and a plain site, session 9/9 on
+two, offline 22/22, offline-disable 10/10 (on a fresh site; run straight after
+the offline suite on the same site it times out on both 0.7.8 and 11, which is
+the suite, not the runtime), database lock 83/83, full disk 72/72 (it failed
+5 with rekey in place). Three sites replicated throughout. Docker Scout clean;
+`libldap2` 2.6.10 installs; the image is Ubuntu 26.04.1.
+
+Behaviours that could change silently (step 6): behind nginx with forwarded
+headers, `password.reveal`, `offline.sync` and `entry.delete` record the
+client's address, not the proxy's, the same as 0.7.8; replication pulls and
+the offline snapshot pass the new cross-origin middleware.
+
+Measured (step 5), same machine and script as the baseline:
+
+| | 0.7.6 (.NET 10) | .NET 11 build |
+| --- | --- | --- |
+| UI suite, three runs | 141.6 s, 141.5 s, 141.6 s | 142.1 s, 141.6 s, 141.6 s |
+| Memory after a warm-up run | 252 MiB | 232 MiB |
+| Memory during the runs | peak 299 MiB, 287 MiB at the end | peak 269 MiB, 269 MiB at the end |
+| HTTP requests | 560; median 1.4 ms, p95 9.1 ms, max 22.2 ms | 561; median 1.2 ms, p95 8.6 ms, max 64.2 ms |
+
+One request of 561 took 64 ms; the rest are faster than on .NET 10.
+
+Follow-ups, none for 0.8.0:
+
+- New Blazor analysers report `BL0012` (a `StateHasChanged` call that is not
+  needed) in `Admin.razor`, `Vault.razor` and `ImportDialog.razor`, and `BL0016`
+  (a JS interop call without try/catch) in `GroupDetail.razor`, `Vault.razor`
+  and `Pager.razor`. Warnings only; look at them in their own change.
+- The offline-disable suite should wait out the offline-sync limit when it
+  follows the offline suite.
+- Step 1 still owes: `global.json`, the AD lab, the nginx and Caddy examples,
+  amd64 under emulation, upgrade from 0.7.0, README and release notes.
+
 ## Step 1: the real branch
 
 1. Rebase the spike onto `develop`, confirm every package is at its GA version, bump
@@ -240,7 +321,7 @@ fast-forwarded, throwaways removed, demo and AD lab moved to the release.
 | Risk | How the plan handles it |
 | --- | --- |
 | SQLite3MC's legacy=4 output is not byte-compatible with real SQLCipher 4 | Interop test both ways in step 0; if it fails, D2 is reconsidered before GA |
-| `PRAGMA rekey` behaves differently from `sqlcipher_export` on a WAL file | Checkpoint and leave WAL around the rekey; `DbEncryptionTests` cover each transition |
+| `PRAGMA rekey` behaves differently from `sqlcipher_export` | Found in step 0: in place, a full disk part-way through encrypting ruins the file. Encrypt and decrypt use a checked `VACUUM INTO` copy instead (D3); the full-disk suite covers it |
 | Runtime Async changes `AsyncLocal` flow or exception shapes | Audit client-address check and three Release runs of the unit suite |
 | New cross-origin CSRF middleware blocks server-to-server or offline requests | Two-site replication and offline suites in the matrix |
 | A site runs on a pre-2009 x64 CPU | Release notes name the floor; the runtime refuses to start with a clear message rather than misbehaving |
