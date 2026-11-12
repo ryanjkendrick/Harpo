@@ -84,7 +84,8 @@ leaves the data behind.
 - The two-site demo running: `docker compose -f docker-compose.multisite.yml up -d`
   (from the repo root)
 - Node 20+ and the `docker` CLI on PATH
-- Note: the offline suite **stops and restarts `harpo-alpha`** mid-run.
+- Note: the offline suite **stops and restarts a container** mid-run:
+  `harpo-alpha` (the demo's site alpha) by default, or `HARPO_CONTAINER`.
 
 ## Run
 
@@ -102,6 +103,20 @@ Environment overrides: `HARPO_BASE_URL`, `HARPO_CONTAINER`, `HARPO_USER`
 used by both suites). The UI suite takes over the second account's personal
 vault, so point it at a throwaway stack, not at one whose second account
 keeps real passwords there.
+
+`HARPO_CONTAINER` is the container the offline suite stops and restarts. It
+defaults to `harpo-alpha` only while `HARPO_BASE_URL` is unset or
+`http://localhost:8081`. Point the suite anywhere else and you must name the
+container behind that URL too, or it exits with a message before doing
+anything — otherwise it would stop the demo while testing another stack:
+
+```bash
+HARPO_BASE_URL=http://localhost:8091 HARPO_CONTAINER=harpo-e2e-alpha npm test
+```
+
+`offline-disable.e2e.js` does not use `HARPO_CONTAINER`: it runs no docker
+command of its own, only the `HARPO_RESTART_CMD` you give it, so make sure
+that command restarts the stack at `HARPO_BASE_URL`.
 
 Re-running the offline suite within 30 seconds hits the per-user snapshot
 cooldown; the script waits it out automatically once. The UI suite exports
