@@ -364,7 +364,15 @@ waiting for their offline copy to expire. The audit log's `offline.sync`
 events show who has taken a copy, and when.
 
 Also worth knowing: the service worker only ever caches the static offline
-page and PWA assets — never authenticated pages or API responses. On iOS,
+page and PWA assets — never authenticated pages or API responses. It opens the
+offline vault when a page can't be loaded because the server is unreachable:
+a network error, or — behind a reverse proxy, while Harpo is stopped — the
+proxy's 502, 503 or 504. Harpo's own errors (a 500, a 404) are shown as they
+are. With nginx in front of a container, set `proxy_connect_timeout 5s;`: nginx
+keeps a stopped container's old address and can otherwise wait up to its
+default 60 seconds for it before answering 504. The offline page itself stops waiting
+after 5 seconds, but a page of the main app (or the installed app opening)
+takes that full minute to fall back. Caddy answers 502 at once. On iOS,
 the OS may evict PWA storage under disk pressure; treat the offline copy as
 disposable (it re-syncs on the next online visit).
 

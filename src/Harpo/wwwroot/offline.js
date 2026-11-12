@@ -253,6 +253,11 @@ async function fetchSnapshot(expectedUser = null) {
         noteServer(false);
         throw new Error("The server is unreachable — connect to the network and try again.");
     }
+    // A reverse proxy answers for a stopped Harpo with a gateway error (see sw.js).
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+        noteServer(false);
+        throw new Error("The server is unreachable — try again once it is back.");
+    }
     noteServer(true);
     if (res.redirected || res.status === 401) {
         throw new Error("SIGN_IN");
@@ -281,9 +286,20 @@ async function fetchSnapshot(expectedUser = null) {
     return snapshot;
 }
 
+// The page waits for this probe before it shows anything, so it must not wait
+// for long. A reverse proxy can sit on a request for a stopped server: nginx
+// keeps a stopped container's old address and can wait out its connect timeout
+// (60 s by default) before answering 504. Past this, count the server as
+// unreachable — never as "offline access is off", so nothing is wiped.
+const PROBE_TIMEOUT_MS = 5000;
+
 async function probeEnabled() {
     try {
-        const res = await fetch("/api/offline/enabled", { credentials: "same-origin", cache: "no-store" });
+        const res = await fetch("/api/offline/enabled", {
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
         if (!res.ok) {
             noteServer(false);
             return null;
