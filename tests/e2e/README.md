@@ -8,8 +8,11 @@ afterwards.
   worker, syncs an encrypted snapshot, then *stops the Harpo container* and
   proves the vault still unlocks, decrypts, reveals the right password and
   generates 2FA codes offline. It also proves that another account signing in
-  to the same browser cannot take the vault over, and that a refresh still in
-  flight when the vault is locked cannot undo the lock.
+  to the same browser cannot take the vault over, that a refresh still in
+  flight when the vault is locked cannot undo the lock, and — through a small
+  gateway of its own on a spare localhost port — that a proxy's 502, 503 or
+  504 sends a navigation to the offline vault while a 500 or 404 is shown as
+  it is.
 - **`offline-disable.e2e.js`** — what a device does when the administrator
   turns offline access off. Not part of `test:all`: the script cannot change
   the container's environment, so you give it `HARPO_RESTART_CMD`, a shell
@@ -90,7 +93,7 @@ leaves the data behind.
 
 ```bash
 npm install
-npm test          # offline vault — expect 22/22 checks passed
+npm test          # offline vault — expect 27/27 checks passed
 npm run test:ui   # interactive UI — expect 75/75 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
@@ -102,6 +105,14 @@ Environment overrides: `HARPO_BASE_URL`, `HARPO_CONTAINER`, `HARPO_USER`
 used by both suites). The UI suite takes over the second account's personal
 vault, so point it at a throwaway stack, not at one whose second account
 keeps real passwords there.
+
+The offline suite also runs through a reverse proxy: point `HARPO_BASE_URL` at
+the proxy and **always set `HARPO_CONTAINER`** to the container behind it — it
+defaults to the demo's `harpo-alpha`, which it would stop. While the container
+is stopped the proxy answers with a gateway error, which the suite counts as
+down. With a self-signed certificate, run Node with
+`NODE_TLS_REJECT_UNAUTHORIZED=0` and point `PUPPETEER_EXECUTABLE_PATH` at a
+small wrapper that starts Chrome with `--ignore-certificate-errors`.
 
 Re-running the offline suite within 30 seconds hits the per-user snapshot
 cooldown; the script waits it out automatically once. The UI suite exports

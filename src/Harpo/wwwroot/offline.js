@@ -253,6 +253,11 @@ async function fetchSnapshot(expectedUser = null) {
         noteServer(false);
         throw new Error("The server is unreachable — connect to the network and try again.");
     }
+    // A reverse proxy answers for a stopped Harpo with a gateway error (see sw.js).
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+        noteServer(false);
+        throw new Error("The server is unreachable — try again once it is back.");
+    }
     noteServer(true);
     if (res.redirected || res.status === 401) {
         throw new Error("SIGN_IN");

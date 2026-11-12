@@ -10,6 +10,11 @@
 //      unreachable", wrong passphrase is rejected, the vault decrypts offline,
 //      the revealed password matches, and navigation falls back to the vault
 //   5. restarts the container and deletes the throwaway group
+// Before stopping anything it also puts a small gateway of its own in front of
+// the site and checks that a proxy's 502/503/504 (what nginx or Caddy answer
+// while Harpo is down) count as "unreachable" for that fallback, while Harpo's
+// own errors (500, 404) are shown as they are. The suite also works through a
+// reverse proxy: set HARPO_BASE_URL to the proxy's address.
 // Along the way it also proves two things that were once broken: signing in
 // as someone else in the same browser cannot replace the vault's contents, and
 // a refresh still in flight when the vault is locked cannot undo the lock.
@@ -17,6 +22,7 @@
 // Prerequisites: `docker compose -f docker-compose.multisite.yml up -d` and the
 // docker CLI on PATH. Run with: npm test (see README.md in this directory).
 const puppeteer = require("puppeteer");
+const http = require("http");
 const { execSync } = require("child_process");
 
 const BASE = process.env.HARPO_BASE_URL || "http://localhost:8081";
@@ -33,6 +39,10 @@ const ENTRY_NAME = `E2E Entry ${RUN_ID}`;
 const ENTRY_PASSWORD = `E2e-Secret-${RUN_ID}!x`;
 const PASSPHRASE = "correct-horse-battery";
 const TOTP_SECRET = "JBSWY3DPEHPK3PXP"; // so the offline copy has a 2FA code to generate
+
+const OFFLINE_TITLE = "Offline vault · Harpo";
+// What a reverse proxy answers while the app behind it is down.
+const GATEWAY_ERRORS = [502, 503, 504];
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -113,6 +123,56 @@ function storedVaultOwner(page) {
             req.onsuccess = () => resolve(req.result ? req.result.username : null);
         };
     }));
+}
+
+// Is the server down? Direct, a stopped container refuses the connection; behind
+// a reverse proxy, the proxy answers instead — with a gateway error.
+async function serverIsDown() {
+    try {
+        const res = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(2000) });
+        return GATEWAY_ERRORS.includes(res.status);
+    } catch {
+        return true;
+    }
+}
+
+// A minimal stand-in for a reverse proxy, on its own origin: it passes GETs
+// through to BASE, or — once `answer` is set to a status — answers every request
+// itself with that status, the way nginx or Caddy do while Harpo is stopped.
+async function startGateway() {
+    const gateway = { answer: null };
+    const server = http.createServer(async (req, res) => {
+        if (gateway.answer !== null) {
+            res.writeHead(gateway.answer, { "content-type": "text/plain" });
+            res.end(`gateway test answer ${gateway.answer}`);
+            return;
+        }
+        try {
+            const headers = { ...req.headers };
+            for (const h of ["host", "connection", "accept-encoding"]) {
+                delete headers[h];
+            }
+            const upstream = await fetch(BASE + req.url, { headers, redirect: "manual" });
+            const out = {};
+            upstream.headers.forEach((value, name) => {
+                // fetch has already decoded the body; HSTS has no business on this origin.
+                if (!["content-encoding", "content-length", "transfer-encoding", "connection",
+                    "strict-transport-security"].includes(name)) {
+                    out[name] = value;
+                }
+            });
+            res.writeHead(upstream.status, out);
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+        } catch (e) {
+            res.writeHead(599, { "content-type": "text/plain" });
+            res.end(`gateway could not reach ${BASE}: ${e.message}`);
+        }
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // localhost (not 127.0.0.1's own name) is a secure context, so a service worker can register.
+    gateway.url = `http://localhost:${server.address().port}`;
+    gateway.close = () => new Promise((resolve) => server.close(resolve));
+    return gateway;
 }
 
 // Outcome-first retry: succeed fast if `probe` already holds, otherwise run the
@@ -263,20 +323,43 @@ async function retryUntil(action, probe, tries = 15) {
             await page.bringToFront();
         }
 
+        // ---- 4c. Gateway errors count as "server unreachable" ----
+        // Its own origin and browser context, so its service worker is a fresh one.
+        const gateway = await startGateway();
+        const gatewayContext = await browser.createBrowserContext();
+        try {
+            const gwPage = await gatewayContext.newPage();
+            await gwPage.goto(`${gateway.url}/offline.html`, { waitUntil: "networkidle2" });
+            await gwPage.evaluate(() => navigator.serviceWorker.ready);
+            const landOn = async (status, path) => {
+                gateway.answer = status;
+                await gwPage.goto(`${gateway.url}${path}`, { waitUntil: "load" });
+                return { title: await gwPage.title(), body: await gwPage.evaluate(() => document.body?.innerText ?? "") };
+            };
+            for (const status of GATEWAY_ERRORS) {
+                const landed = await landOn(status, "/");
+                check(`navigation answered ${status} by a proxy falls back to offline vault`,
+                    landed.title === OFFLINE_TITLE, landed.title);
+            }
+            for (const [status, path] of [[500, "/"], [404, "/no-such-page"]]) {
+                const landed = await landOn(status, path);
+                check(`navigation answered ${status} is shown as it is`,
+                    landed.title !== OFFLINE_TITLE && landed.body.includes(`gateway test answer ${status}`),
+                    landed.title || landed.body.slice(0, 60));
+            }
+        } finally {
+            await gatewayContext.close();
+            await gateway.close();
+        }
+
         // ---- 5. Take the server down ----
         execSync(`docker stop ${CONTAINER}`, { stdio: "ignore" });
-        let serverDown = false;
-        try {
-            await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(2000) });
-        } catch {
-            serverDown = true;
-        }
-        check("server is stopped", serverDown);
+        check("server is stopped", await serverIsDown());
 
         // ---- 6. Offline behaviour ----
         await page.goto(`${BASE}/offline.html`, { waitUntil: "load" });
         await page.waitForSelector("#state-unlock:not(.hidden)", { timeout: 10000 });
-        check("offline page served by service worker", (await page.title()) === "Offline vault · Harpo");
+        check("offline page served by service worker", (await page.title()) === OFFLINE_TITLE);
 
         await page.waitForFunction(
             () => document.getElementById("netBadge").textContent === "server unreachable",
@@ -324,7 +407,7 @@ async function retryUntil(action, probe, tries = 15) {
             totp.before === "2FA" && totp.after === "Hide 2FA" && totp.code !== null, JSON.stringify(totp));
 
         await page.goto(`${BASE}/`, { waitUntil: "load" });
-        check("navigation fallback to offline vault", (await page.title()) === "Offline vault · Harpo");
+        check("navigation fallback to offline vault", (await page.title()) === OFFLINE_TITLE);
 
         // ---- 7. Server returns: the offline page must offer a way back ----
         execSync(`docker start ${CONTAINER}`, { stdio: "ignore" });
