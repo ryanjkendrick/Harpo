@@ -384,6 +384,12 @@ links between sites are down. Replication is modeled on AD's own USN scheme:
 - Deletes are tombstones, so they replicate like any other change. A
   **purge** is a tombstone too, but a final one: it wins over every version
   of the row that is not purged, whatever the timestamps (see "Purging").
+- A delete and an edit made on two sites that can't reach each other also
+  resolve by time. If the edit is the later one, the entry comes back on every
+  site with that edit once they reconnect. This is deliberate: an entry that
+  returns can be deleted again, while one that vanished would take with it a
+  change someone has just made, perhaps a new password. To remove an entry
+  everywhere for good, whatever happens elsewhere, purge it.
 - Rows keep their origin stamps as they spread, so changes flow **transitively**:
   in a chain `A ↔ B ↔ C`, A's changes reach C through B without A and C ever
   talking. Any connected topology works; you don't need a full mesh.
@@ -734,6 +740,18 @@ created. By default a row whose name and username (ignoring case) already
 exist in the vault is skipped. Imported entries are ordinary entries: a first
 revision by the importer, replicated, in the health report and the offline
 copy. Each import is audited once as `vault.import` with the counts.
+
+An imported entry's id comes from the vault, its name and username (ignoring
+case and surrounding spaces), and its first revision's id from the keyed
+fingerprint of the password, rather than at random. So importing the same file
+on two sites that can't reach each other makes the same entries on both, and
+they merge into one set when the sites reconnect. If the two files disagree on
+a password, the entry keeps both in its history and the later import's is
+current, as with any two changes made apart. Ids already used in the vault,
+by live, deleted or purged entries, are passed over, so importing again after
+a delete makes a new entry and leaves the deleted one in the bin. Older
+versions of Harpo make random ids, so the merge needs the importing sites to
+be on a version that does this.
 
 **Export.** *Export…* in the same toolbar downloads the vault as a file:
 

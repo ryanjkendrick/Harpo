@@ -451,6 +451,29 @@ async function pageShot(page, file, fullPage = false) {
         await page.evaluate(() => document.querySelector(".modal-close").click());
         await noDialog(page);
 
+        // ---- A vault long enough to page: last, so the shots above keep their small example data ----
+        const archive = await createGroup(page, "Archive", "Retired systems, kept for reference");
+        const archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "harpo-manual-"));
+        const archiveFile = path.join(archiveDir, "archive.csv");
+        const letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        fs.writeFileSync(archiveFile, ["Title,Username,Password,URL", ...Array.from({ length: 60 }, (_, i) => {
+            const n = String(i + 1).padStart(2, "0");
+            const password = Array.from({ length: 16 }, (_, j) => letters[(i * 31 + j * 17 + 7) % letters.length]).join("") + "!";
+            return `Retired server ${n},admin,${password},https://srv${n}.old.example.com`;
+        }), ""].join("\r\n"));
+        await openVault(page, archive);
+        await openDialog(page, ".vault-toolbar .vault-import", "Import");
+        await (await page.$('.modal-panel input[type="file"]')).uploadFile(archiveFile);
+        await page.waitForSelector(".modal-panel .import-confirm", { timeout: 15000 });
+        await page.evaluate(() => document.querySelector(".modal-panel .import-confirm").click());
+        await page.waitForSelector(".modal-panel .import-summary", { timeout: 30000 });
+        await clickText(page, ".modal-panel .btn-primary", "Done");
+        await noDialog(page);
+        fs.rmSync(archiveDir, { recursive: true, force: true });
+        await page.waitForSelector(".pager", { timeout: 15000 });
+        await sleep(600);
+        await regionShot(page, [".entries-table tbody tr:nth-last-child(-n+3)", ".pager"], "vault-pager.png");
+
         console.log("done");
     } finally {
         await browser.close();

@@ -1,8 +1,10 @@
 # Moving Harpo to .NET 11
 
-Status: plan, written 2026-10-31 against .NET 11 RC 3. **No work starts
-before .NET 11 is generally available** (expected 10 November 2026); the
-version numbers below are RC 3's and must be re-checked against GA then.
+Status: plan, written 2026-10-31 against .NET 11 RC 3. .NET 11 became
+generally available on 10 November 2026, and the facts below were re-checked
+against GA on 11 November (see "Re-checked at GA"). Step 0 starts once the
+11.0 SDK is installed on the development machine; the Homebrew formula there
+was still 10.0.403 on 11 November.
 
 ## What the upgrade really is
 
@@ -40,6 +42,30 @@ of the migration release (see "Afterwards").
 | x64 floor rises to x86-64-v2 (SSE4.2, POPCNT, CX16); the runtime refuses to start on older CPUs. Linux Arm64 floor unchanged (armv8.0-a) | .NET 11 compatibility notes |
 | EF Core 11: `Migrate()` throws when an assembly has no migrations (Harpo has them); the model snapshot now records the latest migration id; `dotnet ef` 11 needed | EF Core 11 what's-new and breaking changes |
 | .NET 11 is STS; support projected to about November 2028, the same horizon as .NET 10 LTS | support policy |
+
+## Re-checked at GA (2026-11-11)
+
+Nothing above changed between RC 3 and GA.
+
+| Fact | Source |
+| --- | --- |
+| .NET 11.0.0, SDK 11.0.100, released 2026-11-10 | .NET release metadata |
+| `Microsoft.Data.Sqlite.Core` 11.0.0 still depends on `SQLitePCLRaw.core` [3.0.5, ) and targets `net10.0` only | package metadata on NuGet |
+| `Microsoft.EntityFrameworkCore.Sqlite.Core`, `.Design`, `System.DirectoryServices.Protocols` and `dotnet-ef` 11.0.0 published 2026-11-10 | NuGet |
+| `SQLite3MC.PCLRaw.bundle` is still 2.6.1 (2026-10-12) → `.provider` 2.6.1 → `SQLitePCLRaw.core` [3.0.2, ); `SQLitePCLRaw.bundle_e_sqlcipher` is still 2.1.11 with no 3.x | NuGet |
+| `mcr.microsoft.com/dotnet/sdk:11.0` and `aspnet:11.0-resolute` exist for amd64, arm64 and arm; `aspnet:11.0` is the same image (Ubuntu 26.04.1, runtime 11.0.0), and `libldap2` 2.6.10 installs on it | the registry, and the image itself |
+| 0.7 stays on .NET 10, which got its own security update the same day (10.0.15): 0.7.6 took the runtime, and #18 moves the 10.0 packages to 10.0.15 | .NET release metadata |
+
+Prepared for step 0 on .NET 10, because they need the old build:
+
+- `tests/Harpo.Tests/Fixtures/net10/`: database files written by the published
+  0.7.6 image (`make.sh` remakes them): `plain/`, `encrypted/`, and
+  `encrypted-wal/`, a file and its WAL copied while the site was frozen, so the
+  sign-ins exist only in the WAL. `expected.txt` holds what SQLCipher 4 reads
+  from each, and the key. These are the "file encrypted by the old SQLCipher
+  build opens" test's input; the WAL one also checks that rows only in the WAL
+  survive the new engine.
+- `tests/e2e/measure-ui.sh` and the "before" figures for step 5, below.
 
 ## Decisions
 
@@ -98,19 +124,37 @@ Sub-agent sized work; a worktree; stage explicit paths. Uses GA packages.
    skipped and the Administration page shows "Unknown".
    Update the `DbEncryptionTests` and add two:
    *a file encrypted by the old SQLCipher build opens*, and *a file written by
-   SQLite3MC opens in the old build* (interop both ways; the second needs a
+   SQLite3MC opens in the old build* (interop both ways; the first reads the
+   files in `tests/Harpo.Tests/Fixtures/net10/` and compares with its
+   `expected.txt`; the second needs a
    small .NET 10 helper project, or the `sqlcipher` CLI from Homebrew, and
    can stay a manual check if that is simpler).
 3. Fix whatever else fails to compile; run the unit suite in Release several
    times (the formerly flaky notes-scrub test is the canary for SQLite
    behaviour changes: it depends on free-list pages surviving until VACUUM).
 4. Build the image on `sdk:11.0`/`aspnet:11.0-resolute` (keep the Ubuntu
-   26.04 runtime base; plain `11.0` may mean an older Ubuntu), confirm
+   26.04 runtime base; at GA plain `11.0` is the same image, but the tag says
+   which Ubuntu on purpose), confirm
    `libldap2` still installs on it and `docker scout quickview` is clean,
    then run the UI, session, offline and offline-disable e2e suites on a
    throwaway stack.
 5. Measure: request latency and memory on the UI suite, before and after, on
    the same machine. This is the only place Runtime Async is evaluated.
+   `tests/e2e/measure-ui.sh <image> 3` does it the same way both times. Before,
+   on 2026-11-11 (published 0.7.6, .NET 10.0.15, Apple silicon, 10 CPUs and
+   8 GB for Docker):
+
+   | | 0.7.6 (.NET 10) |
+   | --- | --- |
+   | UI suite, three runs | 141.6 s, 141.5 s, 141.6 s |
+   | Memory after a warm-up run | 252 MiB |
+   | Memory during the runs | peak 299 MiB, 287 MiB at the end |
+   | HTTP requests (circuit WebSocket left out) | 560; median 1.4 ms, p95 9.1 ms, max 22.2 ms |
+
+   The suite's wall time hardly moves, because its own waits set it, so the
+   request times and memory are the figures to compare. Clicks inside a page
+   travel over the circuit and aren't in the request log; a slowdown there
+   would show up as a longer suite.
 6. Check the two behaviours that could change silently:
    - the audit log's client address (flows through `IHttpContextAccessor`,
      an `AsyncLocal`, which Runtime Async handles differently when no
