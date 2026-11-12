@@ -41,7 +41,7 @@ public sealed class DbFileLock : IDisposable
     /// </summary>
     public static async Task<DbFileLock> AcquireAsync(string connectionString, ILogger logger, int waitSeconds = 30)
     {
-        var path = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        var path = DbEncryption.FilePath(connectionString);
         if (string.IsNullOrEmpty(path) || path == ":memory:")
         {
             return new DbFileLock(null);

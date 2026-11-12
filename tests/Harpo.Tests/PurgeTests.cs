@@ -753,12 +753,11 @@ public class PurgeTests : IDisposable
         // Real files in the journal mode production uses. Each distinctive value
         // ends a 20 KB field, so it sits in an overflow page — in the main file,
         // since every connection here closes after use and the last close
-        // checkpoints the log. Freed by the purge, such a page keeps its bytes on
-        // the free list until the file is rewritten, which makes the "before" and
-        // "after" checks below deterministic. (A value inline in a table page could
-        // survive only as an old page image in the log, which a checkpoint may
-        // drop at any moment.) A personal vault, because the audit trail — never
-        // purged — names the entries of a shared group when they are deleted.
+        // checkpoints the log, which makes the baseline below deterministic. (A
+        // value inline in a table page could survive only as an old page image in
+        // the log, which a checkpoint may drop at any moment.) A personal vault,
+        // because the audit trail — never purged — names the entries of a shared
+        // group when they are deleted.
         var dir = Directory.CreateTempSubdirectory("harpo-purge-").FullName;
         var alphaDir = Directory.CreateDirectory(Path.Combine(dir, "alpha")).FullName;
         var betaDir = Directory.CreateDirectory(Path.Combine(dir, "beta")).FullName;
@@ -800,11 +799,12 @@ public class PurgeTests : IDisposable
             await alpha.Purge.PurgeEntryAsync(_carol, entry.Id);
             await beta.PullFromAsync(alpha);
 
-            // alpha scrubbed as part of the purge; beta has erased the rows, but
-            // until its file is rewritten the bytes are still in it.
+            // alpha scrubbed as part of the purge; beta has erased the rows and asked
+            // for a scrub. Its engine zeroes freed pages as it goes (secure_delete,
+            // since 0.8), so its main file may already be clean, but old page images
+            // can sit in the log, and a file written by 0.7 kept its freed pages: the
+            // scrub still has to run, and nothing may be left after it.
             AssertNone(alphaDir, markers);
-            var stillThere = FileText(betaDir);
-            Assert.True(markers.Any(stillThere.Contains), "expected remnants before the scrub: " + Describe(betaDir, markers));
             Assert.True(await beta.Scrubber.ScrubIfPendingAsync());
             AssertNone(betaDir, markers);
         }
