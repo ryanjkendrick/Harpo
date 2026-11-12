@@ -3,13 +3,14 @@
 // Deliberately conservative: it pre-caches ONLY the static offline-vault shell
 // and PWA assets. It never caches authenticated pages, API responses, or
 // anything else — the online app always talks straight to the server. When a
-// navigation fails because the server is unreachable, it serves the offline
-// vault page instead.
+// navigation fails because the server is unreachable — or a reverse proxy in
+// front of it answers with a gateway error — it serves the offline vault page
+// instead.
 // Bump this version whenever offline.html/offline.js or the PWA assets change —
 // it is what makes installed service workers refresh their cached shell. The
 // cache keeps each response's headers too, so a change to the headers the shell
 // is served with (its content security policy) needs a bump just the same.
-const CACHE = "harpo-v13";
+const CACHE = "harpo-v14";
 const PRECACHE = [
     "/offline.html",
     "/offline.js",
@@ -19,6 +20,13 @@ const PRECACHE = [
     "/icons/harpo-180.png",
     "/icons/harpo-maskable-512.png",
 ];
+
+// Behind a reverse proxy (nginx, Caddy, …) a stopped Harpo does not make the
+// navigation fail: the proxy answers it with one of these. Harpo itself never
+// sends them, so they mean "the server is unreachable" just like a network
+// error does. Every other status (a 500, a 404) is Harpo's own answer and is
+// shown as it is.
+const GATEWAY_ERRORS = [502, 503, 504];
 
 self.addEventListener("install", (event) => {
     event.waitUntil(
@@ -52,11 +60,17 @@ self.addEventListener("fetch", (event) => {
         return;
     }
 
-    // Page navigations: network-first, offline vault as the fallback.
+    // Page navigations: network-first, offline vault as the fallback when the
+    // server is unreachable (a network error, or a proxy's gateway error).
     // The network response is never cached (it may contain vault data).
     if (request.mode === "navigate") {
         event.respondWith(
-            fetch(request).catch(() => caches.match("/offline.html"))
+            fetch(request)
+                .then((response) => GATEWAY_ERRORS.includes(response.status)
+                    // If the shell is somehow missing, show the proxy's page rather than nothing.
+                    ? caches.match("/offline.html").then((cached) => cached || response)
+                    : response)
+                .catch(() => caches.match("/offline.html"))
         );
     }
     // Everything else (APIs, SignalR negotiate, fingerprinted assets): untouched.

@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "11.0.x"
 
       - name: dotnet test
         run: dotnet test Harpo.slnx --configuration Release
@@ -96,7 +96,7 @@ jobs:
 
       # Each suite runs even if the one before failed, so a run reports every
       # broken area at once. The offline suite stops and restarts harpo-alpha.
-      - name: Offline vault (22 checks)
+      - name: Offline vault (28 checks)
         id: offline
         working-directory: tests/e2e
         run: node offline-vault.e2e.js

@@ -11,11 +11,13 @@ namespace Harpo.Services;
 /// the log emptied, as <see cref="Security.KeyRotation"/> does after encrypting
 /// notes: checkpoint, VACUUM, checkpoint, each checkpoint in TRUNCATE mode.
 ///
-/// <c>PRAGMA secure_delete</c> is not used instead: it zeroes the space of
-/// deleted cells in the main file, but must be on for every connection, and does
+/// The engine (SQLite3 Multiple Ciphers, since Harpo 0.8) is built with
+/// <c>secure_delete</c> on, so it zeroes the space of deleted cells and freed
+/// pages in the main file as it goes. That is not relied on here: it does
 /// nothing about the old page images in the write-ahead log, which are the
-/// copies that last longest. The log has to be emptied either way, and VACUUM
-/// with it gives one guarantee for every kind of leftover.
+/// copies that last longest, nor about pages freed by Harpo 0.7 and earlier,
+/// whose engine left them as they were. The log has to be emptied either way,
+/// and VACUUM with it gives one guarantee for every kind of leftover.
 ///
 /// A purge commits a site-local "scrub pending" marker in its own transaction,
 /// and the marker is removed only once the scrub has completed: a crash, a full

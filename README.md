@@ -138,7 +138,10 @@ docker exec harpo-samba-ad samba-tool user create casey 'Passw0rd!' --given-name
 Releases are published to Docker Hub as
 [`ryanjkendrick/harpo`](https://hub.docker.com/r/ryanjkendrick/harpo)
 (multi-arch: amd64 + arm64), so a production install only needs
-`docker-compose.yml` — no clone, no build.
+`docker-compose.yml` — no clone, no build. From 0.8.0 the image runs on .NET
+11, whose x64 build needs a CPU with SSE4.2 and POPCNT (x86-64-v2: any x64
+server made after about 2009); on an older CPU it refuses to start. Any Arm64
+machine will do.
 
 1. Generate a master key and put it in `.env` next to `docker-compose.yml`:
 
@@ -361,7 +364,15 @@ waiting for their offline copy to expire. The audit log's `offline.sync`
 events show who has taken a copy, and when.
 
 Also worth knowing: the service worker only ever caches the static offline
-page and PWA assets — never authenticated pages or API responses. On iOS,
+page and PWA assets — never authenticated pages or API responses. It opens the
+offline vault when a page can't be loaded because the server is unreachable:
+a network error, or — behind a reverse proxy, while Harpo is stopped — the
+proxy's 502, 503 or 504. Harpo's own errors (a 500, a 404) are shown as they
+are. With nginx in front of a container, set `proxy_connect_timeout 5s;`: nginx
+keeps a stopped container's old address and can otherwise wait up to its
+default 60 seconds for it before answering 504. The offline page itself stops waiting
+after 5 seconds, but a page of the main app (or the installed app opening)
+takes that full minute to fall back. Caddy answers 502 at once. On iOS,
 the OS may evict PWA storage under disk pressure; treat the offline copy as
 disposable (it re-syncs on the next online visit).
 
@@ -444,7 +455,7 @@ Operational notes:
 Passwords, 2FA secrets and notes are always AES-256-GCM encrypted, but the rest
 of the SQLite file (entry and group names, URLs, usernames, membership, the audit log) is plaintext by default —
 protect it with disk encryption and encrypted backups, or turn on **full-file
-encryption** (SQLCipher):
+encryption** (in the SQLCipher 4 format):
 
 ```yaml
 Harpo__DatabaseKey: "…per-site secret…"
@@ -503,9 +514,20 @@ encrypted under the master key). It is defence in
 depth, not a new trust boundary. It also only covers the file from now on:
 turning it on later does not reach older backups or disk snapshots, or the blocks
 of the old plaintext file left on the disk, so replace or destroy those if they
-matter. (Implementation: the bundled SQLite is the
-SQLCipher community build, which behaves identically to stock SQLite when no
-key is configured.)
+matter.
+
+Implementation: since 0.8.0 the bundled SQLite is
+[SQLite3 Multiple Ciphers](https://utelle.github.io/SQLite3MultipleCiphers/),
+which replaced the SQLCipher community build when Harpo moved to .NET 11. Harpo
+uses it in the SQLCipher 4 format, so the file format has not changed: files
+written by 0.7 open as they are, 0.7 opens files written by 0.8 (going back is
+a matter of changing the image tag), and the `sqlcipher` command-line tool
+reads backups with `PRAGMA key` as before. With SQLite3 Multiple Ciphers' own
+tools, select the format before the key (`PRAGMA cipher = 'sqlcipher';
+PRAGMA legacy = 4;`), or they use their default cipher and report the file as
+not a database. Without a key it behaves like stock SQLite. Encrypting and
+decrypting still make a second copy, now with SQLite's `VACUUM INTO`, and swap
+it in once it has been checked; rotating a key rekeys the file in place.
 
 ## Rotating the master key
 
@@ -925,7 +947,7 @@ All settings can be given as environment variables (`Section__Key` form).
 | `Harpo__MasterKey` | *(required)* | Base64 32-byte key or passphrase; encrypts passwords at rest; identical on all sites |
 | `Harpo__PreviousMasterKeys__N` | — | Old master keys still accepted for decryption during a rotation — see "Rotating the master key" |
 | `<AnyKey>__File` | — | Read the value of `<AnyKey>` from this file (Docker/K8s secrets) |
-| `Harpo__DatabaseKey` | *(empty = off)* | Optional SQLCipher key encrypting the whole database file; per-site |
+| `Harpo__DatabaseKey` | *(empty = off)* | Optional key encrypting the whole database file (SQLCipher 4 format); per-site |
 | `Harpo__PreviousDatabaseKey` | — | Set for one start (with a new `DatabaseKey`) to rotate the file key |
 | `Harpo__RemoveDatabaseEncryption` | `false` | Set `true` for one start (with the current key) to decrypt the file |
 | `Harpo__DataProtectionKeysPath` | *(image: `/data/keys`)* | Where cookie/antiforgery keys persist; the ring is encrypted at rest with `Harpo__MasterKey` |
@@ -1091,6 +1113,9 @@ as strong as its least-trusted site. Specifically:
 
 ## Development
 
+Needs the .NET 11 SDK (`global.json` asks for 11.0.100 or a later 11.0
+feature band).
+
 ```bash
 dotnet run --project src/Harpo    # dev profile: dev users alice/alice, bob/bob
 dotnet test                       # unit suite: crypto, authz, replication, TOTP, …
@@ -1133,7 +1158,7 @@ for testing. Forks: change the `IMAGE` name in
 `.github/workflows/release.yml` and in `docker-compose.yml`.
 
 Two things are pinned on purpose and move only by hand. `docker-compose.yml`
-names a release line (`:0.7`) rather than `latest`, so a new minor version
+names a release line (`:0.8`) rather than `latest`, so a new minor version
 means updating that tag as part of the release. And the workflow's actions are
 pinned to commit SHAs rather than tags — the file's header says how to update
 one.
@@ -1143,6 +1168,12 @@ one.
 - **SQLite, one writer** — each site's container owns its database file; scale-out
   within a site (multiple replicas of one site) is not supported. Multiple
   *sites* are the scaling model.
+- **Upgrading from 0.7 to 0.8 (.NET 11)** needs nothing beyond the new tag,
+  and the x64 CPU floor above. There is no schema change and the database
+  file keeps its format, encrypted or not, so changing the tag back to 0.7
+  works too. Sessions survive the upgrade. In a replicated deployment 0.7 and
+  0.8 sites replicate with each other in both directions while you upgrade
+  them one at a time.
 - **Schema** is managed with EF Core migrations, applied automatically at
   startup. Databases created by older Harpo versions (pre-migrations) are
   baselined automatically on first start. When upgrading a replicated
