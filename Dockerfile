@@ -8,6 +8,13 @@ COPY src/Harpo/Harpo.csproj src/Harpo/
 RUN dotnet restore src/Harpo/Harpo.csproj
 COPY src/ src/
 RUN dotnet publish src/Harpo/Harpo.csproj -c Release -o /app /p:UseAppHost=false
+# The portable output carries native SQLite3MC builds for every platform it
+# supports (Android, iOS, Windows, macOS, musl, RISC-V...). The image only ever
+# runs on glibc Linux x64 or Arm64, so keep those two and the managed `linux`
+# folder (System.DirectoryServices.Protocols) and drop the rest (~65 MB).
+RUN cd /app/runtimes \
+    && find . -mindepth 1 -maxdepth 1 ! -name linux ! -name linux-x64 ! -name linux-arm64 -exec rm -rf {} + \
+    && ls linux/lib/*/System.DirectoryServices.Protocols.dll linux-x64/native/libsqlite3mc.so linux-arm64/native/libsqlite3mc.so
 
 # ---- runtime ----
 # Ubuntu 26.04 rather than the default 24.04: the older base carries OS-package

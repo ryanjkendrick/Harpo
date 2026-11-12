@@ -4,7 +4,8 @@ Status: plan, written 2026-10-31 against .NET 11 RC 3. .NET 11 became
 generally available on 10 November 2026, and the facts below were re-checked
 against GA on 11 November (see "Re-checked at GA"). Step 0 was done on
 12 November on branch `feature/dotnet-11`: go, with D3 changed (see "Step 0
-result").
+result"). Step 1 was done the same day: the matrix passed and 0.8.0 is ready to
+release (see "Step 1 result").
 
 ## What the upgrade really is
 
@@ -246,8 +247,9 @@ Follow-ups, none for 0.8.0:
   and `Pager.razor`. Warnings only; look at them in their own change.
 - The offline-disable suite should wait out the offline-sync limit when it
   follows the offline suite.
-- Step 1 still owes: `global.json`, the AD lab, the nginx and Caddy examples,
-  amd64 under emulation, upgrade from 0.7.0, README and release notes.
+- Step 1 owed `global.json`, the AD lab, the nginx and Caddy examples,
+  amd64 under emulation, upgrade from 0.7.0, README and release notes: all
+  done, see "Step 1 result".
 
 ## Step 1: the real branch
 
@@ -286,6 +288,69 @@ Follow-ups, none for 0.8.0:
    Arm64); encrypted databases keep working and keep their format; rollback
    to 0.7 is supported by changing the tag back; the engine behind
    `Harpo__DatabaseKey` is now SQLite3 Multiple Ciphers; no schema migration.
+
+## Step 1 result (2026-11-12)
+
+Ready for 0.8.0. The spike was already on `develop` after 0.7.8, so nothing
+needed rebasing. Every package is at its GA version: the app's are on 11.0.0
+and SQLite3MC 2.6.1, and only test-only packages (coverlet, the test SDK, the
+xunit runner) have newer majors, left for their own change. No package has a
+known vulnerability. `dotnet ef migrations has-pending-model-changes` under
+EF 11 reports no changes, so no snapshot regeneration was needed.
+
+Added in step 1:
+
+- `global.json`: SDK 11.0.100, `rollForward: latestFeature`. The Docker build
+  doesn't copy it (the `sdk:11.0` image is the pin there), and CI's
+  `setup-dotnet` installs `11.0.x`, which satisfies it.
+- The Dockerfile drops SQLite3MC's native builds for platforms the image never
+  runs on. The portable publish carried 34 `runtimes/` folders (70 MB); it keeps
+  `linux-x64`, `linux-arm64` and the managed `linux` one
+  (System.DirectoryServices.Protocols). The build fails if any of the three is
+  missing. Image: 305 MB on arm64 and 276 MB on amd64; 0.7.8 is 328 MB on
+  arm64, and the untrimmed candidate was 373 MB.
+- README: the engine (SQLite3MC in the SQLCipher 4 format, how to read a file
+  with its own tools), the x64 CPU floor, the 0.7 → 0.8 upgrade and rollback,
+  and the SDK needed for development.
+
+The matrix, all on throwaway compose projects and containers. Results are
+from the trimmed image unless marked "untrimmed", which differs only in the
+deleted native files:
+
+| Check | Result |
+| --- | --- |
+| Unit suite, Release, three runs | 578 passed each, about 1 min 10 s |
+| UI, session, offline, offline-disable (fresh site), encrypted site, arm64 | 76/76, 9/9, 22/22, 10/10 |
+| The same on amd64 under emulation (`--platform linux/amd64`, x86_64 inside) | 76/76, 9/9, 22/22, 10/10 |
+| Docker Scout, both architectures | 0C 0H 0M 0L |
+| Upgrade in place from the published 0.7.0: alpha encrypted, beta plain, gamma encrypted; seeded with imports (notes, TOTP, URLs, personal vaults) and 0.7.0's own UI and session suites | every site's decrypted export identical before and after; raw rows of every data table byte-identical; only audit rows (appended), replication cursors, the site counter and session last-seen changed; the browser sessions made on 0.7.0 stayed signed in |
+| Mixed versions: alpha and beta on the candidate, gamma (encrypted) on 0.7.0, new imports written on both sides at once | 410, then 730 entries identical on all three; the 0.7.0 session suite on gamma and the current one on alpha both 9/9 |
+| Candidate everywhere, then rollback of all three volumes to 0.7.0 | the current UI suite 76/76 on upgraded alpha before; after, 0.7.0's UI 75/75 and session 9/9, and every export identical |
+| Key rotation and `RemoveDatabaseEncryption` on the candidate, then rollback | rotated alpha opens with the new key only (the old one gets error 26); decrypted gamma is read by plain `sqlite3`; 0.7.0 opens both, exports identical, session 9/9 |
+| Upgrade and rollback again on the trimmed image (three sites, encrypted and plain) | identical exports at every step, sessions kept |
+| Genuine LDAP against a throwaway Samba DC, with a service account and `Auth__RevalidateMinutes=1` | 14/14: wrong password refused; ada a site admin through the DN; grace by bare name, UPN and `DOMAIN\name` with one identity ("Who am I?"); disabled grace refused, then signed out after 73–79 s; ada signed out 85–90 s after leaving Harpo Admins, then back as admin once re-added |
+| nginx (HTTP/2, TLS, `http` → `https` redirect) and Caddy (TLS) in front, `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` | session 9/9 and UI 76/76 behind each; the sign-in cookie is `Secure`; the audit log has the client's address, not the proxy's; identical to 0.7.8 behind the same proxies |
+
+Found in step 1, none of them caused by .NET 11 and none for 0.8.0:
+
+- **.NET 11 logs a new warning**: `SectionRegistry`: "Sections cannot connect
+  across render mode boundaries". It comes from each interactive page's
+  `<PageTitle>` against the static `<HeadOutlet>`. Titles are still set,
+  identical to 0.7.0 on every page. Silence it by giving `HeadOutlet` the
+  page's render mode, or leave it.
+- **The offline vault doesn't take over behind a proxy when Harpo is down.**
+  The proxy answers 502 instead of the request failing, so the service
+  worker's fallback never runs. The offline suite fails the same two checks
+  behind Caddy, and stops earlier behind nginx, on 0.7.8 and the candidate
+  alike. Directly, without a proxy, it passes 22/22. Worth a fix: treat 502,
+  503 and 504 on a navigation as offline.
+- **The antiforgery cookie isn't marked `Secure`** behind TLS (the sign-in
+  cookie is), on 0.7.8 too. That's ASP.NET Core's default for that cookie;
+  setting `SecurePolicy = Always` would be a small hardening change.
+- **`offline-vault.e2e.js` defaults `HARPO_CONTAINER` to `harpo-alpha`**, the
+  demo's container, and stops it. A step 1 proxy run that didn't set it
+  stopped the demo for 11 s (its data was unchanged). The suite should refuse
+  to run when `HARPO_BASE_URL` is set without `HARPO_CONTAINER`.
 
 ## Step 2: release 0.8.0
 
