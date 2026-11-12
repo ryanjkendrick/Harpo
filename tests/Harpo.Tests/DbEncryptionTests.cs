@@ -9,10 +9,10 @@ using Microsoft.Extensions.Options;
 namespace Harpo.Tests;
 
 /// <summary>
-/// Exercises the optional SQLCipher full-file encryption lifecycle against real
-/// temp files: fresh-encrypted creation, in-place encryption of an existing
-/// plaintext database, fail-fast on wrong/missing keys, key rotation, and
-/// explicit decryption.
+/// Exercises the optional full-file encryption lifecycle (SQLCipher 4 format, written
+/// by SQLite3 Multiple Ciphers) against real temp files: fresh-encrypted creation,
+/// in-place encryption of an existing plaintext database, fail-fast on wrong/missing
+/// keys, key rotation, explicit decryption, and files written by Harpo 0.7.
 /// </summary>
 public class DbEncryptionTests : IDisposable
 {
@@ -82,7 +82,7 @@ public class DbEncryptionTests : IDisposable
     private async Task<int> KilledWithRowsInWalAsync(string? key)
     {
         var live = Path.Combine(_dir, "live.db");
-        var liveCs = new SqliteConnectionStringBuilder { DataSource = live, Password = key ?? "" }.ToString();
+        var liveCs = DbEncryption.KeyedConnectionString(live, key);
         await SeedAsync(liveCs);
         await ExecuteAsync(liveCs, "PRAGMA journal_mode=WAL");
 
@@ -108,7 +108,7 @@ public class DbEncryptionTests : IDisposable
     private async Task KilledWithHotJournalAsync(string key)
     {
         var live = Path.Combine(_dir, "live.db");
-        var liveCs = new SqliteConnectionStringBuilder { DataSource = live, Password = key }.ToString();
+        var liveCs = DbEncryption.KeyedConnectionString(live, key);
         await SeedAsync(liveCs);
         await ExecuteAsync(liveCs, "PRAGMA journal_mode=DELETE");
         await ExecuteAsync(liveCs, "CREATE TABLE Filler (x)");
@@ -359,7 +359,7 @@ public class DbEncryptionTests : IDisposable
     }
 
     [Theory]
-    [InlineData(1, "SQLite Error 1: 'database or disk is full'.", "not enough free disk space")] // what sqlcipher_export gives
+    [InlineData(1, "SQLite Error 1: 'database or disk is full'.", "not enough free disk space")] // a generic error with the text
     [InlineData(13, "SQLite Error 13: 'database or disk is full'.", "not enough free disk space")]
     [InlineData(14, "SQLite Error 14: 'unable to open database file'.", "could not write to the volume")]
     [InlineData(1, "SQLite Error 1: 'unable to open database: /data/x'.", "could not write to the volume")]
@@ -377,7 +377,7 @@ public class DbEncryptionTests : IDisposable
     [Theory]
     [InlineData(5, "SQLite Error 5: 'database is locked'.")]
     [InlineData(6, "SQLite Error 6: 'database table is locked'.")]
-    [InlineData(1, "SQLite Error 1: 'database is locked'.")] // what sqlcipher_export gives
+    [InlineData(1, "SQLite Error 1: 'database is locked'.")] // a generic error with the text
     public void A_lock_is_not_blamed_on_the_disk(int code, string text)
     {
         var message = DbEncryption.WriteFailureMessage(new SqliteException(text, code), DbPath, "encrypt");
@@ -389,7 +389,7 @@ public class DbEncryptionTests : IDisposable
     public void Other_failures_are_not_blamed_on_the_disk()
     {
         Assert.Null(DbEncryption.WriteFailureMessage(new SqliteException("SQLite Error 11: 'database disk image is malformed'.", 11), DbPath, "encrypt"));
-        Assert.Null(DbEncryption.WriteFailureMessage(new SqliteException("SQLite Error 11: 'unable to open database: /data/x'.", 11), DbPath, "encrypt")); // ATTACH on a damaged file
+        Assert.Null(DbEncryption.WriteFailureMessage(new SqliteException("SQLite Error 11: 'unable to open database: /data/x'.", 11), DbPath, "encrypt")); // a damaged file's code, with that text
     }
 
     [Fact]
@@ -483,7 +483,8 @@ public class DbEncryptionTests : IDisposable
     public async Task A_rotation_that_cannot_create_its_journal_is_not_reported_as_done()
     {
         // DELETE mode, in a folder where the journal it needs cannot be created. SQLCipher
-        // swallows this failure as it does a full disk, so only reopening the file shows it.
+        // swallowed this failure as it did a full disk, so only reopening the file showed
+        // it; SQLite3MC reports it. Either way it must not be called done.
         var options = await EncryptedSeedAsync("key-1", wal: false);
         var writable = File.GetUnixFileMode(_dir);
         File.SetUnixFileMode(_dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
@@ -492,7 +493,7 @@ public class DbEncryptionTests : IDisposable
         {
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 DbEncryption.EnsureEncryptionStateAsync(RawCs, new DbEncryptionOptions("key-2", "key-1", false), logger));
-            Assert.Contains("did not take effect", ex.Message);
+            Assert.Matches("did not take effect|could not write to the volume", ex.Message);
             Assert.Contains(DbPath, ex.Message);
         }
         finally
@@ -551,10 +552,10 @@ public class DbEncryptionTests : IDisposable
         else
         {
             await export;
-            Assert.Equal(rows, await CountGroupsAsync(new SqliteConnectionStringBuilder { DataSource = DbPath, Password = "key-1" }.ToString()));
+            Assert.Equal(rows, await CountGroupsAsync(DbEncryption.KeyedConnectionString(DbPath, "key-1")));
             // Nothing still pooled from before the swap answers for the old, plaintext file.
             await Assert.ThrowsAnyAsync<SqliteException>(() =>
-                CountGroupsAsync(new SqliteConnectionStringBuilder { DataSource = DbPath, Password = "" }.ToString()));
+                CountGroupsAsync(DbEncryption.KeyedConnectionString(DbPath, null)));
         }
         Assert.Equal(rows, await CountGroupsAsync(new SqliteConnectionStringBuilder { DataSource = snapshot }.ToString()));
     }
@@ -567,7 +568,7 @@ public class DbEncryptionTests : IDisposable
     {
         // An idle site in WAL mode: no transaction, nothing but its hold on the file.
         // Changing the file under it would lose whatever it writes next.
-        var keyed = new SqliteConnectionStringBuilder { DataSource = DbPath, Password = sourceKey ?? "" }.ToString();
+        var keyed = DbEncryption.KeyedConnectionString(DbPath, sourceKey);
         await SeedAsync(keyed);
         await ExecuteAsync(keyed, "PRAGMA journal_mode=WAL");
         var before = await File.ReadAllBytesAsync(DbPath);
@@ -834,35 +835,17 @@ public class DbEncryptionTests : IDisposable
     public async Task A_copy_missing_rows_is_refused()
     {
         await SeedAsync(RawCs);
+        var copy = Path.Combine(_dir, "copy.db");
         await using var connection = new SqliteConnection(RawCs);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
-        command.CommandText = """
-            ATTACH DATABASE ':memory:' AS target;
-            CREATE TABLE target."Groups" AS SELECT * FROM main."Groups";
-            """;
+        command.CommandText = $"VACUUM INTO '{copy}'";
         await command.ExecuteNonQueryAsync();
+        await DbEncryption.RequireSameRowsAsync(connection, copy, null, DbPath, "encrypt");
 
-        // Copying only what the schema needs: the other tables are all empty, so it matches.
-        command.CommandText = "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'Groups'";
-        var others = new List<string>();
-        await using (var reader = await command.ExecuteReaderAsync())
-        {
-            while (await reader.ReadAsync())
-            {
-                others.Add(reader.GetString(0));
-            }
-        }
-        foreach (var table in others)
-        {
-            command.CommandText = $"CREATE TABLE target.\"{table}\" AS SELECT * FROM main.\"{table}\"";
-            await command.ExecuteNonQueryAsync();
-        }
-        await DbEncryption.RequireSameRowsAsync(connection, DbPath, "encrypt");
-
-        command.CommandText = "DELETE FROM target.\"Groups\"";
-        await command.ExecuteNonQueryAsync();
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => DbEncryption.RequireSameRowsAsync(connection, DbPath, "encrypt"));
+        await ExecuteAsync(new SqliteConnectionStringBuilder { DataSource = copy }.ToString(), "DELETE FROM \"Groups\"");
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DbEncryption.RequireSameRowsAsync(connection, copy, null, DbPath, "encrypt"));
         Assert.Contains("does not match it (table Groups)", ex.Message);
     }
 
@@ -1109,6 +1092,125 @@ public class DbEncryptionTests : IDisposable
         command.CommandText = "DELETE FROM \"__EFMigrationsLock\"";
         await command.ExecuteNonQueryAsync();
         await start.WaitAsync(TimeSpan.FromSeconds(60));
+    }
+
+    // ---- files written by Harpo 0.7 (SQLCipher 4, the e_sqlcipher bundle) ----
+
+    /// <summary>What Fixtures/net10/expected.txt says SQLCipher 4 reads from each fixture.</summary>
+    private static Dictionary<string, string> Expected() =>
+        File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "net10", "expected.txt"))
+            .Where(l => l.StartsWith("plain:") || l.StartsWith("encrypted"))
+            .ToDictionary(l => l[..l.IndexOf(':')], l => l[(l.IndexOf(':') + 1)..].Trim());
+
+    private const string FixtureKey = "net10-fixture-database-key";
+
+    /// <summary>Copies a fixture into this test's folder as test.db (with its WAL, if any).</summary>
+    private void CopyFixture(string name)
+    {
+        foreach (var file in Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Fixtures", "net10", name)))
+        {
+            File.Copy(file, DbPath + Path.GetFileName(file)["harpo.db".Length..]);
+        }
+    }
+
+    private static async Task<string> FactsAsync(string connectionString)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ToString());
+        await connection.OpenAsync();
+        async Task<string> Q(string sql)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToString(await command.ExecuteScalarAsync())!;
+        }
+        return $"{await Q("SELECT count(*) FROM sqlite_master")} {await Q("SELECT count(*) FROM UserSessions")} " +
+            await Q("SELECT max(MigrationId) FROM __EFMigrationsHistory");
+    }
+
+    [Theory]
+    [InlineData("plain", null)]
+    [InlineData("encrypted", FixtureKey)]
+    [InlineData("encrypted-wal", FixtureKey)] // three sign-ins exist only in its WAL
+    public async Task A_file_written_by_harpo_0_7_opens_with_everything_in_it(string fixture, string? key)
+    {
+        CopyFixture(fixture);
+        var options = new DbEncryptionOptions(key, null, false);
+
+        // Startup has nothing to change: the format is the same. (Opening the file to
+        // check the key folds a WAL into it, as it always did.)
+        var logger = new RecordingLogger();
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, options, logger);
+        Assert.Empty(logger.Lines);
+        Assert.Equal(key is null, await DbEncryption.IsPlaintextAsync(DbPath));
+
+        Assert.Equal(Expected()[fixture], await FactsAsync(DbEncryption.ApplyKey(RawCs, options)));
+    }
+
+    [Theory]
+    [InlineData("plain", null, "key-new", null, false)] // encrypt
+    [InlineData("encrypted-wal", FixtureKey, "key-new", FixtureKey, false)] // rotate
+    [InlineData("encrypted-wal", FixtureKey, FixtureKey, null, true)] // decrypt
+    public async Task A_file_written_by_harpo_0_7_can_be_encrypted_rotated_and_decrypted(
+        string fixture, string? sourceKey, string key, string? previous, bool remove)
+    {
+        CopyFixture(fixture);
+        var expected = Expected()[fixture];
+        var options = new DbEncryptionOptions(key, previous, remove);
+
+        await DbEncryption.EnsureEncryptionStateAsync(RawCs, options, NullLogger.Instance);
+
+        Assert.Equal(remove, await DbEncryption.IsPlaintextAsync(DbPath));
+        Assert.Equal(expected, await FactsAsync(DbEncryption.ApplyKey(RawCs, options)));
+        if (sourceKey is not null && !remove)
+        {
+            await Assert.ThrowsAnyAsync<SqliteException>(() => FactsAsync(DbEncryption.KeyedConnectionString(DbPath, sourceKey)));
+        }
+    }
+
+    [Fact]
+    public async Task A_key_without_the_sqlcipher_scheme_cannot_read_harpo_files()
+    {
+        // Why every keyed connection string comes from DbEncryption: given a bare
+        // Password, the engine uses a scheme of its own, and Harpo's file looks damaged.
+        CopyFixture("encrypted");
+        var bare = new SqliteConnectionStringBuilder { DataSource = DbPath, Password = FixtureKey }.ToString();
+
+        var ex = await Assert.ThrowsAsync<SqliteException>(() => FactsAsync(bare));
+
+        Assert.Equal(26, ex.SqliteErrorCode & 0xFF);
+        Assert.Equal(Expected()["encrypted"], await FactsAsync(DbEncryption.KeyedConnectionString(DbPath, FixtureKey)));
+    }
+
+    [Theory]
+    [InlineData("/data/harpo.db")]
+    [InlineData("harpo.db")]
+    [InlineData("/data/odd name?#%.db")]
+    public void The_file_path_survives_the_keyed_connection_string(string path)
+    {
+        var raw = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
+        var keyed = DbEncryption.ApplyKey(raw, new DbEncryptionOptions("key-1", null, false));
+
+        Assert.StartsWith("file:", new SqliteConnectionStringBuilder(keyed).DataSource);
+        Assert.Contains("cipher=sqlcipher&legacy=4", keyed);
+        Assert.Equal(path, DbEncryption.FilePath(keyed));
+        Assert.Equal(path, DbEncryption.FilePath(raw));
+        Assert.Equal(path, DbEncryption.FilePath(DbEncryption.KeyedConnectionString(path, null)));
+    }
+
+    [Fact]
+    public async Task A_folder_name_with_uri_characters_still_encrypts_and_opens()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(_dir, "a?b#c%20d")).FullName;
+        var path = Path.Combine(dir, "test.db");
+        var raw = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
+        await SeedAsync(raw);
+        var options = new DbEncryptionOptions("key-1", null, false);
+
+        await DbEncryption.EnsureEncryptionStateAsync(raw, options, NullLogger.Instance);
+
+        Assert.False(await DbEncryption.IsPlaintextAsync(path));
+        Assert.Equal(1, await CountGroupsAsync(DbEncryption.ApplyKey(raw, options)));
+        Assert.Single(Directory.GetFiles(dir, "test.db"));
     }
 
     private sealed class RecordingLogger : ILogger

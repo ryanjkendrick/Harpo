@@ -45,8 +45,13 @@ public class NotesEncryptionTests
     private static async Task WriteAsEarlierVersionAsync(TestSite site, string plaintext, string entryName = "router")
     {
         await using var db = site.Db.CreateDbContext();
+        await db.Database.OpenConnectionAsync();
+        // Harpo 0.7's engine left the pages it freed as they were; this one zeroes
+        // them (secure_delete), so the old version is played with it off.
+        await db.Database.ExecuteSqlRawAsync("PRAGMA secure_delete = OFF");
         var rows = await db.Database.ExecuteSqlRawAsync(
             "UPDATE \"PasswordEntries\" SET \"Notes\" = {0} WHERE \"Name\" = {1}", plaintext, entryName);
+        await db.Database.ExecuteSqlRawAsync("PRAGMA secure_delete = ON");
         Assert.Equal(1, rows);
     }
 

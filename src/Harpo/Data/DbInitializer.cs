@@ -10,7 +10,7 @@ public static class DbInitializer
         IDbContextFactory<HarpoDbContext> factory, string connectionString, ILogger? logger = null)
     {
         // Make sure the directory for the SQLite file exists (e.g. /data in the container).
-        var dataSource = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        var dataSource = DbEncryption.FilePath(connectionString);
         if (!string.IsNullOrEmpty(dataSource) && dataSource != ":memory:")
         {
             var dir = Path.GetDirectoryName(Path.GetFullPath(dataSource));
