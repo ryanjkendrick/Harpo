@@ -96,7 +96,7 @@ jobs:
 
       # Each suite runs even if the one before failed, so a run reports every
       # broken area at once. The offline suite stops and restarts harpo-alpha.
-      - name: Offline vault (27 checks)
+      - name: Offline vault (28 checks)
         id: offline
         working-directory: tests/e2e
         run: node offline-vault.e2e.js

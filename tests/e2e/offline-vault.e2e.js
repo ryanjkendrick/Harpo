@@ -14,7 +14,8 @@
 // Before stopping anything it also puts a small gateway of its own in front of
 // the site and checks that a proxy's 502/503/504 (what nginx or Caddy answer
 // while Harpo is down) count as "unreachable" for that fallback, while Harpo's
-// own errors (500, 404) are shown as they are. The suite also works through a
+// own errors (500, 404) are shown as they are, and that the offline page does
+// not wait long on a proxy that sits on the request. The suite also works through a
 // reverse proxy: set HARPO_BASE_URL to the proxy's address.
 // Along the way it also proves two things that were once broken: signing in
 // as someone else in the same browser cannot replace the vault's contents, and
@@ -153,9 +154,14 @@ async function serverIsDown() {
 // A minimal stand-in for a reverse proxy, on its own origin: it passes GETs
 // through to BASE, or — once `answer` is set to a status — answers every request
 // itself with that status, the way nginx or Caddy do while Harpo is stopped.
+// With `answer` "hang" it never answers, like nginx waiting out its connect
+// timeout (60 s by default) for a stopped container's old address.
 async function startGateway() {
     const gateway = { answer: null };
     const server = http.createServer(async (req, res) => {
+        if (gateway.answer === "hang") {
+            return; // closeAllConnections() below ends it
+        }
         if (gateway.answer !== null) {
             res.writeHead(gateway.answer, { "content-type": "text/plain" });
             res.end(`gateway test answer ${gateway.answer}`);
@@ -185,7 +191,10 @@ async function startGateway() {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     // localhost (not 127.0.0.1's own name) is a secure context, so a service worker can register.
     gateway.url = `http://localhost:${server.address().port}`;
-    gateway.close = () => new Promise((resolve) => server.close(resolve));
+    gateway.close = () => new Promise((resolve) => {
+        server.close(resolve);
+        server.closeAllConnections();
+    });
     return gateway;
 }
 
@@ -361,6 +370,17 @@ async function retryUntil(action, probe, tries = 15) {
                     landed.title !== OFFLINE_TITLE && landed.body.includes(`gateway test answer ${status}`),
                     landed.title || landed.body.slice(0, 60));
             }
+            // The offline page waits for its "is offline access on?" probe before it
+            // shows anything; against a proxy that hangs, it must give up in seconds.
+            gateway.answer = "hang";
+            const started = Date.now();
+            await gwPage.goto(`${gateway.url}/offline.html`, { waitUntil: "load" });
+            const settled = await gwPage.waitForFunction(
+                () => document.getElementById("netBadge").textContent === "server unreachable"
+                    && !document.getElementById("state-setup").classList.contains("hidden"),
+                { timeout: 10000 }).then(() => true, () => false);
+            check("offline page stops waiting for a proxy that hangs", settled,
+                `${((Date.now() - started) / 1000).toFixed(1)} s`);
         } finally {
             await gatewayContext.close();
             await gateway.close();

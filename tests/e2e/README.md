@@ -12,7 +12,8 @@ afterwards.
   flight when the vault is locked cannot undo the lock, and — through a small
   gateway of its own on a spare localhost port — that a proxy's 502, 503 or
   504 sends a navigation to the offline vault while a 500 or 404 is shown as
-  it is.
+  it is, and that the offline page gives up on a proxy that never answers
+  within seconds.
 - **`offline-disable.e2e.js`** — what a device does when the administrator
   turns offline access off. Not part of `test:all`: the script cannot change
   the container's environment, so you give it `HARPO_RESTART_CMD`, a shell
@@ -94,7 +95,7 @@ leaves the data behind.
 
 ```bash
 npm install
-npm test          # offline vault — expect 27/27 checks passed
+npm test          # offline vault — expect 28/28 checks passed
 npm run test:ui   # interactive UI — expect 75/75 checks passed
 npm run test:session  # sign-out ends open tabs and copied cookies — expect 9/9 checks passed
 npm run test:all  # all three
