@@ -31,9 +31,10 @@ public sealed record DbEncryptionOptions(
 }
 
 /// <summary>
-/// Optional full-file database encryption via SQLCipher. The native library we
-/// bundle (e_sqlcipher) opens ordinary SQLite files identically when no key is
-/// used, so encryption is opt-in purely through configuration:
+/// Optional full-file database encryption in the SQLCipher 4 format. The engine is
+/// SQLite3 Multiple Ciphers (the SQLite3MC bundle, since Harpo 0.8), which opens
+/// ordinary SQLite files identically when no key is used, so encryption is opt-in
+/// purely through configuration:
 ///
 ///   Harpo__DatabaseKey                  encrypt the database with this key (per-site,
 ///                                       unlike the master key — sites may differ)
@@ -41,9 +42,17 @@ public sealed record DbEncryptionOptions(
 ///   Harpo__RemoveDatabaseEncryption     "true" + the current key → decrypt back to plain
 ///
 /// At startup <see cref="EnsureEncryptionStateAsync"/> reconciles the file with the
-/// configuration: a plaintext database is encrypted in place (via sqlcipher_export),
-/// keys are rotated (PRAGMA rekey), or — explicitly only — the file is decrypted.
-/// A key mismatch or a missing key for an encrypted file fails fast with a clear error.
+/// configuration: a plaintext database is encrypted (a copy made with VACUUM INTO,
+/// checked, then swapped in), keys are rotated (PRAGMA rekey), or — explicitly only —
+/// the file is decrypted (a copy again). A key mismatch or a missing key for an
+/// encrypted file fails fast with a clear error.
+///
+/// Every keyed connection must ask for the SQLCipher 4 scheme, which SQLite3MC calls
+/// <c>cipher=sqlcipher&amp;legacy=4</c>: without it a key gets SQLite3MC's own default,
+/// a different format that Harpo 0.7 and the <c>sqlcipher</c> tool cannot read. The
+/// engine takes it only per connection, as URI parameters, so keyed connection
+/// strings come from <see cref="KeyedConnectionString"/> and <see cref="ApplyKey"/>,
+/// never from setting a Password by hand.
 ///
 /// Threat model reminder (see README): this protects copied files, volumes, and
 /// backups. An attacker on the live host can read the key from the environment,
@@ -62,23 +71,82 @@ public static class DbEncryption
     private const int SqliteNotADb = 26;
     private const string TempSuffix = ".recrypt-tmp";
 
+    /// <summary>SQLCipher 4's scheme and settings, as SQLite3MC names them.</summary>
+    internal const string CipherParameters = "cipher=sqlcipher&legacy=4";
+
     private static readonly byte[] PlainHeader = "SQLite format 3\0"u8.ToArray();
 
-    /// <summary>Returns the connection string the app should actually use (adds Password when encrypting).</summary>
+    /// <summary>Returns the connection string the app should actually use (the key, and the scheme, when encrypting).</summary>
     public static string ApplyKey(string connectionString, DbEncryptionOptions options)
     {
         if (!options.WantsEncryption)
         {
             return connectionString;
         }
-        var builder = new SqliteConnectionStringBuilder(connectionString) { Password = options.DatabaseKey };
+        var builder = new SqliteConnectionStringBuilder(connectionString);
+        builder.DataSource = EngineDataSource(FilePath(connectionString));
+        builder.Password = options.DatabaseKey;
         return builder.ToString();
     }
+
+    /// <summary>
+    /// A connection string for the file at <paramref name="path"/> with this key (none
+    /// for a plaintext file), in the SQLCipher 4 scheme.
+    /// </summary>
+    public static string KeyedConnectionString(string path, string? key, Action<SqliteConnectionStringBuilder>? configure = null)
+    {
+        var builder = new SqliteConnectionStringBuilder { DataSource = EngineDataSource(path), Password = key ?? "" };
+        configure?.Invoke(builder);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The file a connection string points at, whether its Data Source is a plain path
+    /// or the <c>file:</c> URI <see cref="ApplyKey"/> makes of one. Anything that looks
+    /// at the file itself (does it exist, where does its lock file go) uses this.
+    /// </summary>
+    public static string FilePath(string connectionString)
+    {
+        var source = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        if (!source.StartsWith("file:", StringComparison.Ordinal))
+        {
+            return source;
+        }
+        var path = source["file:".Length..];
+        var query = path.IndexOfAny(['?', '#']);
+        if (query >= 0)
+        {
+            path = path[..query];
+        }
+        if (path.StartsWith("//", StringComparison.Ordinal))
+        {
+            path = path[2..]; // file://localhost/x or file:///x
+            path = path.StartsWith('/') ? path : path[path.IndexOf('/')..];
+        }
+        path = Uri.UnescapeDataString(path);
+        // file:/C:/x on Windows
+        return path.Length > 2 && path[0] == '/' && path[2] == ':' ? path[1..] : path;
+    }
+
+    /// <summary>The file at <paramref name="path"/> as a URI asking for the SQLCipher 4 scheme.</summary>
+    private static string EngineUri(string path, string? extra = null)
+    {
+        // In a URI, these three would end the path or start an escape.
+        var escaped = path.Replace("%", "%25").Replace("?", "%3F").Replace("#", "%23");
+        if (OperatingSystem.IsWindows() && Path.IsPathRooted(escaped))
+        {
+            escaped = "/" + escaped.Replace('\\', '/');
+        }
+        return $"file:{escaped}?{CipherParameters}{extra}";
+    }
+
+    private static string EngineDataSource(string path) =>
+        string.IsNullOrEmpty(path) || path == ":memory:" ? path : EngineUri(path);
 
     /// <summary>Reconciles the database file on disk with the configured encryption state.</summary>
     public static async Task EnsureEncryptionStateAsync(string rawConnectionString, DbEncryptionOptions options, ILogger logger)
     {
-        var path = new SqliteConnectionStringBuilder(rawConnectionString).DataSource;
+        var path = FilePath(rawConnectionString);
         var isFile = !string.IsNullOrEmpty(path) && path != ":memory:";
 
         // A copy left by an interrupted run is never used again, and after a decrypt
@@ -180,7 +248,7 @@ public static class DbEncryption
     /// </summary>
     public static async Task<bool?> IsEncryptedAsync(string rawConnectionString)
     {
-        var path = new SqliteConnectionStringBuilder(rawConnectionString).DataSource;
+        var path = FilePath(rawConnectionString);
         if (string.IsNullOrEmpty(path) || path == ":memory:" || !File.Exists(path))
         {
             return null;
@@ -218,7 +286,7 @@ public static class DbEncryption
             default:
                 logger.LogWarning(
                     "Could not tell whether the database file is encrypted: no file found at the configured " +
-                    "Data Source '{Path}'.", new SqliteConnectionStringBuilder(rawConnectionString).DataSource);
+                    "Data Source '{Path}'.", FilePath(rawConnectionString));
                 break;
         }
     }
@@ -252,7 +320,7 @@ public static class DbEncryption
         // left. That is safe to try with a wrong key: rollback restores the journal's
         // raw pages without decrypting them. SQLite falls back to read-only by itself
         // when the file cannot be written.
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWrite, Password = key, DefaultTimeout = 5 }.ToString();
+        var cs = KeyedConnectionString(path, key, b => { b.Mode = SqliteOpenMode.ReadWrite; b.DefaultTimeout = 5; });
         try
         {
             await using var connection = new SqliteConnection(cs);
@@ -264,6 +332,14 @@ public static class DbEncryption
         }
         catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) == SqliteNotADb)
         {
+            return false;
+        }
+        catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) == SqliteCorrupt && HasHotJournal(path))
+        {
+            // With a journal to roll back, the engine reports a wrong key as damage: it
+            // cannot read the journal's pages with that key. It leaves the journal as it
+            // is, and the right key rolls it back. A damaged file looks the same, which
+            // the "does not open it" message says.
             return false;
         }
         catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) is SqliteBusy or SqliteLocked)
@@ -283,9 +359,13 @@ public static class DbEncryption
         }
     }
 
+    private static bool HasHotJournal(string path) => new FileInfo(path + "-journal") is { Exists: true, Length: > 0 };
+
     /// <summary>
-    /// Re-encrypts the whole database into a temp file with sqlcipher_export
-    /// (targetKey null → plaintext), then atomically swaps it into place. The WAL has
+    /// Writes the whole database into a temp file with VACUUM INTO, encrypted with
+    /// <paramref name="targetKey"/> (null → plaintext), checks it, then atomically swaps
+    /// it into place. Not <c>PRAGMA rekey</c> in place: stopped by a full disk while
+    /// encrypting, it leaves a file that opens neither with the key nor without. The WAL has
     /// to go before the swap, or SQLite would apply it to the new file, so everything
     /// in it must be in the main file first. <paramref name="swap"/> and
     /// <paramref name="lockReleased"/> are for tests.
@@ -297,7 +377,7 @@ public static class DbEncryption
         var tempPath = path + TempSuffix;
         var action = targetKey is null ? "decrypt" : "encrypt";
         var copyStarted = false;
-        var sourceCs = new SqliteConnectionStringBuilder { DataSource = path, Password = sourceKey ?? "" }.ToString();
+        var sourceCs = KeyedConnectionString(path, sourceKey);
         try
         {
             long rows;
@@ -307,24 +387,15 @@ public static class DbEncryption
                 await FoldWalAsync(connection, path, action);
                 CreateCopyFile(path, tempPath);
                 copyStarted = true;
-                await using (var attach = connection.CreateCommand())
-                {
-                    attach.CommandText = "ATTACH DATABASE $path AS target KEY $key";
-                    attach.Parameters.AddWithValue("$path", tempPath);
-                    attach.Parameters.AddWithValue("$key", targetKey ?? "");
-                    await attach.ExecuteNonQueryAsync();
-                }
                 await using (var export = connection.CreateCommand())
                 {
-                    export.CommandText = "SELECT sqlcipher_export('target')";
-                    await export.ExecuteScalarAsync();
+                    // An empty key= is what makes the copy plaintext: without one, the
+                    // copy would be encrypted with the source's key.
+                    export.CommandText = "VACUUM INTO " + Literal(EngineUri(tempPath, "&key=" + Uri.EscapeDataString(targetKey ?? "")));
+                    await export.ExecuteNonQueryAsync();
                 }
-                rows = await RequireSameRowsAsync(connection, path, action);
-                await using (var detach = connection.CreateCommand())
-                {
-                    detach.CommandText = "DETACH DATABASE target";
-                    await detach.ExecuteNonQueryAsync();
-                }
+                SyncToDisk(tempPath);
+                rows = await RequireSameRowsAsync(connection, tempPath, targetKey, path, action);
             }
             SqliteConnection.ClearAllPools();
             if (lockReleased is not null)
@@ -402,12 +473,7 @@ public static class DbEncryption
             await command.ExecuteNonQueryAsync();
             if (key.Length > 0)
             {
-                // PRAGMA does not take parameters; quote the key safely via SQL itself.
-                command.CommandText = "SELECT quote($key)";
-                command.Parameters.AddWithValue("$key", key);
-                var quoted = (string)(await command.ExecuteScalarAsync())!;
-                command.Parameters.Clear();
-                command.CommandText = "PRAGMA key = " + quoted;
+                command.CommandText = "PRAGMA key = " + Literal(key);
                 await command.ExecuteNonQueryAsync();
             }
             command.CommandText = "SELECT count(*) FROM sqlite_master";
@@ -447,42 +513,75 @@ public static class DbEncryption
         $"The database at '{path}' is in use by something else, so Harpo cannot safely {what}. Your data has not " +
         "been changed. Stop anything else using the file (only one Harpo may use a database file) and start Harpo again.";
 
-    /// <summary>Compares every table in the attached copy with the original; returns how many rows there are.</summary>
-    internal static async Task<long> RequireSameRowsAsync(SqliteConnection connection, string path, string action)
+    /// <summary>
+    /// Compares every table of the copy with the original, open on
+    /// <paramref name="connection"/>; returns how many rows there are.
+    /// </summary>
+    internal static async Task<long> RequireSameRowsAsync(
+        SqliteConnection connection, string tempPath, string? targetKey, string path, string action)
+    {
+        var original = await CountTablesAsync(connection);
+        Dictionary<string, long> copy;
+        await using (var target = new SqliteConnection(KeyedConnectionString(tempPath, targetKey, b => { b.Mode = SqliteOpenMode.ReadWrite; b.Pooling = false; })))
+        {
+            await target.OpenAsync();
+            copy = await CountTablesAsync(target);
+        }
+        foreach (var (table, count) in original)
+        {
+            if (!copy.TryGetValue(table, out var copied) || copied != count)
+            {
+                throw new InvalidOperationException(
+                    $"The copy made to {action} the database at '{path}' does not match it (table {table}). " +
+                    "Your data has not been changed.");
+            }
+        }
+        return original.Values.Sum();
+    }
+
+    private static async Task<Dictionary<string, long>> CountTablesAsync(SqliteConnection connection)
     {
         var tables = new List<string>();
         await using (var list = connection.CreateCommand())
         {
-            list.CommandText = "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'";
+            list.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'";
             await using var reader = await list.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
                 tables.Add(reader.GetString(0));
             }
         }
-        var rows = 0L;
+        var counts = new Dictionary<string, long>();
         foreach (var table in tables)
         {
-            var quoted = Quote(table);
             await using var count = connection.CreateCommand();
-            count.CommandText = $"SELECT (SELECT count(*) FROM main.{quoted}), (SELECT count(*) FROM target.{quoted})";
-            await using var reader = await count.ExecuteReaderAsync();
-            await reader.ReadAsync();
-            if (reader.GetInt64(0) != reader.GetInt64(1))
-            {
-                throw new InvalidOperationException(
-                    $"The copy made to {action} the database at '{path}' does not match it (table {table}). " +
-                    "Your data has not been changed.");
-            }
-            rows += reader.GetInt64(0);
+            count.CommandText = $"SELECT count(*) FROM {Quote(table)}";
+            counts[table] = Convert.ToInt64(await count.ExecuteScalarAsync());
         }
-        return rows;
+        return counts;
     }
+
+    /// <summary>
+    /// VACUUM INTO does not sync what it wrote. The copy is about to replace the only
+    /// other one, so it has to be on the disk first, not just in the page cache.
+    /// </summary>
+    private static void SyncToDisk(string file)
+    {
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        stream.Flush(flushToDisk: true);
+    }
+
+    /// <summary>
+    /// A value as an SQL string literal, for statements that take no parameters
+    /// (PRAGMA, VACUUM INTO). Built here rather than with <c>SELECT quote()</c>: before
+    /// the key is set, any SELECT on an encrypted file reads its schema and fails.
+    /// </summary>
+    private static string Literal(string value) => "'" + value.Replace("'", "''") + "'";
 
     /// <summary>Reopens the finished copy, which must still hold as many rows as were compared.</summary>
     internal static async Task RequireRowsAsync(string tempPath, string key, long rows, string path, string action)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = tempPath, Mode = SqliteOpenMode.ReadWrite, Password = key }.ToString();
+        var cs = KeyedConnectionString(tempPath, key, b => b.Mode = SqliteOpenMode.ReadWrite);
         var found = 0L;
         await using (var connection = new SqliteConnection(cs))
         {
@@ -581,9 +680,9 @@ public static class DbEncryption
         }
         var code = sqlite.SqliteErrorCode & 0xFF;
 
-        // sqlcipher_export passes a failure on as a generic error 1, keeping only
-        // SQLite's text for it. Only then does the text count: ATTACH says "unable to
-        // open database" whatever went wrong, a damaged file included.
+        // Some failures come through as a generic error 1, keeping only SQLite's text
+        // for it. Only then does the text count: "unable to open database" can come
+        // with a damaged file's error code too.
         bool Says(string text) => code == SqliteError && sqlite.Message.Contains(text, StringComparison.Ordinal);
 
         if (code is SqliteBusy or SqliteLocked || Says("database is locked"))
@@ -622,18 +721,18 @@ public static class DbEncryption
 
     private static async Task RekeyAsync(string path, string oldKey, string newKey)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, Password = oldKey }.ToString();
+        var cs = KeyedConnectionString(path, oldKey);
         try
         {
             await using var connection = await OpenExclusiveAsync(cs, waitSeconds: 5);
-            // PRAGMA does not take parameters; quote the key safely via SQL itself.
-            await using var quote = connection.CreateCommand();
-            quote.CommandText = "SELECT quote($key)";
-            quote.Parameters.AddWithValue("$key", newKey);
-            var quoted = (string)(await quote.ExecuteScalarAsync())!;
             await using var rekey = connection.CreateCommand();
-            rekey.CommandText = "PRAGMA rekey = " + quoted;
+            rekey.CommandText = "PRAGMA rekey = " + Literal(newKey);
             await rekey.ExecuteNonQueryAsync();
+        }
+        catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) == SqliteCorrupt)
+        {
+            // The engine stops at the damage and rolls back, rather than carrying on.
+            throw Damaged(path, ex);
         }
         catch (Exception ex) when (WriteFailureMessage(ex, path, "rotate the key of") is { } message)
         {
@@ -641,8 +740,8 @@ public static class DbEncryption
         }
         SqliteConnection.ClearAllPools();
 
-        // On a full disk PRAGMA rekey reports success and leaves the file under the
-        // old key. Saying it worked would have the operator discard the only key that
+        // On a full disk SQLCipher's PRAGMA rekey reported success and left the file
+        // under the old key. Saying it worked would have the operator discard the only key that
         // opens the file, so only reopening it counts.
         bool opensWithNew, opensWithOld = false, damaged = false;
         try
@@ -664,10 +763,7 @@ public static class DbEncryption
         }
         if (damaged)
         {
-            throw new InvalidOperationException(
-                $"Rotating the key of the database at '{path}' did not take effect, because the file is damaged: SQLite's " +
-                "integrity check fails. It still opens with Harpo:PreviousDatabaseKey, so keep both keys configured. " +
-                "Freeing disk space will not help. Restore from a backup, or export what you can first.");
+            throw Damaged(path);
         }
         throw new InvalidOperationException(opensWithOld
             ? $"Rotating the key of the database at '{path}' did not take effect: it still opens only with " +
@@ -677,9 +773,14 @@ public static class DbEncryption
               "Harpo:PreviousDatabaseKey. Keep both keys, and check the volume and your backups.");
     }
 
+    private static InvalidOperationException Damaged(string path, Exception? inner = null) => new(
+        $"Rotating the key of the database at '{path}' did not take effect, because the file is damaged: SQLite's " +
+        "integrity check fails. It still opens with Harpo:PreviousDatabaseKey, so keep both keys configured. " +
+        "Freeing disk space will not help. Restore from a backup, or export what you can first.", inner);
+
     private static async Task<bool> IsDamagedAsync(string path, string key)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, Password = key }.ToString();
+        var cs = KeyedConnectionString(path, key);
         try
         {
             await using var connection = new SqliteConnection(cs);
