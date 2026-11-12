@@ -392,16 +392,32 @@ public class ReplicationEngine
             {
                 continue;
             }
-            // Revisions are immutable: union by Id, never update.
-            var exists = await db.PasswordRevisions.AnyAsync(x => x.Id == incoming.Id, ct);
-            if (!exists)
+            // Revisions are immutable: union by Id. The one way two sites make
+            // the same Id is importing the same row (see VaultService.ImportedRevisionId):
+            // the same password, but each site's own ciphertext, author and time,
+            // so those copies settle last-writer-wins like any other row.
+            var local = await db.PasswordRevisions.SingleOrDefaultAsync(x => x.Id == incoming.Id, ct);
+            if (local is null || IncomingWins(incoming, local))
             {
                 if (TryHeal(incoming.EncryptedPassword, out var healedPassword, out var plaintext))
                 {
                     incoming.EncryptedPassword = healedPassword;
                     incoming.Fingerprint = _crypto.Fingerprint(plaintext);
                 }
-                db.PasswordRevisions.Add(incoming);
+                if (local is null)
+                {
+                    db.PasswordRevisions.Add(incoming);
+                }
+                else
+                {
+                    local.EntryId = incoming.EntryId;
+                    local.EncryptedPassword = incoming.EncryptedPassword;
+                    local.CreatedBy = incoming.CreatedBy;
+                    local.CreatedAtUtc = incoming.CreatedAtUtc;
+                    local.Fingerprint = incoming.Fingerprint;
+                    local.Strength = incoming.Strength;
+                    CopyStamps(incoming, local);
+                }
                 accepted++;
             }
         }

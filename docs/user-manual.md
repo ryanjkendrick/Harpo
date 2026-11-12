@@ -269,7 +269,9 @@ Choose the file and Harpo shows what it found before anything is created:
   each folder into its own group if you want them apart.
 - **Skip rows whose name and username are already in this vault** is on by
   default, so importing the same file twice does not give you every entry
-  twice. Untick it to create them anyway.
+  twice. Untick it to create them anyway. This also holds across sites: if
+  the same file is imported on two Harpo sites while they can't reach each
+  other, the entries become one set when the sites reconnect.
 
 Click **Import** and a summary says how many entries were created, how many
 were skipped because the vault already had them, and which rows could not be

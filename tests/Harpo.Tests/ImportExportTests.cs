@@ -135,6 +135,142 @@ public partial class ImportExportTests : IDisposable
         Assert.Equal("password", await beta.Vault.RevealPasswordAsync(admin, replicated[0].Entry.Id));
     }
 
+    /// <summary>Every entry and revision of a site, as raw rows two sites can be compared by.</summary>
+    private static async Task<List<string>> RowsAsync(TestSite site)
+    {
+        await using var db = site.Db.CreateDbContext();
+        var entries = (await db.PasswordEntries.ToListAsync())
+            .Select(e => $"entry {e.Id} {e.Name} | {e.Username} | {e.CreatedBy} | {e.IsDeleted} | {e.OriginSiteId}:{e.OriginSeq} {e.UpdatedAtUtc:O}");
+        var revisions = (await db.PasswordRevisions.ToListAsync())
+            .Select(r => $"revision {r.Id} {r.EntryId} {r.EncryptedPassword} | {r.CreatedBy} {r.CreatedAtUtc:O} | {r.OriginSiteId}:{r.OriginSeq}");
+        return entries.Concat(revisions).Order(StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>Two sites sharing an "Ops" vault that alice (alpha) and bob (beta) can write to.</summary>
+    private async Task<(TestSite Beta, UserContext Alice, UserContext Bob, Group Group)> TwoSitesAsync()
+    {
+        var beta = new TestSite("beta", _site.Time);
+        var alice = await _site.SignInAsync("alice");
+        var group = await GroupAsync(alice, "Ops", ("bob", GroupRole.Member));
+        await beta.PullFromAsync(_site);
+        return (beta, alice, await beta.SignInAsync("bob"), group);
+    }
+
+    [Fact]
+    public async Task The_same_file_imported_on_two_sites_apart_makes_one_set_of_entries()
+    {
+        var (beta, alice, bob, group) = await TwoSitesAsync();
+        using var _ = beta;
+        ImportRow[] file =
+        [
+            Row(2, "Mail", "pw-mail", username: "me", url: "https://mail.example.com", notes: "recovery: 1234", totp: "JBSWY3DPEHPK3PXP"),
+            Row(3, "Router", "pw-router", username: "admin"),
+            Row(4, "No user", "pw-none"),
+        ];
+
+        // The sites cannot reach each other: each imports the file on its own.
+        Assert.Equal(3, (await _site.Vault.ImportEntriesAsync(alice, group.Id, file)).Created);
+        _site.Time.Advance(TimeSpan.FromMinutes(5));
+        Assert.Equal(3, (await beta.Vault.ImportEntriesAsync(bob, group.Id, file)).Created);
+
+        await beta.PullFromAsync(_site, viaJson: true);
+        await _site.PullFromAsync(beta, viaJson: true);
+
+        var contents = await ContentsAsync(alice, group.Id);
+        Assert.Equal(3, contents.Count);
+        Assert.Contains("Mail | 🔐 | https://mail.example.com | me | pw-mail | recovery: 1234 | JBSWY3DPEHPK3PXP", contents);
+        foreach (var site in new[] { _site, beta })
+        {
+            var entries = await site.Vault.GetEntriesAsync(TestSite.User("alice", siteAdmin: true), group.Id);
+            Assert.Equal(3, entries.Count);
+            foreach (var entry in entries)
+            {
+                // One first revision, not one from each site.
+                Assert.Single(await site.Vault.GetHistoryAsync(TestSite.User("alice", siteAdmin: true), entry.Entry.Id));
+            }
+        }
+        // And the two sites hold the same rows, down to who imported them: beta's, the later.
+        var alphaRows = await RowsAsync(_site);
+        Assert.Equal(alphaRows, await RowsAsync(beta));
+        Assert.Equal(3, alphaRows.Count(r => r.StartsWith("revision ") && r.Contains("| bob ")));
+    }
+
+    [Fact]
+    public async Task Names_match_as_the_duplicate_check_does_ignoring_case_and_spaces()
+    {
+        var (beta, alice, bob, group) = await TwoSitesAsync();
+        using var _ = beta;
+        await _site.Vault.ImportEntriesAsync(alice, group.Id, [Row(2, "Mail", "pw", username: "me")]);
+        await beta.Vault.ImportEntriesAsync(bob, group.Id, [Row(2, " MAIL ", "pw", username: "Me ")]);
+
+        await beta.PullFromAsync(_site);
+        await _site.PullFromAsync(beta);
+
+        Assert.Single(await _site.Vault.GetEntriesAsync(alice, group.Id));
+        Assert.Equal(await RowsAsync(_site), await RowsAsync(beta));
+    }
+
+    [Fact]
+    public async Task Files_that_disagree_on_a_password_keep_both_and_the_newer_is_current()
+    {
+        var (beta, alice, bob, group) = await TwoSitesAsync();
+        using var _ = beta;
+        await _site.Vault.ImportEntriesAsync(alice, group.Id, [Row(2, "Router", "older", username: "admin")]);
+        _site.Time.Advance(TimeSpan.FromMinutes(5));
+        await beta.Vault.ImportEntriesAsync(bob, group.Id, [Row(2, "Router", "newer", username: "admin")]);
+
+        await beta.PullFromAsync(_site);
+        await _site.PullFromAsync(beta);
+
+        foreach (var site in new[] { _site, beta })
+        {
+            var admin = TestSite.User("alice", siteAdmin: true);
+            var entry = Assert.Single(await site.Vault.GetEntriesAsync(admin, group.Id));
+            Assert.Equal(2, (await site.Vault.GetHistoryAsync(admin, entry.Entry.Id)).Count);
+            Assert.Equal("newer", await site.Vault.RevealPasswordAsync(admin, entry.Entry.Id));
+        }
+        Assert.Equal(await RowsAsync(_site), await RowsAsync(beta));
+    }
+
+    [Fact]
+    public async Task Importing_again_after_a_delete_makes_a_new_entry_and_leaves_the_deleted_one_in_the_bin()
+    {
+        var alice = await _site.SignInAsync("alice");
+        var group = await GroupAsync(alice, "Ops");
+        await _site.Vault.ImportEntriesAsync(alice, group.Id, [Row(2, "Mail", "first", username: "me")]);
+        var first = Assert.Single(await _site.Vault.GetEntriesAsync(alice, group.Id)).Entry;
+        await _site.Vault.DeleteEntryAsync(alice, first.Id);
+
+        Assert.Equal(1, (await _site.Vault.ImportEntriesAsync(alice, group.Id, [Row(2, "Mail", "second", username: "me")])).Created);
+
+        var second = Assert.Single(await _site.Vault.GetEntriesAsync(alice, group.Id)).Entry;
+        Assert.NotEqual(first.Id, second.Id);
+        Assert.Equal("second", await _site.Vault.RevealPasswordAsync(alice, second.Id));
+        Assert.Equal(first.Id, Assert.Single((await _site.Vault.GetDeletedEntriesAsync(alice, group.Id)).Items).Id);
+        // The same goes for an entry purged for good: its id stays taken.
+        await _site.Purge.PurgeEntryAsync(alice, first.Id);
+        await _site.Vault.DeleteEntryAsync(alice, second.Id);
+        Assert.Equal(1, (await _site.Vault.ImportEntriesAsync(alice, group.Id, [Row(2, "Mail", "third", username: "me")])).Created);
+        Assert.Equal("third", await _site.Vault.RevealPasswordAsync(alice,
+            Assert.Single(await _site.Vault.GetEntriesAsync(alice, group.Id)).Entry.Id));
+    }
+
+    [Fact]
+    public async Task Duplicates_made_on_purpose_on_two_sites_still_match_up_one_for_one()
+    {
+        var (beta, alice, bob, group) = await TwoSitesAsync();
+        using var _ = beta;
+        ImportRow[] file = [Row(2, "Mail", "pw1", username: "me"), Row(3, "Mail", "pw2", username: "me")];
+        await _site.Vault.ImportEntriesAsync(alice, group.Id, file, skipDuplicates: false);
+        await beta.Vault.ImportEntriesAsync(bob, group.Id, file, skipDuplicates: false);
+
+        await beta.PullFromAsync(_site);
+        await _site.PullFromAsync(beta);
+
+        Assert.Equal(2, (await _site.Vault.GetEntriesAsync(alice, group.Id)).Count);
+        Assert.Equal(await RowsAsync(_site), await RowsAsync(beta));
+    }
+
     [Fact]
     public async Task A_viewer_cannot_import_and_a_member_can()
     {

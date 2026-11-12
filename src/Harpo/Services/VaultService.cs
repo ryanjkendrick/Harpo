@@ -268,7 +268,7 @@ public class VaultService
     /// </summary>
     private (PasswordEntry Entry, PasswordRevision Revision) NewEntry(
         UserContext user, Guid groupId, string name, string icon, string url, string username, string notes,
-        string password, string totpSecret, DateTime now)
+        string password, string totpSecret, DateTime now, Guid? importedId = null)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -282,7 +282,7 @@ public class VaultService
         var encryptedTotp = EncryptTotpOrThrow(totpSecret);
         var entry = new PasswordEntry
         {
-            Id = Guid.NewGuid(),
+            Id = importedId ?? Guid.NewGuid(),
             GroupId = groupId,
             Name = name,
             Icon = icon.Trim(),
@@ -294,7 +294,12 @@ public class VaultService
             CreatedAtUtc = now,
             UpdatedBy = user.Username,
         };
-        return (entry, NewRevision(entry.Id, password, user, now));
+        var revision = NewRevision(entry.Id, password, user, now);
+        if (importedId is not null)
+        {
+            revision.Id = ImportedRevisionId(entry.Id, password);
+        }
+        return (entry, revision);
     }
 
     /// <summary>
@@ -307,6 +312,13 @@ public class VaultService
     /// is skipped. Every entry gets an ordinary first revision by the importer,
     /// so it replicates and shows in health and offline copies like any other.
     /// Needs write rights to the vault. Audited once, with the counts.
+    /// <para>
+    /// The ids of what an import creates come from the vault, the row's name and
+    /// username, and the password (see <see cref="ImportedEntryId"/>), not from
+    /// chance. So the same file imported on two sites that cannot reach each
+    /// other makes the same rows on both, and they merge when the sites meet
+    /// again instead of leaving every entry twice.
+    /// </para>
     /// </summary>
     public async Task<ImportResult> ImportEntriesAsync(
         UserContext user, Guid groupId, IReadOnlyList<ImportRow> rows, bool skipDuplicates = true,
@@ -330,11 +342,14 @@ public class VaultService
             // the same file at once cannot both find the vault without the rows.
             group = await RequireMemberAsync(db, user, groupId, ct, requireWrite: true);
             var existing = await db.PasswordEntries
-                .Where(e => e.GroupId == groupId && !e.IsDeleted)
-                .Select(e => new { e.Name, e.Username })
+                .Where(e => e.GroupId == groupId)
+                .Select(e => new { e.Id, e.Name, e.Username, e.IsDeleted })
                 .ToListAsync(ct);
             var seen = new HashSet<(string, string)>(
-                existing.Select(e => DuplicateKey(e.Name, e.Username)), DuplicateKeyComparer.Instance);
+                existing.Where(e => !e.IsDeleted).Select(e => DuplicateKey(e.Name, e.Username)),
+                DuplicateKeyComparer.Instance);
+            // Deleted and purged entries keep their ids, so they count as taken.
+            var taken = existing.Select(e => e.Id).ToHashSet();
 
             var now = _time.GetUtcNow().UtcDateTime;
             foreach (var row in rows)
@@ -347,11 +362,13 @@ public class VaultService
                 }
                 try
                 {
+                    var id = FreeImportedEntryId(groupId, key, taken);
                     var (entry, revision) = NewEntry(user, groupId, row.Name, ImportIcon(row.Icon), row.Url, row.Username,
-                        row.Notes, row.Password, row.Totp, now);
+                        row.Notes, row.Password, row.Totp, now, id);
                     db.PasswordEntries.Add(entry);
                     db.PasswordRevisions.Add(revision);
                     seen.Add(key);
+                    taken.Add(id);
                     created++;
                 }
                 catch (VaultValidationException ex)
@@ -370,6 +387,46 @@ public class VaultService
     }
 
     private static (string, string) DuplicateKey(string name, string username) => (name.Trim(), username.Trim());
+
+    /// <summary>
+    /// The id an imported row's entry gets: the <paramref name="occurrence"/>th
+    /// entry an import has made in the vault with this name and username,
+    /// ignoring case and surrounding spaces as the duplicate check does. Two
+    /// sites importing the same file into the same vault arrive at the same ids.
+    /// </summary>
+    internal static Guid ImportedEntryId(Guid groupId, string name, string username, int occurrence) =>
+        DeterministicGuid.For("import-entry", groupId.ToString("D"),
+            name.Trim().ToUpperInvariant(), username.Trim().ToUpperInvariant(),
+            occurrence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    /// <summary>
+    /// The first <see cref="ImportedEntryId"/> not already in the vault — live,
+    /// deleted, or purged — nor made earlier in this import. Usually the first
+    /// one; a later one when the name was imported before and that entry was
+    /// deleted or renamed, or duplicates are being created on purpose.
+    /// </summary>
+    private static Guid FreeImportedEntryId(Guid groupId, (string Name, string Username) key, HashSet<Guid> taken)
+    {
+        for (var occurrence = 0; ; occurrence++)
+        {
+            var id = ImportedEntryId(groupId, key.Name, key.Username, occurrence);
+            if (!taken.Contains(id))
+            {
+                return id;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The id of an imported entry's first revision: from the entry and the
+    /// keyed fingerprint of the password (never the password itself), so the
+    /// same row imported on two sites makes one revision, and two files that
+    /// disagree about the password make two, the newer being current — the same
+    /// as two sites changing it at once. The fingerprint is used whether or not
+    /// health analysis is on; it is only the id, and says nothing across entries.
+    /// </summary>
+    private Guid ImportedRevisionId(Guid entryId, string password) =>
+        DeterministicGuid.For("import-revision", entryId.ToString("D"), _crypto.Fingerprint(password));
 
     private sealed class DuplicateKeyComparer : IEqualityComparer<(string, string)>
     {
