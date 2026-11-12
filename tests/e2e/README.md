@@ -87,7 +87,8 @@ leaves the data behind.
 - The two-site demo running: `docker compose -f docker-compose.multisite.yml up -d`
   (from the repo root)
 - Node 20+ and the `docker` CLI on PATH
-- Note: the offline suite **stops and restarts `harpo-alpha`** mid-run.
+- Note: the offline suite **stops and restarts a container** mid-run:
+  `harpo-alpha` (the demo's site alpha) by default, or `HARPO_CONTAINER`.
 
 ## Run
 
@@ -106,11 +107,24 @@ used by both suites). The UI suite takes over the second account's personal
 vault, so point it at a throwaway stack, not at one whose second account
 keeps real passwords there.
 
+`HARPO_CONTAINER` is the container the offline suite stops and restarts. It
+defaults to `harpo-alpha` only while `HARPO_BASE_URL` is unset or
+`http://localhost:8081`. Point the suite anywhere else and you must name the
+container behind that URL too, or it exits with a message before doing
+anything — otherwise it would stop the demo while testing another stack:
+
+```bash
+HARPO_BASE_URL=http://localhost:8091 HARPO_CONTAINER=harpo-e2e-alpha npm test
+```
+
+`offline-disable.e2e.js` does not use `HARPO_CONTAINER`: it runs no docker
+command of its own, only the `HARPO_RESTART_CMD` you give it, so make sure
+that command restarts the stack at `HARPO_BASE_URL`.
+
 The offline suite also runs through a reverse proxy: point `HARPO_BASE_URL` at
-the proxy and **always set `HARPO_CONTAINER`** to the container behind it — it
-defaults to the demo's `harpo-alpha`, which it would stop. While the container
-is stopped the proxy answers with a gateway error, which the suite counts as
-down. With a self-signed certificate, run Node with
+the proxy and set `HARPO_CONTAINER` to the container behind it. While the
+container is stopped the proxy answers with a gateway error, which the suite
+counts as down. With a self-signed certificate, run Node with
 `NODE_TLS_REJECT_UNAUTHORIZED=0` and point `PUPPETEER_EXECUTABLE_PATH` at a
 small wrapper that starts Chrome with `--ignore-certificate-errors`.
 

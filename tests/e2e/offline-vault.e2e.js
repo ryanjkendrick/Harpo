@@ -5,7 +5,8 @@
 // What it does:
 //   1. signs in to site alpha, creates its own throwaway group + password entry
 //   2. sets up the offline vault (passphrase + sync)
-//   3. STOPS the harpo-alpha container
+//   3. STOPS the Harpo container (HARPO_CONTAINER; harpo-alpha, the demo's
+//      site alpha, by default)
 //   4. verifies: page loads from the service worker, badge shows "server
 //      unreachable", wrong passphrase is rejected, the vault decrypts offline,
 //      the revealed password matches, and navigation falls back to the vault
@@ -21,11 +22,24 @@
 //
 // Prerequisites: `docker compose -f docker-compose.multisite.yml up -d` and the
 // docker CLI on PATH. Run with: npm test (see README.md in this directory).
+// Pointed at any other URL with HARPO_BASE_URL, it also needs HARPO_CONTAINER
+// (the container behind that URL) and refuses to start without it.
 const puppeteer = require("puppeteer");
 const http = require("http");
 const { execSync } = require("child_process");
 
-const BASE = process.env.HARPO_BASE_URL || "http://localhost:8081";
+const DEFAULT_BASE = "http://localhost:8081";
+const BASE = process.env.HARPO_BASE_URL || DEFAULT_BASE;
+// This suite runs `docker stop` / `docker start` on CONTAINER. The default,
+// harpo-alpha, is the demo stack's container, so it only applies when the
+// suite is also aimed at the demo's URL: pointed anywhere else, it must be told
+// which container serves that URL, or it would stop the demo instead.
+if (BASE.replace(/\/+$/, "") !== DEFAULT_BASE && !process.env.HARPO_CONTAINER) {
+    console.error(`HARPO_BASE_URL is ${BASE}, so set HARPO_CONTAINER to the container that serves it.\n` +
+        `This suite stops and restarts that container; without it, it would stop harpo-alpha ` +
+        `(the demo at ${DEFAULT_BASE}). Nothing was run.`);
+    process.exit(2);
+}
 const CONTAINER = process.env.HARPO_CONTAINER || "harpo-alpha";
 const USER = process.env.HARPO_USER || "alice";
 const USER_PASSWORD = process.env.HARPO_PASSWORD || "alice";
